@@ -1,0 +1,10 @@
+node_modules/
+.team/
+*.db
+*.db-wal
+*.db-shm
+run/
+tests/.tmp/
+demo/.tmp/
+*.log
+.DS_Store
