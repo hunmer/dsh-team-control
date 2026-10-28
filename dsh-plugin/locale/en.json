@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "dsh-team Orchestration",
+    "description": "Exposes the local dsh-team sidecar as model-callable tools: teams and members, DAG tasks and dependencies, live status and blockers, messaging, four-domain scope approvals, interrupt/resume, and run reports."
+  }
+}

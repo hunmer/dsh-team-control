@@ -73,6 +73,8 @@ export class WorkerRunner {
           meta: { leaseUntil: row.lease, missed: 2 },
         });
         this.clearLease(row.id);
+        // 超时的成员如果还挂着 scope 申请，必须一并收敛，否则面板会留下点了也没用的幽灵审批
+        try { this.broker.releasePending(row.id, 'lease timeout'); } catch { /* ignore */ }
         this.killWorker(row.id, { hard: true });
         this.log({ level: 'warn', msg: 'lease timeout', memberId: row.id });
         this.hooks.onWorkerGone(row.id, 'suspected_dead');
@@ -150,6 +152,15 @@ export class WorkerRunner {
         if (!line.trim()) continue;
         let fr;
         try { fr = JSON.parse(line); } catch { this.log({ level: 'warn', msg: 'bad rpc frame', memberId, raw: line.slice(0, 200) }); continue; }
+        // 心跳走带外通道：scope.request 可能阻塞数分钟，若 ping 排在同一串行队列后面，
+        // 成员会被误判为租约超时（suspected_dead），长审批场景直接失效。
+        if (fr && fr.op === 'ping') {
+          try {
+            this.touch(ctx.memberId);
+            this.send(rec, { id: fr.id, ok: true, data: { leaseUntil: this.runtime(ctx.memberId).leaseUntil } });
+          } catch { /* ignore */ }
+          continue;
+        }
         rec.queue = rec.queue.then(() => this.handleRpc(rec, fr)).catch((e) => {
           this.log({ level: 'error', msg: 'rpc handler failed', memberId, op: fr?.op, err: String(e?.stack || e) });
         });

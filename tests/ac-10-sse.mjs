@@ -74,11 +74,16 @@ runAc(AC, async () => {
         && 'result' in f.payload && 'next' in f.payload, `step.append 载荷字段不全: ${JSON.stringify(f.payload)}`);
       return (observedAt.get(i) ?? Date.now()) - Date.parse(f.payload.ts);
     });
-    const bad = latencies.filter((x) => !Number.isFinite(x) || x < 0);
-    assertEqual(bad.length, 0, `存在非法延迟样本（负数/NaN）: ${bad.slice(0, 5)}`);
-    const p95Lat = p95(latencies);
-    const maxLat = Math.max(...latencies);
-    assert(p95Lat < 500, `SSE step 推送 p95 应 <500ms，实际 p95=${p95Lat}ms（max=${maxLat}ms, n=${latencies.length}）`);
+    // 事件 ts 只有毫秒精度，且 sidecar 与本测试是不同进程：偶发 -1ms 是时钟抖动而非延迟。
+    // 容忍小额负值（按 0 计入统计），但仍拒绝明显异常的时间戳。
+    const SKEW_MS = 25;
+    const bad = latencies.filter((x) => !Number.isFinite(x) || x < -SKEW_MS);
+    assertEqual(bad.length, 0, `存在非法延迟样本（<-${SKEW_MS}ms 或 NaN）: ${bad.slice(0, 5)}`);
+    const skews = latencies.filter((x) => x < 0).length;
+    const measured = latencies.map((x) => Math.max(0, x));
+    const p95Lat = p95(measured);
+    const maxLat = Math.max(...measured);
+    assert(p95Lat < 500, `SSE step 推送 p95 应 <500ms，实际 p95=${p95Lat}ms（max=${maxLat}ms, n=${measured.length}, skew=${skews}）`);
     sseA.close();
     sseA = null;
 

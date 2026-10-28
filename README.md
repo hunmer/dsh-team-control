@@ -84,6 +84,32 @@ dsh-team approve <request-id> [--deny] [--reason TEXT] [--ttl SEC]
 dsh-team report <team> [-o run.md]
 ```
 
+## 作为 DSH 插件安装
+
+sidecar 本身是独立进程；要让**模型直接调用**它，用 [`dsh-plugin/`](dsh-plugin/) 这个 Host bundle
+（8 个 `team_*` 工具 + 服务生命周期，零第三方依赖）。安装后工具面对本 profile 的所有会话生效。
+
+```text
+plugin_manager(action: "install_bundle", target: "C:\\...\\agent-team-plugin\\dsh-plugin-ui")
+```
+
+期望 `application: "applied"`、`warnings: []`；用 `cordis_inspect_query` 复核（无需审批）。
+
+| bundle | 作用 | 卸载 target |
+|---|---|---|
+| [`dsh-plugin/`](dsh-plugin/) | 8 个 `team_*` 工具 + sidecar 生命周期 | `@local/dsh-team-plugin` |
+| [`dsh-plugin-ui/`](dsh-plugin-ui/) | 设置 → 插件里的仪表盘（成员/DAG/时间线/权限/审批） | `@local/dsh-team-ui` |
+
+- 工具 bundle：`autoStart: true` 时 sidecar 未运行会在**首次工具调用**自动拉起，并作为 DSH Host 的子进程；
+  插件卸载时只回收自己拉起的进程。配置见 [`dsh-plugin/README.md`](dsh-plugin/README.md)。
+- UI bundle：**设置 → 插件 → 「dsh-team 编排控制台」**。浏览器只访问同源 `/dsh-team-api/**`，
+  由 Host 侧代理注入 sidecar token（token 不出 Host）；该前缀路由**仅接受回环地址**。
+  配置见 [`dsh-plugin-ui/README.md`](dsh-plugin-ui/README.md)。
+- 独立面板 `{baseUrl}/panel` 仍然保留（单文件、零依赖、SSE 实时），适合不打开 DSH 时使用。
+- **迁移已完成**：`@deepseek-ai/dsh-experimental-agent-team-profile` 已从本 profile 的 bundles 移除，
+  工具面里不再有 `spawn_teammate / wait_agent / team_task_*`（`send_message / list_agents / interrupt_agent`
+  仍存在，属 subagent 体系，与 Agent Teams 无关）。
+
 ## 交付物
 
 | 交付物 | 位置 |
@@ -93,7 +119,9 @@ dsh-team report <team> [-o run.md]
 | CLI | `bin/dsh-team.mjs`（六个子命令） |
 | 测试套件 | `tests/ac-*.mjs` + `tests/run-all.mjs`（覆盖 AC-1 ~ AC-13） |
 | 文档 | 本文件 + [`docs/CONTRACT.md`](docs/CONTRACT.md) + [`docs/adr/`](docs/adr/) |
-| Demo | `demo/run-demo.mjs` |
+| Demo | `demo/run-demo.mjs`、`demo/seed.mjs`（给运行中实例灌可交互演示数据） |
+| DSH 插件（工具） | `dsh-plugin/`（Host bundle：8 个 `team_*` 工具 + sidecar 生命周期） |
+| DSH 插件（界面） | `dsh-plugin-ui/`（Host 同源代理 + Client 页面：设置 → 插件 → dsh-team 控制台） |
 
 ## 验收矩阵
 
@@ -145,4 +173,4 @@ demo/run-demo.mjs     可复现演示
 
 ## 已知取舍
 
-见 [`docs/adr/`](docs/adr/)：Node 24 无 net 权限门（ADR-002）、member.status 单点存放以保 C2（ADR-003）、并发写用 CAS 而非路径租约（ADR-004）、建任务 settle 窗口与派发前重求值（ADR-005）、topic 订阅与 YAML 导入导出延后（ADR-006）、SSE 合成帧语义（ADR-007）。
+见 [`docs/adr/`](docs/adr/)：Node 24 无 net 权限门（ADR-002）、member.status 单点存放以保 C2（ADR-003）、并发写用 CAS 而非路径租约（ADR-004）、建任务 settle 窗口与派发前重求值（ADR-005）、topic 订阅与 YAML 导入导出延后（ADR-006）、SSE 合成帧语义（ADR-007）、面板进 GUI 用设置页 Slot + Host 同源代理而非 iframe（ADR-008）。

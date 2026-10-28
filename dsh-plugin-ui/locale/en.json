@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "dsh-team Dashboard",
+    "description": "Inspect the dsh-team run inside DSH: member board, DAG, event timeline, permission matrix, and scope approvals. Data is proxied same-origin through the Host to the local sidecar."
+  }
+}

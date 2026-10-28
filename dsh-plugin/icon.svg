@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="dsh-team">
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#1b2430"/>
+  <g stroke="#5ad1c8" stroke-width="3" stroke-linecap="round" fill="none">
+    <path d="M32 15v10"/>
+    <path d="M32 25 17 34"/>
+    <path d="M32 25l15 9"/>
+    <path d="M17 42h30"/>
+    <path d="M17 34v8"/>
+    <path d="M47 34v8"/>
+  </g>
+  <g fill="#5ad1c8">
+    <circle cx="32" cy="13" r="5"/>
+    <circle cx="17" cy="34" r="4.5"/>
+    <circle cx="47" cy="34" r="4.5"/>
+  </g>
+  <circle cx="32" cy="50" r="5" fill="#f0b429"/>
+</svg>

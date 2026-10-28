@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "dsh-team 仪表盘",
+    "description": "在 DSH 内查看 dsh-team 编排现场：成员看板、DAG、事件时间线、权限矩阵与越界审批。数据经 Host 同源代理读取本地 sidecar。"
+  }
+}

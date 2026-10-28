@@ -586,6 +586,18 @@ export class DshTeam {
         recovered += r.requeued;
       } catch (e) { this.log({ level: 'error', msg: 'recover failed', teamId: t.id, err: String(e.message) }); }
     }
+    // 进程重启后，内存里等待决策的 scope 请求已经没有任何 Worker 在等：
+    // 留着会让面板出现「点了也没用的幽灵审批」，统一收敛为 expired。
+    let expired = 0;
+    try {
+      const rows = this.get("SELECT id, team_id, member_id, target FROM scope_request WHERE status='pending'").all();
+      for (const r of rows) {
+        this.get("UPDATE scope_request SET status='expired', decided_at=? WHERE id=?").run(nowIso(), r.id);
+        this.audit({ teamId: r.team_id, actor: 'system', domain: 'scope', action: 'recover', target: r.target, result: 'EXPIRED', detail: { requestId: r.id, memberId: r.member_id, reason: 'sidecar restart' } });
+        expired++;
+      }
+    } catch (e) { this.log({ level: 'error', msg: 'expire pending scopes failed', err: String(e.message) }); }
+    if (expired) this.log({ level: 'info', msg: 'expired pending scope requests', count: expired });
     this.events.verifyAll(null);
     return recovered;
   }

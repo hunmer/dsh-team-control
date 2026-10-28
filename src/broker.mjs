@@ -498,7 +498,11 @@ export class PermBroker {
       clearTimeout(w.timer);
       this.pending.delete(id);
       try { this.get("UPDATE scope_request SET status='expired', decided_at=? WHERE id=? AND status='pending'").run(nowIso(), id); } catch { /* ignore */ }
-      this.audit({ teamId: null, actor: 'system', domain: 'scope', action: 'release', target: id, result: 'EXPIRED', detail: { memberId, reason } });
+      // teamId 从 row 读，避免 audit 因 team_id NOT NULL 失败
+      try {
+        const row = this.get('SELECT team_id FROM scope_request WHERE id=?').get(id);
+        this.audit({ teamId: row?.team_id ?? null, actor: 'system', domain: 'scope', action: 'release', target: id, result: 'EXPIRED', detail: { memberId, reason } });
+      } catch { /* ignore */ }
       try { w.resolve({ status: 'expired', requestId: id, decisionId: null, grantId: null, released: reason }); } catch { /* ignore */ }
     }
   }
