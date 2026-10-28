@@ -110,7 +110,13 @@ function proxyHandler(s) {
     try {
       await ensureSidecar(s);
       const incoming = new URL(req.url, 'http://127.0.0.1');
-      const upstreamPath = incoming.pathname.replace(new RegExp('^' + ROUTE_PREFIX), '/api') + incoming.search;
+      // 透明同源代理：/dsh-team-api/<sidecar 根路径>。
+      // 允许 /api/**（数据）与 /panel/**（面板本体，供抽屉 iframe 复用同一实现）。
+      const remainder = incoming.pathname.replace(new RegExp('^' + ROUTE_PREFIX), '') || '/';
+      if (!(remainder.startsWith('/api/') || remainder === '/panel' || remainder.startsWith('/panel/'))) {
+        return sendError(res, 404, 'E_NOT_PROXIED', `dsh-team proxy does not forward ${remainder}`);
+      }
+      const upstreamPath = remainder + incoming.search;
       const headers = { Authorization: `Bearer ${s.token || ''}` };
       const init = { method: req.method, headers };
       if (!['GET', 'HEAD'].includes(req.method)) {
@@ -154,9 +160,16 @@ function proxyHandler(s) {
 export function apply(ctx, config) {
   const s = resolveConfig(config);
   ctx.effect(() => {
-    const dispose = ctx.webServer.register({ kind: 'prefix', path: ROUTE_PREFIX, handler: proxyHandler(s) });
+    const handler = proxyHandler(s);
+    // 两条前缀路由：
+    //   /dsh-team-api  → 数据/SSE（同源代理，Host 注入 token）
+    //   /panel         → 面板本体及其静态资源（panel.html 用绝对 /panel/app.js 引用）
+    const disposers = [
+      ctx.webServer.register({ kind: 'prefix', path: ROUTE_PREFIX, handler }),
+      ctx.webServer.register({ kind: 'prefix', path: '/panel', handler }),
+    ];
     return () => {
-      try { dispose(); } catch { /* ignore */ }
+      for (const dispose of disposers.reverse()) { try { dispose(); } catch { /* ignore */ } }
       const child = s.spawned?.child;
       if (child && child.exitCode === null) { try { child.kill(); } catch { /* ignore */ } }
     };

@@ -98,12 +98,16 @@ plugin_manager(action: "install_bundle", target: "C:\\...\\agent-team-plugin\\ds
 | bundle | 作用 | 卸载 target |
 |---|---|---|
 | [`dsh-plugin/`](dsh-plugin/) | 8 个 `team_*` 工具 + sidecar 生命周期 | `@local/dsh-team-plugin` |
-| [`dsh-plugin-ui/`](dsh-plugin-ui/) | 设置 → 插件里的仪表盘（成员/DAG/时间线/权限/审批） | `@local/dsh-team-ui` |
+| [`dsh-plugin-ui/`](dsh-plugin-ui/) | 侧边栏「编排」入口 + **右侧栏 Tab**（默认嵌入 sidecar 自带 Web 面板） | `@local/dsh-team-ui` |
 
 - 工具 bundle：`autoStart: true` 时 sidecar 未运行会在**首次工具调用**自动拉起，并作为 DSH Host 的子进程；
   插件卸载时只回收自己拉起的进程。配置见 [`dsh-plugin/README.md`](dsh-plugin/README.md)。
-- UI bundle：**设置 → 插件 → 「dsh-team 编排控制台」**。浏览器只访问同源 `/dsh-team-api/**`，
-  由 Host 侧代理注入 sidecar token（token 不出 Host）；该前缀路由**仅接受回环地址**。
+- UI bundle：左侧边栏底部「编排 / Team」按钮（`sidebar.footer.action`）→ 点击
+  `ctx.sidebarRight.openTab('dsh-team')` 在**右侧栏**打开 Tab（与文件/终端同机制），
+  Tab 内默认「网页版」：iframe 直接加载 sidecar 自带的 `/panel`（内容与 `:4317/panel`
+  完全一致：7 视图 + SSE + 消息 + 报告导出），可切「精简版」（DSH 原生渲染、跟随主题）。
+  浏览器只访问同源 `/dsh-team-api/**` 与 `/panel/**`，
+  由 Host 侧代理注入 sidecar token（token 不出 Host）；两条前缀路由**仅接受回环地址**。
   配置见 [`dsh-plugin-ui/README.md`](dsh-plugin-ui/README.md)。
 - 独立面板 `{baseUrl}/panel` 仍然保留（单文件、零依赖、SSE 实时），适合不打开 DSH 时使用。
 - **迁移已完成**：`@deepseek-ai/dsh-experimental-agent-team-profile` 已从本 profile 的 bundles 移除，
@@ -121,7 +125,7 @@ plugin_manager(action: "install_bundle", target: "C:\\...\\agent-team-plugin\\ds
 | 文档 | 本文件 + [`docs/CONTRACT.md`](docs/CONTRACT.md) + [`docs/adr/`](docs/adr/) |
 | Demo | `demo/run-demo.mjs`、`demo/seed.mjs`（给运行中实例灌可交互演示数据） |
 | DSH 插件（工具） | `dsh-plugin/`（Host bundle：8 个 `team_*` 工具 + sidecar 生命周期） |
-| DSH 插件（界面） | `dsh-plugin-ui/`（Host 同源代理 + Client 页面：设置 → 插件 → dsh-team 控制台） |
+| DSH 插件（界面） | `dsh-plugin-ui/`（侧边栏「编排」入口 + 抽屉；默认嵌入 sidecar 自带 Web 面板，可切精简版） |
 
 ## 验收矩阵
 

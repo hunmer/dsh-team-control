@@ -13,6 +13,13 @@ const TIMELINE_CAP = 2000;
 const STORE_UI = 'dsh-team.panel.ui.v1';
 const STORE_LAST = 'dsh-team.panel.lastEventId.v1';
 const SVG_NS = 'http://www.w3.org/2000/svg';
+/* 同源嵌入模式（经 DSH Host 代理）：URL 形如 ?api=/dsh-team-api&embed=1，
+ * 此时 token 由 Host 注入，本页不需要也不接触 token。
+ * 不带参数时保持原行为：sidecar 独立端口 + URL hash token。 */
+const PANEL_PARAMS = new URLSearchParams(location.search);
+const API_BASE = String(PANEL_PARAMS.get('api') || '').replace(/\/+$/, '');
+const EMBEDDED = PANEL_PARAMS.get('embed') === '1' || API_BASE !== '';
+const apiUrl = (path) => (path.startsWith('http') ? path : API_BASE + path);
 const state = {
   token: '', urlParsed: false, booting: false, teamFromUrl: '', teamId: null, team: null,
   teams: [], initialized: false, noTeams: false,
@@ -104,7 +111,8 @@ class ApiError extends Error {
 }
 async function api(path, options) {
   const opts = options || {};
-  const headers = { Authorization: 'Bearer ' + state.token };
+  const headers = {};
+  if (state.token) headers.Authorization = 'Bearer ' + state.token;
   let body;
   if (opts.body !== undefined) {
     headers['Content-Type'] = 'application/json';
@@ -112,7 +120,7 @@ async function api(path, options) {
   }
   let response;
   try {
-    response = await fetch(path, { method: opts.method || 'GET', headers, body });
+    response = await fetch(apiUrl(path), { method: opts.method || 'GET', headers, body });
   } catch (err) {
     throw new ApiError('E_NETWORK', '网络请求失败（' + path + '）：' + (err && err.message ? err.message : String(err)), path);
   }
@@ -1111,10 +1119,11 @@ function handleSSEFrame(type, event) {
   }
 }
 async function probeAuth() {
-  if (state.authProbing || !state.token) return;
+  if (state.authProbing || (!state.token && !EMBEDDED)) return;
   state.authProbing = true;
   try {
-    const response = await fetch('/api/teams', { headers: { Authorization: 'Bearer ' + state.token } });
+    const headers = state.token ? { Authorization: 'Bearer ' + state.token } : {};
+    const response = await fetch(apiUrl('/api/teams'), { headers });
     if (response.status === 401) authOverlay();
   } catch (err) { /* 网络不可用：继续退避重连 */ }
   finally { state.authProbing = false; }
@@ -1129,11 +1138,12 @@ function scheduleReconnect() {
 }
 function connectSSE() {
   disconnectSSE();
-  if (!state.token || !state.teamId) return;
-  const query = new URLSearchParams({ team: state.teamId, token: state.token });
+  if ((!state.token && !EMBEDDED) || !state.teamId) return;
+  const query = new URLSearchParams({ team: state.teamId });
+  if (state.token) query.set('token', state.token);
   if (state.lastEventId > 0) query.set('lastEventId', String(state.lastEventId));
   let source;
-  try { source = new EventSource('/api/events?' + query.toString()); }
+  try { source = new EventSource(apiUrl('/api/events?' + query.toString())); }
   catch (err) { setConn('offline'); scheduleReconnect(); return; }
   state.es = source;
   setConn(state.reconnectAttempt > 0 ? 'reconnecting' : 'connecting');
@@ -1246,7 +1256,7 @@ async function boot() {
   state.booting = true;
   try {
     initUrlState();
-    if (!state.token) { setConn('offline'); missingTokenOverlay(); return; }
+    if (!state.token && !EMBEDDED) { setConn('offline'); missingTokenOverlay(); return; }
     hideOverlay();
     await refreshTeams();
     if (state.noTeams || !state.teams.length) { renderAll(); return; }

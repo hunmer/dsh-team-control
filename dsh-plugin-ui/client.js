@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
     const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
     const NS = 'dsh-team';
-    const API = '/dsh-team-api';
+    const API = '/dsh-team-api/api';
 
     const DICT = {
       zh: {
@@ -18,6 +18,10 @@ window.__ModuleLoader__.load({
         side_nav: '编排',
         close_panel: '关闭面板',
         loading_label: '加载中',
+        mode_web: '网页版',
+        mode_native: '精简版',
+        mode_web_hint: '直接嵌入 sidecar 自带 Web 面板：内容完全一致（7 视图 + SSE），但沿用面板自身配色',
+        mode_native_hint: 'DSH 原生渲染：跟随主题 token，5 个视图（由本插件实现）',
         team: '团队',
         refresh: '刷新',
         retry: '重试',
@@ -73,6 +77,10 @@ window.__ModuleLoader__.load({
         side_nav: 'Team',
         close_panel: 'Close panel',
         loading_label: 'Loading',
+        mode_web: 'Web page',
+        mode_native: 'Compact',
+        mode_web_hint: 'Embed the sidecar Web panel as-is: identical content (7 views + SSE), keeps the panel palette',
+        mode_native_hint: 'Native DSH rendering: follows theme tokens, 5 views implemented by this plugin',
         team: 'Team',
         refresh: 'Refresh',
         retry: 'Retry',
@@ -193,17 +201,21 @@ window.__ModuleLoader__.load({
 .dsht-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
 .dsht-actions .dsht-input { flex:1; min-width:140px; }
 .dsht-mini { font-size:10.5px; color:var(--dsw-alias-label-secondary); }
-.dsht-side-btn { display:flex; align-items:center; gap:8px; width:100%; background:none; border:none; color:var(--dsw-alias-label-secondary); padding:6px 8px; border-radius:6px; font-size:12px; cursor:pointer; text-align:left; }
-.dsht-side-btn:hover { background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-primary); }
-.dsht-side-btn[aria-pressed="true"] { color:var(--dsw-alias-brand-primary); }
-.dsht-side-icon { flex:none; width:16px; height:16px; display:inline-flex; }
-.dsht-side-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.dsht-overlay-root { position:fixed; inset:0; z-index:60; pointer-events:none; }
-.dsht-drawer { position:absolute; top:0; right:0; bottom:0; width:min(780px, 94vw); pointer-events:auto; display:flex; flex-direction:column; min-height:0; background:var(--dsw-alias-bg-layer-1); border-left:1px solid var(--dsw-alias-border-l2); box-shadow:-12px 0 32px rgba(0,0,0,.28); }
-.dsht-drawer-head { display:flex; align-items:center; gap:10px; padding:9px 14px; border-bottom:1px solid var(--dsw-alias-border-l1); }
-.dsht-drawer-title { font-size:13px; font-weight:600; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.dsht-drawer-body { flex:1; min-height:0; display:flex; overflow:hidden; }
-.dsht-drawer-body > * { flex:1; min-width:0; }
+.dsht-page { display:flex; flex-direction:column; height:100%; min-height:0; background:var(--dsw-alias-bg-base); color:var(--dsw-alias-label-primary); }
+.dsht-page-head { display:flex; align-items:center; gap:10px; padding:8px 14px; border-bottom:1px solid var(--dsw-alias-border-l1); flex:none; }
+.dsht-page-mark { display:inline-flex; color:var(--dsw-alias-brand-primary); }
+.dsht-page-title { font-size:13px; font-weight:600; white-space:nowrap; }
+.dsht-page-sub { font-size:11px; color:var(--dsw-alias-label-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dsht-spacer { flex:1; }
+.dsht-page-body { flex:1; min-height:0; display:flex; overflow:hidden; }
+.dsht-frame { width:100%; height:100%; border:0; display:block; background:var(--dsw-alias-bg-base); color-scheme:normal; }
+.dsht-panel-icon { display:inline-flex; align-items:center; justify-content:center; color:var(--dsw-alias-label-secondary); }
+.dsht-panel-icon.is-active { color:var(--dsw-alias-brand-primary); }
+.dsht-rail-btn { display:flex; align-items:center; gap:8px; width:100%; background:none; border:none; color:var(--dsw-alias-label-secondary); padding:6px 8px; border-radius:6px; font-size:12px; cursor:pointer; text-align:left; }
+.dsht-rail-btn:hover { background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-primary); }
+.dsht-rail-icon { flex:none; display:inline-flex; }
+.dsht-rail-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dsht-btn-mini { padding:2px 8px; font-size:11px; }
 `;
 
     const api = async (path, init) => {
@@ -537,64 +549,73 @@ window.__ModuleLoader__.load({
             tab === 'matrix' ? h(MatrixView, { matrix, t }) : null,
             tab === 'approvals' ? h(ApprovalsView, { pending, t, onDecide, busy }) : null)) : null);
     }
-
-    // ---------- 侧边栏入口 + 浮层抽屉（两个 Slot 共享开关状态） ----------
-    function createStore(init) {
-      let value = init;
-      const subs = new Set();
-      return {
-        get: () => value,
-        set: (next) => { value = next; for (const fn of [...subs]) { try { fn(); } catch { /* ignore */ } } },
-        subscribe: (fn) => { subs.add(fn); return () => { subs.delete(fn); }; },
-      };
-    }
-    function useStore(store) {
-      const [value, setValue] = useState(store.get);
-      useEffect(() => store.subscribe(() => setValue(store.get())), [store]);
-      return value;
-    }
-
-    function TeamIcon({ size = 16 }) {
-      return h('svg', { width: size, height: size, viewBox: '0 0 64 64', 'aria-hidden': true, focusable: 'false' },
-        h('rect', { x: 2, y: 2, width: 60, height: 60, rx: 14, fill: 'var(--dsw-alias-bg-layer-2)' }),
+    // ---------- 右侧栏 Tab（sidebar.right.pane.tab）+ 侧边栏入口 ----------
+    function TeamIcon({ size = 16, active = false }) {
+      return h('svg', {
+        width: size, height: size, viewBox: '0 0 64 64',
+        'aria-hidden': true, focusable: 'false', style: { display: 'block' },
+      },
+        h('rect', { x: 2, y: 2, width: 60, height: 60, rx: 14, fill: active ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-bg-layer-2)', opacity: active ? 0.2 : 1 }),
         h('rect', { x: 12, y: 14, width: 18, height: 14, rx: 3, fill: 'none', stroke: 'currentColor', strokeWidth: 4 }),
         h('rect', { x: 34, y: 14, width: 18, height: 14, rx: 3, fill: 'none', stroke: 'currentColor', strokeWidth: 4 }),
         h('rect', { x: 12, y: 36, width: 40, height: 14, rx: 3, fill: 'none', stroke: 'currentColor', strokeWidth: 4 }));
     }
 
-    function SidebarEntry({ t, store, wide }) {
-      const state = useStore(store);
-      return h('button', {
-        className: 'dsht-side-btn',
-        type: 'button',
-        title: t('title'),
-        'aria-pressed': state.open ? 'true' : 'false',
-        'aria-label': t('side_nav'),
-        onClick: () => store.set({ open: !store.get().open }),
-      },
-        h('span', { className: 'dsht-side-icon' }, h(TeamIcon, { size: 16 })),
-        wide ? h('span', { className: 'dsht-side-label' }, t('side_nav')) : null);
+    /** 侧边栏底部入口按钮：点击打开右侧栏 Tab（按钮外壳归 sidebar，宽带/轨道态由 wide 决定）。 */
+    function railEntry(t, open) {
+      return function RailEntry(props) {
+        const wide = !(props && props.wide === false);
+        return h('button', {
+          className: 'dsht-rail-btn', type: 'button',
+          title: t('title'), 'aria-label': t('side_nav'),
+          onClick: () => { try { open(); } catch (e) { console.warn('[dsh-team] openTab failed', e); } },
+        },
+          h('span', { className: 'dsht-rail-icon' }, h(TeamIcon, { size: 16 })),
+          wide ? h('span', { className: 'dsht-rail-label' }, t('side_nav')) : null);
+      };
     }
 
-    function TeamDrawer({ t, store }) {
-      const state = useStore(store);
-      useEffect(() => {
-        if (!state.open) return undefined;
-        const onKey = (e) => { if (e.key === 'Escape') store.set({ open: false }); };
-        window.addEventListener('keydown', onKey);
-        return () => window.removeEventListener('keydown', onKey);
-      }, [state.open, store]);
-      if (!state.open) return null;
-      return h('div', { className: 'dsht-overlay-root' },
-        h('aside', { className: 'dsht-drawer', role: 'dialog', 'aria-label': t('title') },
-          h('div', { className: 'dsht-drawer-head' },
-            h('span', { className: 'dsht-side-icon' }, h(TeamIcon, { size: 16 })),
-            h('span', { className: 'dsht-drawer-title' }, t('title')),
-            h('button', {
-              className: 'dsht-btn', type: 'button', title: t('close_panel'), 'aria-label': t('close_panel'),
-              onClick: () => store.set({ open: false }),
-            }, '✕')),
-          h('div', { className: 'dsht-drawer-body' }, h(Panel, { t }))));
+    /** 侧边栏图标（回退：中央面板入口，由 sidebar 按 id 调 layout.selectPanel） */
+    function panelIcon(t) {
+      return function PanelIcon(props) {
+        const size = Math.max(12, Number(props && props.size) || 16);
+        const active = !!(props && props.active);
+        return h('span', {
+          className: 'dsht-panel-icon' + (active ? ' is-active' : ''),
+          title: t('title'), 'aria-label': t('side_nav'), role: 'img',
+        }, h(TeamIcon, { size, active }));
+      };
+    }
+
+    /** 面板主体：默认「网页版」iframe 复用 sidecar 自带 /panel，可切「精简版」原生渲染。 */
+    function TeamView({ t, compact }) {
+      const [mode, setMode] = useState('web');
+      const web = mode === 'web';
+      return h('div', { className: 'dsht-page' },
+        h('style', null, CSS),
+        h('header', { className: 'dsht-page-head' },
+          h('span', { className: 'dsht-page-mark' }, h(TeamIcon, { size: compact ? 14 : 16 })),
+          h('span', { className: 'dsht-page-title' }, t('title')),
+          compact ? null : h('span', { className: 'dsht-page-sub' }, web ? t('mode_web_hint') : t('mode_native_hint')),
+          h('span', { className: 'dsht-spacer' }),
+          h('button', {
+            className: 'dsht-btn' + (compact ? ' dsht-btn-mini' : ''), type: 'button',
+            'aria-pressed': web ? 'true' : 'false', title: t('mode_web_hint'),
+            onClick: () => setMode('web'),
+          }, t('mode_web')),
+          h('button', {
+            className: 'dsht-btn' + (compact ? ' dsht-btn-mini' : ''), type: 'button',
+            'aria-pressed': web ? 'false' : 'true', title: t('mode_native_hint'),
+            onClick: () => setMode('native'),
+          }, t('mode_native'))),
+        h('div', { className: 'dsht-page-body' },
+          web
+            ? h('iframe', {
+              className: 'dsht-frame',
+              title: t('title'),
+              src: '/dsh-team-api/panel?api=/dsh-team-api&embed=1',
+            })
+            : h(Panel, { t })));
     }
 
     return {
@@ -609,24 +630,48 @@ window.__ModuleLoader__.load({
         const t = ctx.locale && typeof ctx.locale.bind === 'function'
           ? ctx.locale.bind(NS)
           : (key) => DICT.zh[key] || key;
-        const store = createStore({ open: false });
-        const Entry = (props) => h(SidebarEntry, { t, store, wide: !(props && props.wide === false) });
-        const Drawer = () => h(TeamDrawer, { t, store });
+        const getService = (name) => {
+          try {
+            if (typeof ctx.get === 'function') return ctx.get(name);
+            return ctx[name];
+          } catch { return undefined; }
+        };
+        const sidebarRight = getService('sidebarRight');
+        const sidebarRightTabs = getService('sidebarRightTabs');
         const disposers = [];
-        // 入口：侧边栏底部 Settings 旁（展开态显示文字，56px 轨道态只显示图标）
-        disposers.push(ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
-          name: 'sidebar.footer.action',
-          id: 'dsh-team',
-          order: 30,
-          label: () => t('side_nav'),
-        }, Entry)));
-        // 面板：frame-wide 浮层里的右侧抽屉（overlay 本身穿透，抽屉自己接管 pointer events）
-        disposers.push(ctx.slots.inject('shell.overlay', () => ctx.slots.register({
-          name: 'shell.overlay',
-          id: 'dsh-team-panel',
-          order: 40,
-          label: () => t('title'),
-        }, Drawer)));
+
+        if (sidebarRight && sidebarRightTabs && typeof sidebarRight.openTab === 'function') {
+          // 右侧栏 Tab：id 是 body/title 槽的 key，kind 是 openTab 的名字
+          disposers.push(sidebarRightTabs.register({
+            id: 'dsh-team',
+            kind: 'dsh-team',
+            priority: 'extension',
+            title: () => t('side_nav'),
+          }));
+          disposers.push(ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
+            name: 'sidebar.right.pane.tab',
+            key: 'dsh-team',
+          }, () => h(TeamView, { t, compact: true }))));
+          // 入口：侧边栏底部按钮 → 打开右侧栏 Tab
+          disposers.push(ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
+            name: 'sidebar.footer.action',
+            id: 'dsh-team',
+            order: 30,
+            label: () => t('side_nav'),
+          }, railEntry(t, () => sidebarRight.openTab('dsh-team')))));
+        } else {
+          // 回退：服务不可用时用中央停靠面板（与「插件」页同级）
+          disposers.push(ctx.slots.inject('main', () => ctx.slots.register({
+            name: 'main',
+            key: 'dsh-team',
+          }, () => h(TeamView, { t, compact: false }))));
+          disposers.push(ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+            name: 'sidebar.panellist',
+            id: 'dsh-team',
+            order: 20,
+            label: () => t('side_nav'),
+          }, panelIcon(t))));
+        }
         return () => { for (const d of disposers.reverse()) { try { d(); } catch { /* ignore */ } } };
       },
     };

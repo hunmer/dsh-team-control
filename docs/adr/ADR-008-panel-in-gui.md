@@ -17,26 +17,50 @@ PRD D-9 写的是「独立端口，可选 iframe 嵌入 DSH GUI」。实现时�
 ## 决策
 
 - 新增独立 bundle [`dsh-plugin-ui`](../dsh-plugin-ui/)，与工具 bundle 解耦：
-  - **Client half** 在**左侧边栏底部**（`sidebar.footer.action`，Settings 旁）注册「编排 / Team」
-    入口按钮；点击后在 `shell.overlay` 里滑出右侧抽屉，承载 5 个视图：成员看板 / DAG /
-    事件时间线 / 权限矩阵 / 越界审批。
-  - **Host half** 在 DSH 的 `webServer` 上注册同源前缀路由 `/dsh-team-api/**`，
-    代理到 sidecar 并在 Host 侧注入 `Authorization: Bearer <token>`；SSE 直接透传。
-  - 该路由**只接受回环来源**（非 `127.0.0.1/::1` 返回 403 `E_LOCAL_ONLY`），
+  - **Client half** 在**右侧边栏**注册一个 Tab 类型：
+    `ctx.sidebarRightTabs.register({ id: 'dsh-team', kind: 'dsh-team', priority: 'extension' })`，
+    内容槽 `sidebar.right.pane.tab`（key = 类型 `id`）。入口是**左侧边栏底部按钮**
+    （`sidebar.footer.action`）→ 点击调 `ctx.sidebarRight.openTab('dsh-team')` 打开右侧栏 Tab，
+    与「文件 / 终端 / 指南」等内置 Tab 同机制。
+  - 这两个服务由 `@deepseek-ai/dsh-client-ui-sidebar-right` 通过 `ctx.reflect.provide` 提供
+    （`sidebarRight` / `sidebarRightTabs`），不在 inspect 的 Service 目录里；服务不可用时
+    自动回退到中央面板（`main` + `sidebar.panellist`）。
+  - **Tab 内默认「网页版」**：iframe 直接加载 sidecar 自带面板 `/panel`，内容与
+    `:4317/panel` **完全一致**（7 视图 + SSE + 消息 + 报告导出），单一实现、零漂移。
+    头部可切「精简版」（本插件 React 重写、5 视图）。
+  - **Host half** 在 DSH 的 `webServer` 上注册两条同源前缀路由：
+    `/dsh-team-api/**`（透传到 sidecar 根，即数据与 SSE）与 `/panel/**`（面板本体与静态资源，
+    因为 `panel.html` 用绝对 `/panel/app.js|css` 引用）；代理在 Host 侧注入
+    `Authorization: Bearer <token>`，浏览器永远拿不到 token。
+  - 两条路由**只接受回环来源**（非 `127.0.0.1/::1` 返回 403 `E_LOCAL_ONLY`），
     因为 `webServer` 的路由不在 DSH 自身 `/api` 鉴权链上。
-- 独立端口面板 `{baseUrl}/panel` **保留**：它是零依赖单文件实现，适合不开 DSH 时使用。
+  - 面板本体为此加了同源嵌入模式：`?api=<base>&embed=1` 时所有请求/SSE 前缀到该 base，
+    且不再要求 hash token（token 由 Host 注入）。
+- 独立端口面板 `{baseUrl}/panel` **保留**：不带参数时行为不变，适合不开 DSH 时使用。
 
-### 为什么不是右侧栏 Tab、也不是设置页
+### 承载方式的演进（为什么最终是右侧栏 Tab）
 
-- 客户端没有「创建右侧栏 Tab」的公开接口：`sidebar.right.pane.tab` 只接收「Tab 类型为 kind 的
-  内容」，而 Tab 记录归 `dsh-better-sidebar` 所有，插件无法自行创建。
-- 先试过 `settings.plugins.tab`，但入口埋在「设置 → 插件」里，用户实测反馈找不到。
-- 因此用**侧边栏入口 + overlay 抽屉**：入口在侧边栏一眼可见，面板覆盖在应用之上但可关闭；
-  `shell.overlay` 本身就是「frame-wide floating layer」，且层本身穿透、抽屉自己接管 pointer events。
+1. `settings.plugins.tab`：入口埋在「设置 → 插件」里，用户实测找不到。
+2. `shell.overlay` 抽屉：能显示但**浮在应用之上**，被否。
+3. `main` 中央面板：正式扩展点（与 Plugins/Schedules 同级），但用户要的是**侧边栏**。
+4. `sidebar.right.pane.tab`：一开始判为不可行（它只是内容槽，Tab 记录归 sidebar-right 包）。
+   实际上该包暴露了 `sidebarRight`（`openTab/close/openTabIn`）与 `sidebarRightTabs`
+   （`register` 类型）两个服务——契约在 `lib/types/client/service.d.ts` 与
+   `tab-registry.d.ts`。注册类型 + 内容槽 + `openTab(kind)` 即可，无需自己创建 Tab 记录。
+
+### 关于 iframe 的取舍（有意偏离插件规范建议）
+
+插件规范建议 UI 用 React 组件渲染在 Slot 里，不要 Host 提供 HTML + iframe（拿不到主题 token）。
+最初因此用 React 重写，但实测出现**双实现漂移**（视图数量、轮询 vs SSE、消息/报告缺失），
+用户明确要求「直接用 web 的页面」。最终取「iframe 复用同一份页面」：
+- 收益：内容 100% 一致、只有一份 UI 实现、SSE 实时性保留、token 不下发。
+- 代价：iframe 不继承 DSH 主题/locale，沿用面板自有配色；跨文档交互（如跳转会话）不可用。
+- 兜底：保留「精简版」React 渲染，偏好主题一致性时可切换。
 
 ## 后果
 
-- ✅ 面板真正嵌进 GUI，跟随主题/明暗/locale；浏览器永远看不到 sidecar token。
+- ✅ 面板在**右侧栏 Tab** 内停靠，与文件/终端等内置 Tab 同机制；浏览器永远看不到 sidecar token。
+- ⚠️「网页版」是 iframe，不继承 DSH 主题（沿用面板配色）；要主题一致切「精简版」。
 - ✅ 工具与界面分成两个可用独立安装/卸载的 bundle，互不影响。
 - ⚠️ 视觉渲染未能在本环境用浏览器验证（无浏览器控制）：已验证 JS 语法、Slot 注册
   （`Slots.listSubTree` 出现 `id: dsh-team, active: true`）、同源代理与全部数据端点、
