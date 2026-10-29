@@ -26,6 +26,8 @@ export interface Member {
   pct?: number;
   stale?: boolean;
   blockers?: Blocker[];
+  /** member.created_at，列表按它排序 */
+  createdAt?: string;
 }
 
 export interface DagEdge {
@@ -94,6 +96,8 @@ export interface TeamMessage {
   kind?: string;
   status?: string;
   correlationId?: string;
+  /** 消息正文等业务负载（team_send 写入 { text }） */
+  payload?: Record<string, unknown>;
   sentAt?: string;
   deliveredAt?: string;
   readAt?: string;

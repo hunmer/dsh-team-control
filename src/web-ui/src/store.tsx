@@ -384,6 +384,7 @@ export function PanelProvider({ children }: { children: ReactNode }) {
   /* ---------- SSE ---------- */
   const memberName = useCallback((id?: string | null): string => {
     if (!id) return '—';
+    if (id === 'lead') return 'Lead';
     const member = stateRef.current.members.find((m) => m.id === id);
     return member?.name || id;
   }, []);

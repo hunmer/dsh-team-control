@@ -317,6 +317,7 @@ export class DshTeam {
     const idx = Number.isInteger(last?.meta?.stepIndex) ? last.meta.stepIndex : -1;
     return {
       id: m.id, teamId: m.team_id, name: m.name, role: m.role, model: m.model, contextMode: m.context_mode,
+      createdAt: m.created_at,
       agentSessionId: m.agent_session_id ?? null,
       status: st.status, leaseUntil: rt.leaseUntil, currentTaskId: task?.id ?? null,
       step: st.step, seq: st.seq, last: st.last, next: st.next,

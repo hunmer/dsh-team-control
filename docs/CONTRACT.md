@@ -160,7 +160,7 @@ root(run:team)                         ← 团队整体
 ### 3.5 消息
 | 方法 路径 | 请求/说明 |
 |---|---|
-| `POST /api/messages` | `{teamId?, from, to, kind?, payload, correlationId?, ttlSeconds?}` → `{message}` |
+| `POST /api/messages` | `{teamId?, from, to, kind?, payload, correlationId?, ttlSeconds?}` → `{message}`；`to` 为成员 id、`'*'`（广播）或虚拟收件人 `'lead'`（成员留言给 Lead，只落信箱、面板可回看，不做投递） |
 | `GET /api/messages?team=&correlation=&member=&status=` | `{items:[message]}` |
 | `POST /api/messages/{id}/ack` | `{state:"read"\|"acked"}` → `{message}` |
 

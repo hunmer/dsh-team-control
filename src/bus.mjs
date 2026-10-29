@@ -34,7 +34,8 @@ export class MessageBus {
     if (!to) throw ERR.bad('to required');
     const recipients = to === '*' ? this.get('SELECT id FROM member WHERE team_id=?').all(teamId).map((r) => r.id).filter((x) => x !== from) : [to];
     if (!recipients.length) throw ERR.bad('no recipients');
-    for (const r of recipients) if (!this.member(teamId, r)) throw ERR.notFound(`member ${r}`);
+    // 'lead' 是虚拟收件人（团队没有 lead 成员行）：成员给 Lead 的留言只落信箱，方便面板回看。
+    if (to !== 'lead') for (const r of recipients) if (!this.member(teamId, r)) throw ERR.notFound(`member ${r}`);
 
     const sentAt = nowIso();
     const safePayload = redactor.obj(payload);   // FR-3.8：敏感值在**落库前**脱敏
