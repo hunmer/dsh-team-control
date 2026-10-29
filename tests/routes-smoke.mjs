@@ -54,6 +54,24 @@ try {
   const restored = (await hit('POST /api/teams/{id}/restore', 'POST', `/api/teams/${team.id}/restore`, {})).json;
   assert(restored.archivedAt == null, 'restore 清空 archivedAt');
   await hit('PATCH /api/settings 复位', 'PATCH', '/api/settings', { autoArchive: { enabled: true, days: 7 } });
+  // 成员产物（Host 插件推送）
+  const taskRow = (await hit('POST /api/tasks', 'POST', '/api/tasks', { teamId: team.id, subject: 'artifact-task' })).json;
+  const added = (await hit('POST /api/artifacts', 'POST', '/api/artifacts', {
+    teamId: team.id, taskId: taskRow.id, memberId: null,
+    items: [{ path: 'outline.md', label: '大纲', source: 'present', added: 12, deleted: 3 }, { path: 'docs/novel.md', label: '正文', source: 'workspace', added: 40, deleted: 0 }],
+  })).json;
+  assert(added.items.length === 2, 'artifacts 写入 2 条');
+  const listed = (await hit('GET /api/artifacts', 'GET', `/api/artifacts?team=${team.id}`)).json.items;
+  assert(listed.length === 2 && listed.some((a) => a.path === 'outline.md' && a.label === '大纲'), 'artifacts 可按团队列出');
+  assert(listed.find((a) => a.path === 'outline.md').added === 12 && listed.find((a) => a.path === 'outline.md').deleted === 3, 'artifacts 保留新增/删除行数');
+  const byTask = (await hit('GET /api/artifacts?task', 'GET', `/api/artifacts?team=${team.id}&task=${taskRow.id}`)).json.items;
+  assert(byTask.length === 2, 'artifacts 可按任务过滤');
+  // 同路径再写一次：覆盖而不是新增
+  await hit('POST /api/artifacts 覆盖', 'POST', '/api/artifacts', { teamId: team.id, taskId: taskRow.id, items: [{ path: 'outline.md', label: '大纲 v2' }] });
+  const afterOverwrite = (await hit('GET /api/artifacts 覆盖后', 'GET', `/api/artifacts?team=${team.id}`)).json.items;
+  assert(afterOverwrite.length === 2 && afterOverwrite.find((a) => a.path === 'outline.md').label === '大纲 v2', '同路径覆盖为最新');
+  assert(afterOverwrite.find((a) => a.path === 'outline.md').added === 12, '覆盖时未带行数则保留旧行数');
+  await hit('GET /api/artifacts 缺 team(400)', 'GET', '/api/artifacts', undefined, 400);
   await hit('POST /api/policies', 'POST', '/api/policies', { teamId: team.id, subjectType: 'team', subjectId: team.id, domain: 'fs', matcher: '**', ops: ['write', 'delete'], mode: 'allow' });
   const pols = (await hit('GET /api/policies', 'GET', `/api/policies?team=${team.id}`)).json;
   await hit('DELETE /api/policies/{id}', 'DELETE', `/api/policies/${pols.items.find((p) => p.matcher === '**' && p.domain === 'fs' && p.mode === 'allow').id}`);

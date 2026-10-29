@@ -244,6 +244,17 @@ root(run:team)                         ← 团队整体
 
 `autoArchive` 存在 `meta.panel_settings`（全局，不区分团队）。`GET /api/teams`（未带 `archived=1`）会顺带执行一次自动封存扫描：超过 `days` 天没有任何活动（取 team.updated_at / event / task / member 更新时间最大值）且没有 running/blocked 成员的团队，写入 `archivedAt`。
 
+### 3.11 成员产物
+
+| 方法 路径 | 请求 | 响应 |
+|---|---|---|
+| `POST /api/artifacts` | `{teamId, taskId?, memberId?, items:[{path, label?, source?}]}` | `{items:[artifact]}`，`source` 取 `present`(默认) / `workspace` |
+| `GET /api/artifacts?team={id}&task={id}?&limit={n}?` | — | `{asOf, items:[artifact]}`，按 `createdAt` 升序 |
+
+`artifact = {id, teamId, taskId, memberId, path, label, source, createdAt}`。同一团队同一 `path` 只有一条：再次上报覆盖为最新（`taskId`/`label`/`source` 一起更新），因此成员重复交付同一文件不会堆出重复行。
+
+数据来源是 Host 插件：成员调用 `team_report_task` 时，插件读取该成员的 DSH 会话——优先取 `present` 工具声明过的交付文件（`files[].path/description`），其次取 `workspace/changes` 事件记录的改动文件（经 `ctx.workspaceChanges.summary` 拿 summary），再 `POST` 到这里。采集失败不影响任务汇报。前端「实时收件箱」按 `taskId` 分组展示为产物列表。
+
 ---
 
 ## 4. SSE

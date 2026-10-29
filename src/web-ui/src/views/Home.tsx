@@ -23,6 +23,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/
 import {
   AgentInbox,
   type AgentTask,
+  type AgentTaskArtifact,
   type AgentTaskStatus,
   type AgentTaskStep,
 } from '@/components/agent-inbox';
@@ -92,7 +93,7 @@ function eventStatus(entry: TimelineEntry): 'running' | 'success' | 'error' {
 export function HomeView() {
   const { state, decideScope, refreshAll, setTab, setFilterMember, memberName, toast } =
     usePanel();
-  const { dag, tasks, todos, scopeRequests, timeline, members } = state;
+  const { dag, tasks, todos, scopeRequests, timeline, members, artifacts } = state;
 
   /** 点击收件箱卡片的 Open 时切换 Plan/Activity 跟随的任务。 */
   const [selectedId, setSelectedId] = useState('');
@@ -107,18 +108,17 @@ export function HomeView() {
     return map;
   }, [dag, tasks]);
 
-  /** 任务 id → 最近 4 条真实事件（时间线回填里带 taskId 的条目）。 */
-  const stepsByTask = useMemo(() => {
-    const map = new Map<string, AgentTaskStep[]>();
-    for (const entry of timeline) {
-      if (!entry.taskId) continue;
-      const list = map.get(entry.taskId) ?? [];
-      list.push(stepOf(entry));
-      if (list.length > 4) list.shift();
-      map.set(entry.taskId, list);
+  /** 任务 id → 成员产物（/api/artifacts：Host 插件从成员会话采集的交付文件）。 */
+  const artifactsByTask = useMemo(() => {
+    const map = new Map<string, AgentTaskArtifact[]>();
+    for (const item of artifacts) {
+      if (!item.taskId) continue;
+      const list = map.get(item.taskId) ?? [];
+      list.push({ path: item.path, label: item.label, source: item.source, added: item.added ?? null, deleted: item.deleted ?? null });
+      map.set(item.taskId, list);
     }
     return map;
-  }, [timeline]);
+  }, [artifacts]);
 
   const taskById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
 
@@ -226,7 +226,7 @@ export function HomeView() {
           status,
           startedAt,
           elapsed: status === 'done' ? elapsedOf(row) : undefined,
-          steps: stepsByTask.get(node.taskId) ?? [],
+          artifacts: artifactsByTask.get(node.taskId) ?? [],
         };
       })
       .filter((task): task is AgentTask => task !== null);
@@ -239,7 +239,7 @@ export function HomeView() {
       const at = (task: AgentTask) => (typeof task.startedAt === 'number' ? task.startedAt : 0);
       return at(b) - at(a);
     });
-  }, [scopeRequests, dag, taskById, stepsByTask, memberName, modelByMember]);
+  }, [scopeRequests, dag, taskById, artifactsByTask, memberName, modelByMember]);
 
   const queued = (dag?.nodes ?? []).filter((node) => !laneStatus(node.status ?? '')).length;
   const staleMembers = members.filter((member) => member.stale).length;

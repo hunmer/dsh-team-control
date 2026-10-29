@@ -108,6 +108,10 @@ export function createRoutes(core) {
     ['DELETE', /^\/api\/deps\/([^/]+)$/, async (ctx) => C.scheduler.removeDep(Number(ctx.p[0]))],
     ['GET', /^\/api\/dag$/, async (ctx) => C.scheduler.dag(need(qs(ctx.url).get('team'), 'team'))],
 
+    // 成员产物（Host 插件采集 present / workspace 变更后推送到这里）
+    ['GET', /^\/api\/artifacts$/, async (ctx) => C.listArtifacts(need(qs(ctx.url).get('team'), 'team'), { taskId: qs(ctx.url).get('task'), limit: qs(ctx.url).get('limit') })],
+    ['POST', /^\/api\/artifacts$/, async (ctx) => C.addArtifacts(ctx.body)],
+
     // status / steps / blockers / metrics
     ['GET', /^\/api\/status$/, async (ctx) => C.status({ teamId: qs(ctx.url).get('team'), memberId: qs(ctx.url).get('member') })],
     ['GET', /^\/api\/steps$/, async (ctx) => C.steps(need(qs(ctx.url).get('member'), 'member'), qs(ctx.url).get('since') || 0, qs(ctx.url).get('limit') || 200)],

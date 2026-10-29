@@ -188,7 +188,7 @@ export class DshTeam {
         this.get('DELETE FROM member_state WHERE member_id=?').run(id);
         this.get('DELETE FROM member_runtime WHERE member_id=?').run(id);
       }
-      for (const table of ['member', 'task', 'dep', 'event', 'policy', 'scope_request', 'scope_grant', 'decision', 'message', 'todo', 'audit', 'span']) {
+      for (const table of ['member', 'task', 'dep', 'event', 'policy', 'scope_request', 'scope_grant', 'decision', 'message', 'todo', 'audit', 'span', 'artifact']) {
         this.get(`DELETE FROM ${table} WHERE team_id=?`).run(teamId);
       }
       this.get('DELETE FROM team WHERE id=?').run(teamId);
@@ -1139,6 +1139,41 @@ export class DshTeam {
 
   listMessages(teamId, filter = {}) { return { asOf: nowIso(), version: this.scheduler.version(teamId), items: this.bus.list(teamId, filter) }; }
   ackMessage(id, state) { return this.bus.ack(id, state); }
+
+  // ---------- 产物 ----------
+  artifactView(r) {
+    const num = (v) => (v == null ? null : Number(v));
+    return { id: r.id, teamId: r.team_id, taskId: r.task_id ?? null, memberId: r.member_id ?? null, path: r.path, label: r.label ?? '', source: r.source, added: num(r.added), deleted: num(r.deleted), createdAt: r.created_at };
+  }
+  listArtifacts(teamId, { taskId = null, limit = 200 } = {}) {
+    let sql = 'SELECT * FROM artifact WHERE team_id=?'; const args = [teamId];
+    if (taskId) { sql += ' AND task_id=?'; args.push(taskId); }
+    sql += ' ORDER BY created_at DESC LIMIT ?'; args.push(Math.max(1, Math.min(500, Number(limit) || 200)));
+    return { asOf: nowIso(), items: this.get(sql).all(...args).map((r) => this.artifactView(r)).reverse() };
+  }
+  /** 成员会话里的交付文件（present 声明 / workspace 变更）。同团队同路径覆盖为最新。 */
+  addArtifacts(input = {}) {
+    const teamId = input.teamId;
+    this.getTeam(teamId);
+    if (!Array.isArray(input.items)) throw ERR.bad('items must be an array');
+    const t = nowIso();
+    const saved = [];
+    for (const item of input.items.slice(0, 50)) {
+      const p = item && item.path != null ? String(item.path).trim() : '';
+      if (!p) continue;
+      const path_ = p.slice(0, 400);
+      const id = newId('art');
+      const added = item.added == null || !Number.isFinite(Number(item.added)) ? null : Math.max(0, Number(item.added));
+      const deleted = item.deleted == null || !Number.isFinite(Number(item.deleted)) ? null : Math.max(0, Number(item.deleted));
+      this.get(`INSERT INTO artifact (id, team_id, task_id, member_id, path, label, source, added, deleted, created_at)
+                 VALUES (?,?,?,?,?,?,?,?,?,?)
+                 ON CONFLICT(team_id, path) DO UPDATE SET task_id=excluded.task_id, member_id=excluded.member_id, label=excluded.label, source=excluded.source, added=COALESCE(excluded.added, artifact.added), deleted=COALESCE(excluded.deleted, artifact.deleted), created_at=excluded.created_at`)
+        .run(id, teamId, input.taskId ?? null, input.memberId ?? null, path_, String(item.label ?? '').slice(0, 300), item.source === 'workspace' ? 'workspace' : 'present', added, deleted, t);
+      saved.push(this.artifactView(this.get('SELECT * FROM artifact WHERE team_id=? AND path=?').get(teamId, path_)));
+    }
+    try { this.sse.broadcastSynthetic('artifact.added', { teamId, taskId: input.taskId ?? null, count: saved.length }, { teamId }); } catch { /* ignore */ }
+    return { items: saved };
+  }
 
   // ---------- 待办 ----------
   todoView(r) {
