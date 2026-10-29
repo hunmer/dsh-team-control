@@ -113,6 +113,25 @@ export interface TimelineEntry {
   next?: string;
 }
 
+/** GET /api/tasks 的任务（sidecar 持久化的完整任务行，含时间戳）。 */
+export interface Task {
+  id: string;
+  teamId: string;
+  subject: string;
+  assignee?: string | null;
+  status: string;
+  plan?: unknown[];
+  writeScopes?: string[];
+  acceptance?: string | null;
+  attempts?: number;
+  maxAttempts?: number;
+  failurePolicy?: string | null;
+  priority?: number;
+  attemptedAt?: string | null;
+  finishedAt?: string | null;
+  createdAt?: string;
+}
+
 export interface Team {
   id: string;
   name?: string;
