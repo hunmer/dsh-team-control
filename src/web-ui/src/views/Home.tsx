@@ -1,25 +1,32 @@
 /**
- * 主页 = AffectUI `AgentInbox` 组件（vendored 在 src/affectui/agent-inbox.tsx）。
+ * 主页 = AffectUI 组件 + 真实 sidecar 数据（不保留 demo 数据）。
  *
- * 三列看板的每一张卡都来自 sidecar 的真实数据：
- * - `Needs you` 列：`GET /api/scope-requests?status=pending` 的越界申请（Approve/Reject → `POST /api/scope-requests/:id/decide`）；
- * - `Running` / `Done` 列：`GET /api/tasks` + `GET /api/dag` 的活跃任务（标题、成员、起止时间都是落盘行）；
- * - 卡片展开后的步骤：`GET /api/events/history` 里该任务的 `task.dispatch` / `task.retry` / `task.done` 等真实事件；
- * - `Open` → 时间线视图并按该成员过滤；`Retry`（仅失败任务）→ 按原任务参数重建一条任务重新排队。
+ * 左列：Plan（任务计划清单，来自 `team_todo` 工具写入的 /api/todos）+ Activity（任务事件流；
+ *        两者都按「当前选中的任务」过滤）。
+ * 右列：`AgentInbox` 三列看板（Needs / Running / Done）。
  *
- * 未派发 / 阻塞的任务没有可执行的真实动作，不进看板，只在底部汇总一条提示。
+ * 真实数据源：
+ * - `GET /api/scope-requests?status=pending` → Needs you 卡；Approve/Reject → POST decide；
+ * - `GET /api/tasks` + `GET /api/dag` → 任务卡（标题、成员、起止时间、验收标准）；
+ * - `GET /api/todos?team=` → Plan 清单（Leader/成员用 team_todo 维护）；
+ * - `GET /api/events/history` → Activity；卡片展开的步骤也用这些事件；
+ * - Open → 选中该任务（Plan/Activity 跟随）；Retry（失败任务）→ 按原参数重建任务再排队。
  */
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
+import { ClipboardList, ListTree } from 'lucide-react';
 import { usePanel } from '@/store';
 import { api } from '@/lib/api';
-import { fmtClock } from '@/lib/format';
-import type { ScopeRequest, Task, TimelineEntry } from '@/types';
+import { fmtClockSec } from '@/lib/format';
+import type { ScopeRequest, Task, TimelineEntry, Todo } from '@/types';
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import {
   AgentInbox,
   type AgentTask,
   type AgentTaskStatus,
   type AgentTaskStep,
 } from '@/affectui/agent-inbox';
+import { PlanSteps, type PlanStep, type PlanStepStatus } from '@/affectui/plan-steps';
+import { ToolCall } from '@/affectui/tool-calls';
 
 const SCOPE_PREFIX = 'scope:';
 
@@ -31,19 +38,30 @@ function laneStatus(status: string): AgentTaskStatus | null {
   return null;
 }
 
-/** `task.dispatch` / `task.retry` / `task.done` / `task.fail` → 卡片步骤文案。 */
+/** sidecar todo.status → PlanSteps 状态。blocked 不是失败，按未开始渲染，阻塞原因走 detail。 */
+const PLAN_STATUS: Record<string, PlanStepStatus> = {
+  open: 'pending',
+  active: 'active',
+  done: 'done',
+  blocked: 'pending',
+  skipped: 'skipped',
+};
+
+/** `task.dispatch` / `task.retry` / `task.done` / `task.fail` / `task.todo` → 卡片步骤文案。 */
 const ACTION_LABELS: Record<string, string> = {
   'task.dispatch': '派发',
   'task.retry': '重试',
   'task.done': '完成',
   'task.fail': '失败',
+  'task.todo': '更新计划',
+  'scope.request': '越界申请',
 };
 
 function stepOf(entry: TimelineEntry): AgentTaskStep {
   const action = entry.action || entry.phase;
   return {
     label: ACTION_LABELS[action] ?? action,
-    time: fmtClock(entry.ts),
+    time: fmtClockSec(entry.ts),
   };
 }
 
@@ -61,10 +79,23 @@ function elapsedOf(task?: Task): number | undefined {
   return end !== undefined && start !== undefined ? Math.max(0, end - start) : undefined;
 }
 
+/** 事件结果 → ToolCall 状态。落盘 result 是 OK / BLOCKED / FAIL 之类的短串。 */
+function eventStatus(entry: TimelineEntry): 'running' | 'success' | 'error' {
+  const result = String(entry.result ?? '').toUpperCase();
+  if (/FAIL|ERROR|DENIED|BLOCKED|TIMEOUT|ABORT/.test(result)) return 'error';
+  if (!result && (entry.phase === 'wait' || entry.phase === 'step')) return 'running';
+  return 'success';
+}
+
 export function HomeView() {
   const { state, decideScope, refreshAll, setTab, setFilterMember, memberName, toast } =
     usePanel();
-  const { dag, tasks, scopeRequests, timeline, members } = state;
+  const { dag, tasks, todos, scopeRequests, timeline, members } = state;
+
+  /** 点击收件箱卡片的 Open 时切换 Plan/Activity 跟随的任务。 */
+  const [selectedId, setSelectedId] = useState('');
+  /** 展开更多 Activity 条数（默认最近 20 条）。 */
+  const [activityLimit, setActivityLimit] = useState(20);
 
   /** 任务 id → 成员 id，供 Open 过滤时间线使用。 */
   const assignees = useMemo(() => {
@@ -87,10 +118,54 @@ export function HomeView() {
     return map;
   }, [timeline]);
 
-  const taskById = useMemo(
-    () => new Map(tasks.map((task) => [task.id, task])),
-    [tasks],
+  const taskById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
+
+  /** 默认跟随：最新一个运行中的任务；否则最近的任务行。 */
+  const fallbackId = useMemo(() => {
+    const running = [...(dag?.nodes ?? [])].reverse().find((node) =>
+      ['in_progress', 'running', 'assigned'].includes(node.status ?? ''),
+    );
+    if (running) return running.taskId;
+    const latestTask = [...tasks].reverse().find((task) => task.status !== 'pending');
+    return latestTask?.id ?? dag?.nodes?.[dag.nodes.length - 1]?.taskId ?? '';
+  }, [dag, tasks]);
+
+  const activeId = selectedId || fallbackId;
+  const activeNode = (dag?.nodes ?? []).find((node) => node.taskId === activeId);
+  const activeTask = taskById.get(activeId);
+  const activeMemberId = activeNode?.assignee ?? activeTask?.assignee ?? assignees.get(activeId);
+  const activeTitle =
+    activeNode?.subject || activeTask?.subject || (activeId ? activeId : '未选择任务');
+  const activeDone = activeTask?.status === 'done' || activeNode?.status === 'done';
+
+  const planSteps = useMemo<PlanStep[]>(
+    () =>
+      todos
+        .filter((todo: Todo) => todo.taskId === activeId)
+        .map((todo) => ({
+          id: todo.id,
+          title: todo.title,
+          detail:
+            todo.blockedBy && todo.blockedBy.length
+              ? `blocked by ${todo.blockedBy.join(', ')}`
+              : undefined,
+          status: PLAN_STATUS[todo.status] ?? 'pending',
+        })),
+    [todos, activeId],
   );
+
+  /** PlanSteps 的阶段：清单全部完成才算 done（任务 done 但清单还有 open 项时不显示 Done in ...）。 */
+  const planPhase: 'running' | 'done' =
+    planSteps.length > 0 && planSteps.every((step) => step.status === 'done' || step.status === 'skipped')
+      ? 'done'
+      : 'running';
+
+  /** 当前任务的真实事件流（时间线回填 + SSE 增量都在 state.timeline 里），按时间正序。 */
+  const activity = useMemo(
+    () => timeline.filter((entry) => entry.taskId === activeId),
+    [timeline, activeId],
+  );
+  const visibleActivity = activity.slice(-activityLimit);
 
   const board = useMemo<AgentTask[]>(() => {
     const approvals = scopeRequests.map((request: ScopeRequest): AgentTask => {
@@ -142,17 +217,16 @@ export function HomeView() {
       .filter((task): task is AgentTask => task !== null);
 
     // 需要你决策的排最前；同列内按开始时间倒序，最新的在最上面。
-    const order = { waiting: 0, running: 1, done: 2, failed: 1 } as const;
+    const order: Record<AgentTaskStatus, number> = { waiting: 0, running: 1, failed: 1, done: 2 };
     return [...approvals, ...active].sort((a, b) => {
-      const lane = order[a.status] - order[b.status];
+      const lane = Number(order[a.status] ?? 9) - Number(order[b.status] ?? 9);
       if (lane !== 0) return lane;
-      return (b.startedAt ?? 0) - (a.startedAt ?? 0);
+      const at = (task: AgentTask) => (typeof task.startedAt === 'number' ? task.startedAt : 0);
+      return at(b) - at(a);
     });
   }, [scopeRequests, dag, taskById, stepsByTask, memberName]);
 
-  const queued = (dag?.nodes ?? []).filter(
-    (node) => !laneStatus(node.status ?? ''),
-  ).length;
+  const queued = (dag?.nodes ?? []).filter((node) => !laneStatus(node.status ?? '')).length;
   const staleMembers = members.filter((member) => member.stale).length;
 
   const decide = (task: AgentTask, decision: 'approved' | 'denied') => {
@@ -170,10 +244,10 @@ export function HomeView() {
     );
   };
 
-  const openTimeline = (task: AgentTask) => {
-    const memberId = assignees.get(task.id);
-    setFilterMember(memberId ?? '');
-    setTab('timeline');
+  /** Open：Plan / Activity 切换到这张卡对应的任务（不再跳走，时间线视图仍保留）。 */
+  const openTask = (task: AgentTask) => {
+    if (task.id.startsWith(SCOPE_PREFIX)) return;
+    setSelectedId(task.id);
   };
 
   /**
@@ -214,38 +288,137 @@ export function HomeView() {
     }
   };
 
+  const jumpToTimeline = () => {
+    setFilterMember(activeMemberId ?? '');
+    setTab('timeline');
+  };
+
   return (
     <>
-      <div className="space-y-3">
-        <AgentInbox
-          tasks={board}
-          title="实时收件箱"
-          onApprove={(task) => decide(task, 'approved')}
-          onReject={(task) => decide(task, 'denied')}
-          onRetry={(task) => void retry(task)}
-          onOpen={openTimeline}
-        />
-        <footer className="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-xs text-muted-foreground">
-          <span>
-            数据源：/api/tasks · /api/dag · /api/scope-requests · /api/events/history（SSE 实时刷新）
-          </span>
-          {queued > 0 && (
-            <button
-              type="button"
-              className="text-left underline underline-offset-2 hover:text-foreground"
-              onClick={() => setTab('dag')}
-            >
-              另有 {queued} 个待派发 / 阻塞任务 · 查看依赖 DAG
-            </button>
-          )}
-          {staleMembers > 0 && (
-            <span className="text-amber-600">stale 成员 {staleMembers} 个（seq 与事件流不一致）</span>
-          )}
-          {board.length === 0 && (
-            <span>当前团队还没有可展示的任务：用 CLI / REST 建任务后这里会实时出现。</span>
-          )}
-        </footer>
+      <div className="grid gap-3 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+        {/* ---------------- Plan + Activity（真实数据，跟随选中任务） ---------------- */}
+        <section className="min-w-0 space-y-3">
+          <div className="rounded-xl border bg-card">
+            <header className="flex flex-wrap items-center gap-2 border-b px-4 py-2.5">
+              <span className="text-sm font-semibold">Plan</span>
+              <span className="truncate text-sm text-muted-foreground">{activeTitle}</span>
+              <span className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
+                <span>{activeDone ? '已完成' : '进行中'}</span>
+                {activeMemberId && <span>· {memberName(activeMemberId)}</span>}
+                {activeTask?.attempts ? <span>· 第 {activeTask.attempts} 次尝试</span> : null}
+              </span>
+            </header>
+            <div className="p-3">
+              {planSteps.length ? (
+                <PlanSteps key={activeId} title={activeTitle} steps={planSteps} status={planPhase} />
+              ) : (
+                <Empty className="gap-4 px-4 py-8 md:py-8">
+                  <EmptyHeader>
+                    <EmptyMedia variant="icon" className="mb-3">
+                      <ClipboardList />
+                    </EmptyMedia>
+                    <EmptyTitle className="text-sm">暂无计划</EmptyTitle>
+                    <EmptyDescription>Leader 用 team_todo 写入</EmptyDescription>
+                  </EmptyHeader>
+                </Empty>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-xl border bg-card">
+            <header className="flex flex-wrap items-center gap-2 border-b px-4 py-2.5">
+              <span className="text-sm font-semibold">Activity</span>
+              <span className="text-xs text-muted-foreground">
+                {activity.length ? `当前任务 ${activity.length} 条事件` : '暂无事件'}
+              </span>
+              <button
+                type="button"
+                className="ml-auto text-xs underline underline-offset-2 hover:text-foreground"
+                onClick={jumpToTimeline}
+              >
+                在时间线视图查看
+              </button>
+            </header>
+            <div className="max-h-[420px] space-y-1 overflow-y-auto p-3">
+              {visibleActivity.length ? (
+                visibleActivity.map((entry) => (
+                  <div key={entry.id} className="flex items-start gap-2">
+                    {/* 高度对齐 ToolCall 头部（min-height 44px），展开时时间也不会被拉偏 */}
+                    <span className="flex h-11 w-14 shrink-0 items-center justify-end text-[11px] leading-none tabular-nums text-muted-foreground">
+                      {fmtClockSec(entry.ts)}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <ToolCall
+                        name={entry.action || entry.phase}
+                        summary={
+                          <span>
+                            {entry.phase}
+                            {entry.target ? ` · ${entry.target}` : ''}
+                            {entry.memberId ? ` · ${memberName(entry.memberId)}` : ''}
+                          </span>
+                        }
+                        status={eventStatus(entry)}
+                        args={{ phase: entry.phase, action: entry.action, target: entry.target, next: entry.next }}
+                        result={entry.result ? { result: entry.result } : undefined}
+                      />
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <Empty className="gap-4 px-4 py-8 md:py-8">
+                  <EmptyHeader>
+                    <EmptyMedia variant="icon" className="mb-3">
+                      <ListTree />
+                    </EmptyMedia>
+                    <EmptyTitle className="text-sm">暂无事件</EmptyTitle>
+                    <EmptyDescription>成员开始执行后实时出现</EmptyDescription>
+                  </EmptyHeader>
+                </Empty>
+              )}
+              {activity.length > visibleActivity.length && (
+                <button
+                  type="button"
+                  className="mt-2 w-full rounded-md border py-1.5 text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => setActivityLimit((limit) => limit + 40)}
+                >
+                  显示更早的 {activity.length - visibleActivity.length} 条
+                </button>
+              )}
+            </div>
+          </div>
+        </section>
+
+        {/* ---------------- AgentInbox（真实卡 + 真实动作） ---------------- */}
+        <section className="min-w-0">
+          <div className="rounded-xl border bg-card">
+            <div className="p-3">
+              <AgentInbox
+                tasks={board}
+                title="实时收件箱"
+                onApprove={(task) => decide(task, 'approved')}
+                onReject={(task) => decide(task, 'denied')}
+                onRetry={(task) => void retry(task)}
+                onOpen={openTask}
+              />
+            </div>
+          </div>
+        </section>
       </div>
+
+      <footer className="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 py-1 text-xs text-muted-foreground">
+        {queued > 0 && (
+          <button
+            type="button"
+            className="text-left underline underline-offset-2 hover:text-foreground"
+            onClick={() => setTab('dag')}
+          >
+            另有 {queued} 个待派发 / 阻塞任务 · 查看依赖 DAG
+          </button>
+        )}
+        {staleMembers > 0 && (
+          <span className="text-amber-600">stale 成员 {staleMembers} 个（seq 与事件流不一致）</span>
+        )}
+      </footer>
     </>
   );
 }

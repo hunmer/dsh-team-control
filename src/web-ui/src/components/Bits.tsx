@@ -1,4 +1,6 @@
+import { Inbox } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import type { MemberStatus } from '@/types';
 import { safeToken } from '@/lib/format';
 
@@ -12,12 +14,18 @@ export function StatusPill({ status }: { status: MemberStatus }) {
   return <Badge variant={STATUS_TONE[safeToken(status)] ?? 'outline'}>{status || '?'}</Badge>;
 }
 
+/** 空态统一用 coss Empty：图标 + 一句标题，必要时补一行说明。 */
 export function EmptyState({ title, detail }: { title: string; detail?: string }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-1 rounded-lg border border-dashed p-10 text-center text-sm text-muted-foreground">
-      <strong className="font-medium text-foreground">{title}</strong>
-      {detail ? <div>{detail}</div> : null}
-    </div>
+    <Empty className="gap-4 px-4 py-8 md:py-10">
+      <EmptyHeader>
+        <EmptyMedia variant="icon" className="mb-3">
+          <Inbox />
+        </EmptyMedia>
+        <EmptyTitle className="text-sm">{title}</EmptyTitle>
+        {detail ? <EmptyDescription className="max-w-md text-xs">{detail}</EmptyDescription> : null}
+      </EmptyHeader>
+    </Empty>
   );
 }
 

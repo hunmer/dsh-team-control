@@ -10,6 +10,7 @@ import { fmtClock, truncate } from '@/lib/format';
 import type { Member, TimelineEntry } from '@/types';
 import { AgentLanes, type LaneAgent, type LaneTask, type LaneTaskStatus } from '@/components/agent-lanes/agent-lanes';
 import { Badge } from '@/components/ui/badge';
+import { modelAvatar } from '@/components/ModelAvatar';
 import { Button } from '@/components/ui/button';
 import { Kbd } from '@/components/ui/kbd';
 import { SegmentedControl, SegmentedControlItem } from '@/components/ui/segmented-control';
@@ -76,6 +77,7 @@ export function TimelineView() {
       id: m.id,
       name: m.name || m.id,
       model: [m.role, m.model].filter(Boolean).join(' · ') || undefined,
+      avatar: modelAvatar(m.model, m.name, undefined, 16),
     }));
     const memberById = new Map(members.map((m) => [m.id, m]));
 
@@ -229,7 +231,7 @@ export function TimelineView() {
       {errors.timeline && !timeline.length
         ? <EmptyState title="时间线加载失败" detail={errors.timeline} />
         : !timeline.length
-          ? <EmptyState title="暂无时间线事件" detail="等待 SSE step.append 事件…" />
+          ? <EmptyState title="暂无时间线事件" />
           : mode === 'list'
             ? <TimelineGrid entries={timeline} filters={filters} memberName={memberName} />
             : !lanes.agents.length
@@ -290,7 +292,7 @@ function TimelineGrid({ entries, filters, memberName }: {
           <div className="p-6">
             <EmptyState
               title={entries.length ? '当前过滤条件下没有事件' : '暂无时间线事件'}
-              detail={entries.length ? '清空成员 / phase 过滤后即可看到事件。' : '等待 SSE step.append 事件…'}
+              detail={entries.length ? '清空成员 / phase 过滤' : '等待成员事件'}
             />
           </div>
         )}

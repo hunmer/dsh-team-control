@@ -199,18 +199,9 @@ async function syncLlmCatalog(s, ctx, { force = false } = {}) {
       seen.add(String(p.id));
       providers.push({ id: String(p.id), name: String(p.name || p.id), source: 'live' });
     }
-    if (typeof llm.listConfigurableProviders === 'function') {
-      for (const p of (llm.listConfigurableProviders() || [])) {
-        const id = String((p && p.provider) || '');
-        if (!id || seen.has(id)) continue;
-        seen.add(id);
-        providers.push({ id, name: String(p.displayName || id), source: 'dormant', error: p.error || null });
-      }
-    }
     const models = [];
     let partial = false;
     for (const p of providers) {
-      if (p.source === 'dormant') continue;
       try {
         for (const m of await llm.listModels(p.id)) {
           if (!m || !m.id) continue;
@@ -225,9 +216,13 @@ async function syncLlmCatalog(s, ctx, { force = false } = {}) {
         partial = true;
       }
     }
-    await request(s, '/api/llm/catalog', { method: 'POST', body: { providers, models, partial } });
+    // 只上报真正能列出模型的 provider；没模型的（含未配置的 dormant）不进目录，
+    // 面板与 team_models 就不会出现空分组。
+    const withModels = providers.filter((p) => models.some((m) => m.provider === p.id));
+    if (!withModels.length) return { ok: true, providers: 0, models: 0, empty: true };
+    await request(s, '/api/llm/catalog', { method: 'POST', body: { providers: withModels, models, partial } });
     llmSyncAt = Date.now();
-    return { ok: true, providers: providers.length, models: models.length, partial };
+    return { ok: true, providers: withModels.length, models: models.length, partial };
   })().finally(() => { llmSyncInFlight = null; });
   return llmSyncInFlight;
 }
@@ -306,9 +301,10 @@ function taskBrief(teamId, task, member) {
     '',
     '执行要求：',
     '1) 直接在本会话里做这件事（用你自己的工具，不要委派给别的 agent）。',
-    '2) 完成或失败后必须调用 team_report_task，例如：',
+    '2) 每开始或完成一步、以及验收通过后，调用 team_todo 更新该任务的计划清单（teamId/taskId 同上）。',
+    '3) 完成或失败后必须调用 team_report_task，例如：',
     `   team_report_task({ teamId: "${teamId}", taskId: "${task.id}", status: "done", summary: "一句话结果 + 关键产物路径" })`,
-    '3) 需要 Lead 决策或补充信息时用 team_send（teamId 同上，to: "lead"），不要自己猜测。',
+    '4) 需要 Lead 决策或补充信息时用 team_send（teamId 同上，to: "lead"），不要自己猜测。',
   ].join('\n');
 }
 
@@ -764,6 +760,44 @@ function buildTools(s, ctx) {
         }
       }
       return { ...recorded, delivered, ...(failed.length ? { failed } : {}) };
+    },
+  });
+
+  tools.push({
+    name: 'team_todo',
+    description: '设置或更新一个任务的执行计划清单（todo）。与内置 todo_write 不同：这份清单落盘在 sidecar，面板主页 Plan 区域实时渲染，Lead 与成员都能看到（内置 todo 只属于当前会话）。语义是整体替换——每次提交完整清单（最多 50 条），用 status 标注进度：open（未开始）/ active（进行中）/ done（已完成）/ blocked（被阻塞）。Lead 在派发前/后用它给任务补计划；成员每开始或完成一步、以及通过验收后调用它更新状态。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        teamId: { type: 'string' },
+        taskId: { type: 'string', description: 'Task id whose checklist you are setting.' },
+        items: {
+          type: 'array',
+          maxItems: 50,
+          description: 'Complete ordered checklist (replace-all).',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              title: { type: 'string', description: 'One-line step, imperative.' },
+              status: { type: 'string', enum: ['open', 'active', 'done', 'blocked'], description: 'Default open.' },
+              blockedBy: { type: 'array', items: { type: 'string' }, description: 'Optional reasons / ids this step waits on.' },
+            },
+            required: ['title'],
+          },
+        },
+        by: { type: 'string', description: 'Who updates it (Lead or memberId). Defaults to the calling session, else "lead".' },
+      },
+      required: ['teamId', 'taskId', 'items'],
+    },
+    output: jsonOutput('{ taskId, items }'),
+    async execute(args, exec) {
+      if (!Array.isArray(args.items)) throw new Error('items must be an array');
+      const sessionId = exec?.agent?.id != null ? String(exec.agent.id) : null;
+      const binding = sessionId ? sessionMember.get(sessionId) : null;
+      const by = args.by || binding?.memberId || 'lead';
+      return await request(s, `/api/tasks/${encodeURIComponent(args.taskId)}/todos`, { method: 'POST', body: { items: args.items, by } });
     },
   });
 

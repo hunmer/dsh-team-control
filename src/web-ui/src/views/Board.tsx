@@ -12,6 +12,7 @@ import { fmtClock } from '@/lib/format';
 import { TraceWaterfall, type TraceSpan } from '@/components/trace-waterfall/trace-waterfall';
 import { Button } from '@/components/ui/button';
 import { EmptyState, MetaLine, SectionHead, StatusPill } from '@/components/Bits';
+import { ModelAvatar } from '@/components/ModelAvatar';
 
 function durText(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) return '0ms';
@@ -26,6 +27,7 @@ function MemberPill({ member }: { member: Member }) {
   return (
     <span className="flex items-center gap-1.5 rounded-full border bg-card px-2 py-0.5 text-xs">
       <StatusPill status={member.status} />
+      <ModelAvatar model={member.model} name={member.name} size={13} />
       <span className="font-medium">{member.name || member.id}</span>
       {member.model ? <span className="text-muted-foreground">{member.model}</span> : null}
       {member.step ? <span className="text-muted-foreground">{member.step}</span> : null}
@@ -64,20 +66,20 @@ export function BoardView() {
 
   let body: React.ReactNode;
   if (!teamId) {
-    body = <EmptyState title="未选择团队" detail="等待 /api/teams 返回团队列表后自动加载。" />;
+    body = <EmptyState title="未选择团队" />;
   } else if (errors.trace && !trace) {
     body = <EmptyState title="Trace 加载失败" detail={errors.trace} />;
   } else if (!trace) {
-    body = <EmptyState title="正在加载 Trace…" detail="首屏快照来自 GET /api/trace，随后由 SSE 实时增量刷新。" />;
+    body = <EmptyState title="正在加载 Trace…" />;
   } else if (!members.length && !trace.stats.spans && !trace.stats.steps) {
-    body = <EmptyState title="暂无运行数据" detail="团队创建后：Worker 步骤来自事件流，Agent 工具调用由 dsh-team 插件上报。" />;
+    body = <EmptyState title="暂无运行数据" detail="等待成员开始执行" />;
   } else if (!trace.stats.steps && !trace.stats.spans) {
     body = (
       <EmptyState
         title="窗口内暂无运行数据"
         detail={trace.windowMs
-          ? '当前时间窗内没有事件流或工具调用，可切换到「全部历史」查看旧记录。'
-          : '等待下一次 Worker 步骤或 Agent 工具调用。'}
+          ? '可切换到「全部历史」查看旧记录'
+          : '等待下一次事件'}
       />
     );
   } else {

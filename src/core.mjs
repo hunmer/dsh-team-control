@@ -1002,11 +1002,12 @@ export class DshTeam {
 
   // ---------- 待办 ----------
   todoView(r) {
-    return { id: r.id, teamId: r.team_id, memberId: r.member_id, title: r.title, status: r.status, orderNo: Number(r.order_no), blockedBy: parseJson(r.blocked_by_json, []), createdAt: r.created_at, updatedAt: r.updated_at };
+    return { id: r.id, teamId: r.team_id, taskId: r.task_id ?? null, memberId: r.member_id, title: r.title, status: r.status, orderNo: Number(r.order_no), blockedBy: parseJson(r.blocked_by_json, []), createdAt: r.created_at, updatedAt: r.updated_at };
   }
-  listTodos({ teamId, memberId = null } = {}) {
+  listTodos({ teamId, memberId = null, taskId = null } = {}) {
     let sql = 'SELECT * FROM todo WHERE team_id=?'; const args = [teamId];
     if (memberId) { sql += ' AND member_id=?'; args.push(memberId); }
+    if (taskId) { sql += ' AND task_id=?'; args.push(taskId); }
     sql += ' ORDER BY order_no ASC, created_at ASC';
     return { asOf: nowIso(), version: this.scheduler.version(teamId), items: this.get(sql).all(...args).map((r) => this.todoView(r)) };
   }
@@ -1014,9 +1015,55 @@ export class DshTeam {
     this.getTeam(input.teamId);
     if (!input.title) throw ERR.bad('title required');
     const id = newId('todo'); const t = nowIso();
-    this.get('INSERT INTO todo (id, team_id, member_id, title, status, order_no, blocked_by_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)')
-      .run(id, input.teamId, input.memberId ?? null, input.title, input.status || 'open', Number(input.orderNo) || 0, json(input.blockedBy || []), t, t);
+    this.get('INSERT INTO todo (id, team_id, task_id, member_id, title, status, order_no, blocked_by_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+      .run(id, input.teamId, input.taskId ?? null, input.memberId ?? null, input.title, input.status || 'open', Number(input.orderNo) || 0, json(input.blockedBy || []), t, t);
     return this.todoView(this.get('SELECT * FROM todo WHERE id=?').get(id));
+  }
+
+  /**
+   * 设置 / 整体替换一个任务的执行计划清单（todo）。
+   * Leader 建计划、成员推进步骤、验收后更新状态都走这里；落盘后发 task.todo 事件，
+   * 面板主页的 Plan 区域通过 SSE / GET /api/todos?task= 实时刷新。
+   */
+  setTaskTodos(taskId, items, { by = null } = {}) {
+    const task = this.get('SELECT * FROM task WHERE id=?').get(taskId);
+    if (!task) throw ERR.notFound('task');
+    if (!Array.isArray(items)) throw ERR.bad('items must be an array');
+    if (items.length > 50) throw ERR.bad('items must be <= 50');
+    const ALLOWED = ['open', 'active', 'done', 'blocked', 'skipped'];
+    const rows = items.map((item, i) => {
+      const title = String(item?.title ?? '').trim();
+      if (!title) throw ERR.bad(`items[${i}].title required`);
+      const status = String(item?.status || 'open');
+      if (!ALLOWED.includes(status)) throw ERR.bad(`items[${i}].status invalid: ${status}`);
+      return { title, status, orderNo: i, blockedBy: Array.isArray(item.blockedBy) ? item.blockedBy.map(String) : [] };
+    });
+    const t = nowIso();
+    tx(this.db, () => {
+      this.get('DELETE FROM todo WHERE task_id=?').run(taskId);
+      for (const row of rows) {
+        const id = newId('todo');
+        this.get('INSERT INTO todo (id, team_id, task_id, member_id, title, status, order_no, blocked_by_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+          .run(id, task.team_id, taskId, task.assignee ?? null, row.title, row.status, row.orderNo, json(row.blockedBy), t, t);
+      }
+    });
+    const done = rows.filter((r) => r.status === 'done').length;
+    // 事件流按成员分片（seq / member_state 都挂在 member 上），未派发的任务没有成员可归属。
+    // 「Leader 先写好计划、任务还在排队」是常态，不能因此 400：跳过事件即可，计划已落库，
+    // 任务被派发时 task.state 会触发面板刷新；写者本身是成员时则归到写者名下。
+    const eventMember = (() => {
+      const isMember = (id) => id && this.get('SELECT id FROM member WHERE id=? AND team_id=?').get(id, task.team_id);
+      if (isMember(task.assignee)) return task.assignee;
+      return isMember(by) ? by : null;
+    })();
+    if (eventMember) {
+      this.events.append({
+        teamId: task.team_id, memberId: eventMember, taskId,
+        phase: 'step', action: 'task.todo', target: `${done}/${rows.length} done`,
+        result: 'OK', blockers: [], meta: { stepIndex: -1, by, total: rows.length, done },
+      });
+    }
+    return this.listTodos({ teamId: task.team_id, taskId });
   }
   patchTodo(id, body = {}) {
     const r = this.get('SELECT * FROM todo WHERE id=?').get(id);

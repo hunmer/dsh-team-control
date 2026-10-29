@@ -6,6 +6,13 @@ export function fmtClock(ts?: string | null): string {
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3, '0')}`;
 }
 
+/** 只到秒的时间：Activity 行左侧用，避免毫秒把一列挤满。 */
+export function fmtClockSec(ts?: string | null): string {
+  const d = ts ? new Date(ts) : null;
+  if (!d || Number.isNaN(d.getTime())) return '—';
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
+
 export function fmtDateTime(ts?: string | null): string {
   const d = ts ? new Date(ts) : null;
   if (!d || Number.isNaN(d.getTime())) return '—';

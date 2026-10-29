@@ -8,7 +8,7 @@ import {
 } from 'react';
 import { API_BASE, api, ApiError, EMBEDDED, enc, getToken, initUrlToken, pickItems, setToken } from './lib/api';
 import { fmtClock, storeGet, storeSet } from './lib/format';
-import type { DagData, MatrixRow, Member, Policy, ScopeRequest, Task, Team, TeamMessage, TimelineEntry, TraceData } from './types';
+import type { DagData, MatrixRow, Member, Policy, ScopeRequest, Task, Team, TeamMessage, TimelineEntry, Todo, TraceData } from './types';
 
 export const TAB_NAMES = ['board', 'dag', 'timeline', 'models', 'permissions', 'approvals', 'messages'] as const;
 /**
@@ -28,7 +28,7 @@ export const pendingTimelineRef: { current: TimelineEntry[] } = { current: [] };
 
 export type ConnKind = 'connecting' | 'live' | 'reconnecting' | 'offline';
 export interface ToastItem { id: number; message: string; kind: 'ok' | 'warn' | 'error' | 'info'; }
-export type Errors = Partial<Record<'status' | 'dag' | 'permissions' | 'policies' | 'approvals' | 'messages' | 'timeline' | 'trace' | 'tasks', string | null>>;
+export type Errors = Partial<Record<'status' | 'dag' | 'permissions' | 'policies' | 'approvals' | 'messages' | 'timeline' | 'trace' | 'tasks' | 'todos', string | null>>;
 
 interface PanelState {
   teamId: string | null;
@@ -42,6 +42,8 @@ interface PanelState {
   dag: DagData | null;
   /** sidecar 任务行（/api/tasks）：主页 AgentInbox 的标题/时间/验收来源 */
   tasks: Task[];
+  /** 任务计划清单（/api/todos）：主页 Plan 区域的数据源 */
+  todos: Todo[];
   trace: TraceData | null;
   /** Trace 时间窗（分钟，0 = 全部历史）；默认只看最近 30 分钟，避免长期闲置团队的横轴被拉爆 */
   traceWindow: number;
@@ -61,7 +63,7 @@ interface PanelState {
 const initialState: PanelState = {
   teamId: null, team: null, teams: [], noTeams: false,
   members: [], staleMembers: new Set(), degraded: false, snapshot: null,
-  dag: null, tasks: [], trace: null, traceWindow: 30, matrix: [], policies: [], scopeRequests: [], messages: [],
+  dag: null, tasks: [], todos: [], trace: null, traceWindow: 30, matrix: [], policies: [], scopeRequests: [], messages: [],
   errors: {}, timeline: [], paused: false, speed: 1,
   tab: 'home', filters: { member: '', phase: '' }, conn: 'connecting',
 };
@@ -268,6 +270,14 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, tasks: items, errors: { ...prev.errors, tasks: null } }));
   }, [onUnauthorized]);
 
+  const refreshTodos = useCallback(async () => {
+    const teamId = stateRef.current.teamId;
+    if (!teamId) return;
+    const items = pickItems<Todo>(await api('/api/todos?team=' + enc(teamId), { onUnauthorized }));
+    if (stateRef.current.teamId !== teamId) return; // 团队已切换：丢弃过期响应
+    setState((prev) => ({ ...prev, todos: items, errors: { ...prev.errors, todos: null } }));
+  }, [onUnauthorized]);
+
   const refreshPermissions = useCallback(async () => {
     const teamId = stateRef.current.teamId;
     const [policiesResponse, matrixResponse] = await Promise.all([
@@ -326,11 +336,12 @@ export function PanelProvider({ children }: { children: ReactNode }) {
       safe('trace', refreshTrace),
       safe('dag', refreshDag),
       safe('tasks', refreshTasks),
+      safe('todos', refreshTodos),
       safe('permissions', refreshPermissions),
       safe('approvals', refreshApprovals),
       safe('messages', refreshMessages),
     ]);
-  }, [refreshStatus, refreshTrace, refreshDag, refreshTasks, refreshPermissions, refreshApprovals, refreshMessages]);
+  }, [refreshStatus, refreshTrace, refreshDag, refreshTasks, refreshTodos, refreshPermissions, refreshApprovals, refreshMessages]);
 
   /**
    * 落盘一条越界申请的决策（home 右栏审批卡使用）。
@@ -343,16 +354,16 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     await Promise.all([refreshAll(), refreshPermissions()]);
   }, [refreshAll, refreshPermissions]);
 
-  const scheduleRefresh = useCallback((key: 'status' | 'trace' | 'dag' | 'tasks' | 'permissions' | 'approvals' | 'messages', delay = 200) => {
+  const scheduleRefresh = useCallback((key: 'status' | 'trace' | 'dag' | 'tasks' | 'todos' | 'permissions' | 'approvals' | 'messages', delay = 200) => {
     if (refreshTimers.current[key]) return;
     refreshTimers.current[key] = setTimeout(async () => {
       delete refreshTimers.current[key];
       const map: Record<string, () => Promise<void>> = {
-        status: refreshStatus, trace: refreshTrace, dag: refreshDag, tasks: refreshTasks, permissions: refreshPermissions, approvals: refreshApprovals, messages: refreshMessages,
+        status: refreshStatus, trace: refreshTrace, dag: refreshDag, tasks: refreshTasks, todos: refreshTodos, permissions: refreshPermissions, approvals: refreshApprovals, messages: refreshMessages,
       };
       try { await map[key](); } catch { return; }
     }, delay);
-  }, [refreshStatus, refreshTrace, refreshDag, refreshTasks, refreshPermissions, refreshApprovals, refreshMessages]);
+  }, [refreshStatus, refreshTrace, refreshDag, refreshTasks, refreshTodos, refreshPermissions, refreshApprovals, refreshMessages]);
 
   /* ---------- SSE ---------- */
   const memberName = useCallback((id?: string | null): string => {
@@ -422,7 +433,8 @@ export function PanelProvider({ children }: { children: ReactNode }) {
         storeSet(STORE_LAST, String(frameId));
       }
       if (frame.teamId && stateRef.current.teamId && frame.teamId !== stateRef.current.teamId) return;
-      const payload = (frame.payload && typeof frame.payload === 'object') ? (frame.payload as Record<string, unknown>) : {};
+      // SSE 帧的 data 就是 payload 本身（没有 envelope）；history 回填才有 {payload}。
+      const payload = (frame.payload && typeof frame.payload === 'object') ? (frame.payload as Record<string, unknown>) : (frame as Record<string, unknown>);
       const memberId = (frame.memberId || payload.memberId) as string | undefined;
       switch (type) {
         case 'member.status': {
@@ -443,6 +455,7 @@ export function PanelProvider({ children }: { children: ReactNode }) {
           }
           // Worker 步骤也是瀑布里的条：步骤事件到达时同样去抖刷新 trace
           scheduleRefresh('trace', 200);
+          if (payload.action === 'task.todo') scheduleRefresh('todos', 120);
           break;
         }
         case 'task.state': scheduleRefresh('dag', 150); scheduleRefresh('tasks', 150); break;
@@ -509,7 +522,7 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({
       ...prev, teamId, team,
       members: [], staleMembers: new Set(), degraded: false, snapshot: null,
-      dag: null, tasks: [], trace: null, matrix: [], policies: [], scopeRequests: [], messages: [], timeline: [],
+      dag: null, tasks: [], todos: [], trace: null, matrix: [], policies: [], scopeRequests: [], messages: [], timeline: [],
       errors: {},
     }));
     // setState 异步生效；先同步 stateRef，保证随后的 refreshAll 读到新 teamId
@@ -576,13 +589,14 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     saveUiState({ tab });
     if (stateRef.current.teamId) {
       const map: Partial<Record<TabName, () => Promise<void>>> = {
-        home: refreshTasks, board: refreshStatus, dag: refreshDag, permissions: refreshPermissions,
+        home: async () => { await refreshTasks(); await refreshTodos(); },
+        board: refreshStatus, dag: refreshDag, permissions: refreshPermissions,
         approvals: refreshApprovals, messages: refreshMessages,
       };
       void map[tab]?.().catch(() => {});
       if (tab === 'board') void refreshTrace().catch(() => {});
     }
-  }, [patchUi, saveUiState, refreshStatus, refreshTrace, refreshDag, refreshTasks, refreshPermissions, refreshApprovals, refreshMessages]);
+  }, [patchUi, saveUiState, refreshStatus, refreshTrace, refreshDag, refreshTasks, refreshTodos, refreshPermissions, refreshApprovals, refreshMessages]);
 
   const setPaused = useCallback((paused: boolean) => {
     pausedRef.current = paused;

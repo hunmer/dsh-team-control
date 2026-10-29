@@ -201,7 +201,7 @@ export function PermissionsView() {
       {errors.permissions && !matrix.length
         ? <EmptyState title="权限矩阵加载失败" detail={errors.permissions} />
         : !matrix.length
-          ? <EmptyState title="暂无权限数据" detail="矩阵来自 GET /api/permission-matrix；默认拒绝，未授权即空。" />
+          ? <EmptyState title="暂无权限数据" detail="默认拒绝，未授权即空" />
           : (
             <div className="overflow-auto rounded-lg border">
               <Table>

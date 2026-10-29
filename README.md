@@ -120,7 +120,7 @@ plugin_manager(action: "install_bundle", target: "C:\\...\\agent-team-plugin\\ds
   同一成员被再次 `sendMessage` 唤醒复用跑第二个任务。宿主插件改动仍需**重启 DSH**（或禁用/启用一次
   `include:dsh-team`）才生效——运行中的进程缓存了旧模块。
 - **成员可用不同模型**（`team_spawn` 的 `agentProvider` / `model` / `reasoningEffort`）：目录的唯一来源是 Host 的
-  `ctx.llm`（`listProviders` + `listModels`，含未配置的 dormant provider），插件只把映射快照同步给 sidecar；
+  `ctx.llm`（`listProviders` + `listModels`，只上报能列出模型的 provider），插件只把映射快照同步给 sidecar；
   面板「模型路由」页勾选启用、写备注，`team_models` 只返回启用子集。`team_spawn` 把 route 写进
   `subagents.startActivation` 的 `request.agentOptions`，并且只接受已启用的 route（显式指定和继承 Lead 都过同一道闸门；
   目录里查不到的 route 不拦）。不传则继承 Lead。
