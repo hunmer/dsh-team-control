@@ -1,6 +1,19 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { TRACE_WATERFALL_CSS } from "./trace-waterfall-css";
+import { Badge } from "@/components/ui/badge";
+import { JsonViewer } from "@/components/JsonViewer";
+import { parseLooseJson } from "@/lib/json";
+import { Button } from "@/components/ui/button";
+import { modelAvatar } from "@/components/ModelAvatar";
+import {
+  Combobox, ComboboxChip, ComboboxChips, ComboboxChipsInput, ComboboxEmpty, ComboboxItem,
+  ComboboxList, ComboboxPopup, ComboboxValue,
+} from "@/components/ui/combobox";
+import {
+  Bot, FileText, FolderSearch, GitBranch, Globe, ListChecks, PenLine, Search, Terminal, Wrench,
+  type LucideIcon,
+} from "lucide-react";
 
 export type SpanKind = "agent" | "subagent" | "llm" | "tool";
 export type SpanStatus = "running" | "done" | "failed";
@@ -17,13 +30,15 @@ export interface TraceSpan {
   end?: number;
   /** a few muted words after the name, e.g. the model or the query */
   detail?: string;
-  /** small mark before the name; defaults to a swatch in the kind's color */
+  /** small mark before the name; defaults to the member's model logo or a kind icon */
   icon?: ReactNode;
   model?: string;
   /** the span's own - agents add up their children, so don't pre-sum */
   tokensIn?: number;
   tokensOut?: number;
   cost?: number;
+  /** ISO 币种（`CNY` / `USD`），缺省按 USD 渲染 */
+  currency?: string;
   /** short previews shown in the details window */
   input?: string;
   output?: string;
@@ -52,12 +67,41 @@ export interface TraceWaterfallProps {
   className?: string;
 }
 
+/** Input/Output 多为 JSON 串：能解析（含被截断的）就折叠展示，否则退回纯文本。 */
+function Payload({ label, value }: { label: string; value: string }) {
+  const json = jsonDetail(value);
+  return (
+    <div className="ui-twc__pop-io">
+      <span>
+        {label}
+        {json?.truncated && <span className="ui-twc__pop-hint">已截断</span>}
+      </span>
+      {json ? (
+        <div className="max-h-56 overflow-auto rounded-md border">
+          <JsonViewer data={json.value} defaultExpanded={1} mini />
+        </div>
+      ) : (
+        <p dir="auto">{value}</p>
+      )}
+    </div>
+  );
+}
+
+/** 工具 span 的 detail 常常是参数的 JSON 串；能解析成对象/数组就交给 JsonViewer。 */
+const jsonDetail = (text?: string) => parseLooseJson(text);
+
 const KIND_LABEL: Record<SpanKind, string> = {
   agent: `Agent run`,
   subagent: `Sub-agent`,
   llm: `LLM call`,
   tool: `Tool call`,
 };
+const STATUS_VARIANT: Record<SpanStatus, `info` | `success` | `error`> = {
+  running: `info`,
+  done: `success`,
+  failed: `error`,
+};
+
 const STATUS_LABEL: Record<SpanStatus, string> = {
   running: `Running`,
   done: `Done`,
@@ -74,16 +118,24 @@ const RANGE_GLIDE_MS = 720;
 /** stagger between rows entering, ms */
 const ENTER_STAGGER = 36;
 
-const formatCost = (v: number) =>
-  v === 0
-    ? `$0`
+const CURRENCY_SYMBOL: Record<string, string> = { CNY: `¥`, USD: `$`, EUR: `€` };
+
+const formatMoney = (v: number, currency = `USD`) => {
+  const symbol = CURRENCY_SYMBOL[currency] ?? `${currency} `;
+  return v === 0
+    ? `${symbol}0`
     : v < 0.001
-      ? `<$0.001`
+      ? `<${symbol}0.001`
       : v < 0.01
-        ? `$${v.toFixed(3)}`
+        ? `${symbol}${v.toFixed(3)}`
         : v < 10
-          ? `$${v.toFixed(2)}`
-          : `$${Math.round(v).toLocaleString(`en-US`)}`;
+          ? `${symbol}${v.toFixed(2)}`
+          : `${symbol}${Math.round(v).toLocaleString(`en-US`)}`;
+};
+
+/** the currency of a subtree: the root's, else the first span that declares one */
+const currencyOf = (s: TraceSpan): string =>
+  s.currency ?? flatten(s).find((x) => x.currency)?.currency ?? `USD`;
 
 /** "412ms" / "1.3s" / "2m 05s" */
 const fmtMs = (ms: number) => {
@@ -150,6 +202,50 @@ const SparkIcon = () => (
     <circle cx="11.6" cy="11.4" r="1.1" fill="currentColor" opacity="0.55" />
   </svg>
 );
+
+/** 工具名 → 分类 + 图标：先看动作语义（写/读/执行/查/找/取/版本/协作），识别不出归到 other */
+type ToolKind = `write` | `read` | `exec` | `search` | `find` | `net` | `git` | `team` | `other`;
+
+const TOOL_KINDS: Array<{ id: ToolKind; pattern: RegExp; icon: LucideIcon }> = [
+  { id: `write`, pattern: /write|edit|patch|rename/, icon: PenLine },
+  { id: `read`, pattern: /read|cat\b|view|head\b|tail\b/, icon: FileText },
+  { id: `exec`, pattern: /bash|shell|exec|command|terminal|run\b/, icon: Terminal },
+  { id: `search`, pattern: /grep|search|query|\brg\b/, icon: Search },
+  { id: `find`, pattern: /glob|find|list|\bls\b|dir/, icon: FolderSearch },
+  { id: `net`, pattern: /fetch|http|url|web|curl|navigate|page/, icon: Globe },
+  { id: `git`, pattern: /\bgit\b/, icon: GitBranch },
+  { id: `team`, pattern: /team_|task|todo|member|agent|spawn|report/, icon: ListChecks },
+];
+
+const toolIconOf = (kind: ToolKind): LucideIcon =>
+  TOOL_KINDS.find((k) => k.id === kind)?.icon ?? Wrench;
+
+/** Worker 步骤的 span.name 只是 S1/S2，真正的工具在 detail 的 `phase · action · target` 里 */
+const STEP_NAME = /^S\d+$/i;
+
+function toolNameOf(span: TraceSpan): string {
+  if (!STEP_NAME.test(span.name)) return span.name;
+  const action = (span.detail ?? ``).split(` · `)[1];
+  return action || span.name;
+}
+
+function toolKindOf(span: TraceSpan): ToolKind {
+  const hay = `${span.name} ${span.detail ?? ``}`.toLowerCase();
+  return TOOL_KINDS.find((k) => k.pattern.test(hay))?.id ?? `other`;
+}
+
+function toolMark(span: TraceSpan): ReactNode {
+  const Icon = toolIconOf(toolKindOf(span));
+  return <Icon aria-hidden="true" />;
+}
+
+/** 行首标记：成员用模型厂标，工具按工具名取图标，其余按种类退化到图标而不是色块 */
+function spanMark(span: TraceSpan): ReactNode {
+  if (span.icon) return span.icon;
+  if (span.kind === `tool`) return toolMark(span);
+  if (span.kind === `llm`) return modelAvatar(span.model, null, null, 13) ?? <SparkIcon />;
+  return modelAvatar(span.model, span.name, null, 13) ?? <Bot aria-hidden="true" />;
+}
 
 // Hugeicons Free (MIT) chevron-down
 const ChevronDown = () => (
@@ -337,8 +433,8 @@ const Row = memo(function Row({
         >
           {children.length > 0 && <ChevronDown />}
         </span>
-        <span className="ui-twc__icon" data-logo={span.icon ? `` : void 0}>
-          {span.icon ?? <span className="ui-twc__swatch" />}
+        <span className="ui-twc__icon" data-kind={span.kind}>
+          {spanMark(span)}
         </span>
         <span className="ui-twc__label">
           <span className="ui-twc__title" dir="auto">
@@ -351,7 +447,7 @@ const Row = memo(function Row({
           )}
         </span>
         {hiddenCount > 0 && (
-          <span className="ui-twc__more">{`+`}{intFmt(hiddenCount)}</span>
+          <Badge size="sm" variant="secondary">{`+`}{intFmt(hiddenCount)}</Badge>
         )}
         {span.status === `running` && !children.length && (
           <span className="ui-twc__state" data-status="running">
@@ -365,9 +461,9 @@ const Row = memo(function Row({
         )}
         <span className="ui-twc__meta">
           {slowest && (
-            <span className="ui-twc__slow" title="Slowest">
+            <Badge size="sm" title="Slowest" variant="warning">
               Slowest
-            </span>
+            </Badge>
           )}
           <span className="ui-twc__amount" data-live={span.status === `running` ? `` : void 0}>
             {fmtMs(dur)}
@@ -390,7 +486,7 @@ const Row = memo(function Row({
           <span className="ui-twc__amount" data-live={span.status === `running` ? `` : void 0}>
             {label}
           </span>
-          {slowest && <span className="ui-twc__slow">Slowest</span>}
+          {slowest && <Badge size="sm" variant="warning">Slowest</Badge>}
         </span>
       </div>
     </div>
@@ -417,10 +513,12 @@ export function TraceWaterfall({
   onOpenChange,
   markSlowest = true,
   minRange = 10 * SEC,
-  formatCost: fmtCost = formatCost,
+  formatCost: fmtCostProp,
   title = `Trace`,
   className,
 }: TraceWaterfallProps) {
+  // 金额默认按根节点的币种渲染（CNY→¥ / USD→$）；调用方仍可用 formatCost 完全接管
+  const fmtCost = fmtCostProp ?? ((v: number) => formatMoney(v, currencyOf(root)));
   const rootRef = useRef<HTMLDivElement | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const layerRef = useRef<HTMLDivElement | null>(null);
@@ -439,7 +537,21 @@ export function TraceWaterfall({
   };
 
   const [unopen, setUnopen] = useState(defaultOpenId);
+  const [toolFilter, setToolFilter] = useState<string[]>([]);
   const flat = flatten(root);
+
+  // 候选工具：当前瀑布里真实出现过的工具（按出现次数排序），没有数据时为空
+  const toolOptionList = (() => {
+    const map = new Map<string, { name: string; kind: ToolKind; count: number }>();
+    for (const span of flat) {
+      if (span.kind !== `tool`) continue;
+      const name = toolNameOf(span);
+      const hit = map.get(name);
+      if (hit) hit.count += 1;
+      else map.set(name, { name, kind: toolKindOf(span), count: 1 });
+    }
+    return [...map.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  })();
   const open = openId === void 0 ? unopen : openId;
   const openSpan = open ? flat.find((s) => s.id === open) : void 0;
   const setOpen = (id: string | null) => {
@@ -532,7 +644,10 @@ export function TraceWaterfall({
 
   // rows to render: the tree with folded branches hidden, plus leaving ghosts
   const visible: RowEntry[] = [];
+  const keepRow = (span: TraceSpan) =>
+    toolFilter.length === 0 || span.kind !== `tool` || toolFilter.includes(toolNameOf(span));
   const collect = (span: TraceSpan, depth: number, parentId: string | undefined, hidden: boolean) => {
+    if (!keepRow(span)) return;
     visible.push({ span, depth, parentId, hidden });
     const nowHidden = hidden || collapsedList.includes(span.id);
     for (const c of span.children ?? []) collect(c, depth + 1, span.id, nowHidden);
@@ -728,6 +843,7 @@ export function TraceWaterfall({
 
   const details = (span: TraceSpan) => {
     const hasKids = (span.children ?? []).length > 0;
+    const detailJson = jsonDetail(span.detail);
     const [tin, tout] = tokensOf(span);
     const cost = hasKids ? costOf(span) : span.cost;
     const stats: [string, string][] = [
@@ -756,8 +872,8 @@ export function TraceWaterfall({
         }}
       >
         <div className="ui-twc__pop-head">
-          <span className="ui-twc__icon" data-logo={span.icon ? `` : void 0}>
-            {span.icon ?? <span className="ui-twc__swatch" />}
+          <span className="ui-twc__icon" data-kind={span.kind}>
+            {spanMark(span)}
           </span>
           <span className="ui-twc__pop-who">
             <span className="ui-twc__pop-name" dir="auto">
@@ -765,15 +881,16 @@ export function TraceWaterfall({
             </span>
             <span className="ui-twc__pop-kind">
               {KIND_LABEL[span.kind]}
-              {span.model ? ` \u00b7 ${span.model}` : span.detail ? ` \u00b7 ${span.detail}` : ``}
+              {span.model ? ` \u00b7 ${span.model}` : span.detail && !detailJson ? ` \u00b7 ${span.detail}` : ``}
             </span>
           </span>
-          <span className="ui-twc__pill" data-status={span.status}>
+          <Badge size="sm" variant={STATUS_VARIANT[span.status]}>
             {STATUS_LABEL[span.status]}
-          </span>
-          <button
+          </Badge>
+          <Button
+            size="icon-sm"
+            variant="ghost"
             type="button"
-            className="ui-twc__close"
             aria-label="Close details"
             onClick={() => {
               setOpen(null);
@@ -781,7 +898,7 @@ export function TraceWaterfall({
             }}
           >
             <CloseIcon />
-          </button>
+          </Button>
         </div>
         <dl className="ui-twc__pop-stats">
           {stats.map(([k, v]) => (
@@ -791,6 +908,17 @@ export function TraceWaterfall({
             </div>
           ))}
         </dl>
+        {detailJson && (
+          <div className="ui-twc__pop-io">
+            <span>
+              参数
+              {detailJson.truncated && <span className="ui-twc__pop-hint">已截断</span>}
+            </span>
+            <div className="max-h-56 overflow-auto rounded-md border">
+              <JsonViewer data={detailJson.value} defaultExpanded={1} mini />
+            </div>
+          </div>
+        )}
         {span.error && (
           <p className="ui-twc__pop-error">
             <WarnIcon />
@@ -799,18 +927,8 @@ export function TraceWaterfall({
             </span>
           </p>
         )}
-        {span.input && (
-          <div className="ui-twc__pop-io">
-            <span>Input</span>
-            <p dir="auto">{span.input}</p>
-          </div>
-        )}
-        {span.output && (
-          <div className="ui-twc__pop-io">
-            <span>Output</span>
-            <p dir="auto">{span.output}</p>
-          </div>
-        )}
+        {span.input && <Payload label="Input" value={span.input} />}
+        {span.output && <Payload label="Output" value={span.output} />}
       </div>
     );
   };
@@ -849,10 +967,59 @@ export function TraceWaterfall({
         <span className="ui-twc__task" dir="auto">
           {root.input ?? root.name}
         </span>
-        <span className="ui-twc__pill" data-status={runState} aria-live="polite">
+        <Badge size="sm" variant={STATUS_VARIANT[runState]} aria-live="polite">
           {runState === `running` && <span className="ui-twc__pulse" aria-hidden="true" />}
           {runState === `running` ? `Live` : STATUS_LABEL[runState]}
-        </span>
+        </Badge>
+        <div className="ui-twc__filter">
+          <Combobox
+            items={toolOptionList.map((option) => option.name)}
+            multiple
+            value={toolFilter}
+            onValueChange={(value) => setToolFilter(value as string[])}
+          >
+            <ComboboxValue>
+              {(value: string[]) => (
+                <ComboboxChips className="w-44" data-size="sm">
+                  {value.map((name) => {
+                    const option = toolOptionList.find((o) => o.name === name);
+                    const Icon = toolIconOf(option?.kind ?? `other`);
+                    return (
+                      <ComboboxChip key={name} className="gap-1">
+                        <Icon aria-hidden="true" />
+                        <span className="max-w-28 truncate">{name}</span>
+                      </ComboboxChip>
+                    );
+                  })}
+                  <ComboboxChipsInput
+                    size="sm"
+                    placeholder={value.length ? `` : `全部工具`}
+                    aria-label="过滤工具"
+                    title="按工具名过滤，可多选"
+                  />
+                </ComboboxChips>
+              )}
+            </ComboboxValue>
+            <ComboboxPopup>
+              <ComboboxEmpty>没有匹配的工具</ComboboxEmpty>
+              <ComboboxList>
+                {(item: string) => {
+                  const option = toolOptionList.find((o) => o.name === item);
+                  const Icon = toolIconOf(option?.kind ?? `other`);
+                  return (
+                    <ComboboxItem key={item} value={item}>
+                      <span className="flex w-full items-center gap-2">
+                        <Icon className="size-3.5 shrink-0" aria-hidden="true" />
+                        <span className="min-w-0 flex-1 truncate">{item}</span>
+                        <span className="text-muted-foreground text-xs tabular-nums">{option?.count ?? 0}</span>
+                      </span>
+                    </ComboboxItem>
+                  );
+                }}
+              </ComboboxList>
+            </ComboboxPopup>
+          </Combobox>
+        </div>
       </header>
       <div className="ui-twc__card">
         <dl className="ui-twc__stats">

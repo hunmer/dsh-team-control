@@ -14,3 +14,6 @@ demo/.tmp/
 src/web-ui/.npm-cache/
 src/web-ui/.tmp/
 src/web-ui/.vite/
+.tmp-chrome/
+src/web-ui/.tmp-build/
+.tmp-token

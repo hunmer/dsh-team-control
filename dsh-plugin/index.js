@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { priceUsage } from './pricing.js';
 
 /** Cordis plugin name. */
 export const name = 'dsh-team';
@@ -37,6 +38,10 @@ function resolveConfig(config) {
     requestTimeoutMs: Number(c.requestTimeoutMs) || 60000,
     // 把每次工具调用作为 trace span 上报到 sidecar（成员看板瀑布实时展示）
     reportToolCalls: c.reportToolCalls !== false,
+    // 把每次 LLM 调用的 token 用量与折算金额作为 span 上报（瀑布里的 ¥/$ 金额来源）
+    reportLlmCalls: c.reportLlmCalls !== false,
+    // 覆盖/扩展单价表（键为 provider id，结构见 pricing.js 的 DEFAULT_PRICE_TABLES）
+    pricingTables: c.pricingTables && typeof c.pricingTables === 'object' ? c.pricingTables : null,
     traceInputMax: Number(c.traceInputMax) || 1200,
     // agent 运行时：成员在 sidecar 认领任务后，由本插件用 subagents.sendMessage 派发
     agentAutoDispatch: c.agentAutoDispatch !== false,
@@ -339,6 +344,8 @@ async function dispatchLoop(s, ctx, teamId) {
         return { dispatched, ...(r && r.reason ? { reason: r.reason } : {}) };
       }
       const { task, member } = r;
+      // 先记绑定再投递：成员第一轮 LLM 调用可能在 sendMessage 返回后就已开始
+      if (member.agentSessionId) rememberMember(member.agentSessionId, teamId, member.id);
       try {
         await deliverTask(s, ctx, lead, teamId, task, member);
       } catch (err) {
@@ -349,7 +356,6 @@ async function dispatchLoop(s, ctx, teamId) {
         }).catch(() => { /* ignore */ });
         return { dispatched, error: `sendMessage failed: ${String(err?.message || err)}` };
       }
-      if (member.agentSessionId) rememberMember(member.agentSessionId, teamId, member.id);
       dispatched.push({ taskId: task.id, task: task.subject, member: member.name });
     }
     return { dispatched, reason: 'max_rounds' };
@@ -1061,6 +1067,82 @@ async function traceToolCall(s, exec, next) {
   return result;
 }
 
+// ---------- LLM 调用 span：真实 token 用量 + 按单价表折算的金额 ----------
+// DSH 内核只上报 token，不报钱；金额由 pricing.js 折算。查不到单价就只报 token。
+let llmSpanSeq = 0;
+
+const fmtTokens = (v) => {
+  const n = Number(v) || 0;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k`;
+  return String(Math.round(n));
+};
+
+const PURPOSE_LABEL = { compaction: '上下文压缩', 'session-title': '会话标题' };
+
+/**
+ * `llm/stream` waterfall：包住一次流式模型调用，抓 usage 后再补一条终态 span。
+ * 没有团队归属的会话（普通对话、非团队成员）直接透传，零开销。
+ */
+function traceLlmCall(s, options, next) {
+  const stream = next();
+  if (!s.reportLlmCalls) return stream;
+  const sessionId = options?.sessionId != null ? String(options.sessionId) : null;
+  const member = sessionId ? sessionMember.get(sessionId) : null;
+  const teamId = member?.teamId || (sessionId ? teamBySession.get(sessionId) : null) || null;
+  if (!teamId) return stream;
+
+  const provider = options?.provider != null ? String(options.provider) : null;
+  const model = options?.model != null ? String(options.model) : null;
+  const purpose = options?.purpose || null;
+  const startMs = Date.now();
+  const spanId = `llm:${sessionId || 'host'}:${startMs.toString(36)}-${++llmSpanSeq}`;
+  const base = {
+    teamId, sessionId, spanId, kind: 'llm', name: model || provider || 'llm', model, provider,
+    ...(member?.memberId ? { memberId: member.memberId } : {}),
+  };
+  postSpan(s, {
+    ...base, status: 'running', startMs,
+    detail: PURPOSE_LABEL[purpose] || null,
+    meta: { provider, purpose },
+  });
+
+  return (async function* traced() {
+    let usage = null;
+    try {
+      for await (const chunk of stream) {
+        if (chunk && chunk.type === 'usage' && chunk.usage) usage = chunk.usage;
+        yield chunk;
+      }
+    } catch (err) {
+      postSpan(s, {
+        ...base, status: 'failed', startMs, endMs: Date.now(),
+        detail: PURPOSE_LABEL[purpose] || null,
+        error: clipText(err?.message || String(err), 2000),
+      });
+      throw err;
+    }
+    const endMs = Date.now();
+    const tokensIn = usage
+      ? (Number(usage.inputTokens) || 0) + (Number(usage.cacheReadTokens) || 0) + (Number(usage.cacheWriteTokens) || 0)
+      : null;
+    const tokensOut = usage ? (Number(usage.outputTokens) || 0) : null;
+    const priced = usage ? priceUsage({ provider, model, usage, atMs: endMs, tables: s.pricingTables }) : null;
+    const parts = [];
+    if (usage) parts.push(`${fmtTokens(tokensIn)} in · ${fmtTokens(tokensOut)} out`);
+    if (usage && Number(usage.cacheReadTokens) > 0) parts.push(`缓存命中 ${fmtTokens(usage.cacheReadTokens)}`);
+    if (priced && priced.peak) parts.push('高峰价');
+    if (PURPOSE_LABEL[purpose]) parts.push(PURPOSE_LABEL[purpose]);
+    postSpan(s, {
+      ...base, status: 'done', startMs, endMs,
+      tokensIn, tokensOut,
+      cost: priced ? priced.cost : null,
+      detail: parts.join(' · ') || null,
+      meta: { provider, purpose, currency: priced?.currency ?? null, peak: priced?.peak ?? null, usage: usage ?? null },
+    });
+  })();
+}
+
 /** Cordis apply：注册全局工具，接管自动拉起的 sidecar，并把 agent 生命周期桥接到 sidecar。 */
 export function apply(ctx, config) {
   const s = resolveConfig(config);
@@ -1078,6 +1160,11 @@ export function apply(ctx, config) {
 
   if (s.reportToolCalls) {
     ctx.on('tools/execute', (exec, next) => traceToolCall(s, exec, next));
+  }
+
+  // 每次 LLM 调用的 token 用量 → 金额（瀑布里的 ¥/$ 就来自这条 span）
+  if (s.reportLlmCalls) {
+    ctx.on('llm/stream', (options, next) => traceLlmCall(s, options, next));
   }
 
   // 模型目录变化（provider 配置/适配器注册变化）→ 下次工具调用重新同步

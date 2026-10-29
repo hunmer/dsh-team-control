@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { AGENT_TREE_CSS } from "./agent-tree-css";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 
 /** One agent in the tree. Pass the whole tree every time something changes -
  *  ids keep the cards in place, new ids grow in with a drawn connector. */
@@ -54,6 +56,15 @@ const STATUS_LABEL: Record<AgentStatus, string> = {
   done: `Done`,
   failed: `Failed`,
   stopped: `Stopped`,
+};
+
+const STATUS_VARIANT: Record<AgentStatus, `info` | `warning` | `success` | `error` | `outline` | `secondary`> = {
+  queued: `outline`,
+  running: `info`,
+  waiting: `warning`,
+  done: `success`,
+  failed: `error`,
+  stopped: `secondary`,
 };
 
 const formatCost = (v: number) =>
@@ -170,8 +181,8 @@ const StatusGlyph = ({ status }: { status: AgentStatus }) =>
   );
 
 // Hugeicons Free (MIT) chevron-down
-const ChevronDown = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+const ChevronDown = ({ className }: { className?: string }) => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
     <path
       d="M18 9.00005C18 9.00005 13.5811 15 12 15C10.4188 15 6 9 6 9"
       stroke="currentColor"
@@ -343,11 +354,14 @@ export function AgentTree({
     if (!tree) return;
     const treeRect = tree.getBoundingClientRect();
     const zoom = tree.offsetWidth ? treeRect.width / tree.offsetWidth : 1;
+    // tree 现在可内部滚动：换算成内容坐标时要加回滚动偏移
+    const scrollLeft = tree.scrollLeft;
+    const scrollTop = tree.scrollTop;
     const relRect = (el: HTMLElement) => {
       const r = el.getBoundingClientRect();
       return {
-        x: (r.left - treeRect.left) / zoom,
-        y: (r.top - treeRect.top) / zoom,
+        x: (r.left - treeRect.left + scrollLeft) / zoom,
+        y: (r.top - treeRect.top + scrollTop) / zoom,
         w: r.width / zoom,
         h: r.height / zoom,
       };
@@ -616,10 +630,10 @@ export function AgentTree({
               </span>
             )}
           </span>
-          <span className="ui-agtc__status" data-status={agent.status}>
+          <Badge size="sm" variant={STATUS_VARIANT[agent.status]}>
             <StatusGlyph status={agent.status} />
             {STATUS_LABEL[agent.status]}
-          </span>
+          </Badge>
         </div>
         {agent.task || agent.tools?.length ? (
           <p className="ui-agtc__task" dir="auto" title={agent.task}>
@@ -662,9 +676,11 @@ export function AgentTree({
             ) : null}
           </span>
           {children.length > 0 && (
-            <button
+            <Button
+              size="xs"
+              variant="ghost"
+              className="h-5 gap-0.5 px-1 text-[11px]"
               type="button"
-              className="ui-agtc__fold"
               aria-expanded={!folded}
               aria-label={
                 folded
@@ -678,8 +694,10 @@ export function AgentTree({
               }}
             >
               {folded ? `+${hidden}` : children.length}
-              <ChevronDown />
-            </button>
+              <ChevronDown
+                className={folded ? `rotate-[-90deg] transition-transform` : `transition-transform`}
+              />
+            </Button>
           )}
         </div>
       </div>
@@ -759,32 +777,36 @@ export function AgentTree({
             </span>
           )}
           {waitingCount > 0 && (
-            <button
-              type="button"
-              className="ui-agtc__sum-btn"
-              data-kind="waiting"
+            <Badge
+              size="sm"
+              variant="warning"
               aria-expanded={dialog === `waiting`}
               aria-haspopup="dialog"
+              render={<button type="button" />}
               onClick={() => setDialog((d) => (d === `waiting` ? null : `waiting`))}
             >
               {intFmt.format(waitingCount)}
               {` needs you`}
-              <ChevronDown />
-            </button>
+              <ChevronDown
+                className={dialog === `waiting` ? `rotate-180 transition-transform` : `transition-transform`}
+              />
+            </Badge>
           )}
           {failedCount > 0 && (
-            <button
-              type="button"
-              className="ui-agtc__sum-btn"
-              data-kind="failed"
+            <Badge
+              size="sm"
+              variant="error"
               aria-expanded={dialog === `failed`}
               aria-haspopup="dialog"
+              render={<button type="button" />}
               onClick={() => setDialog((d) => (d === `failed` ? null : `failed`))}
             >
               {intFmt.format(failedCount)}
               {` failed`}
-              <ChevronDown />
-            </button>
+              <ChevronDown
+                className={dialog === `failed` ? `rotate-180 transition-transform` : `transition-transform`}
+              />
+            </Badge>
           )}
           <span className="ui-agtc__sum-cost">
             <span className="ui-agtc__amount" data-live={runningCount > 0 ? `` : void 0}>
@@ -802,9 +824,9 @@ export function AgentTree({
             {dialogAgents.map((agent, i) => (
               <div className="ui-agtc__pop-item" key={agent.id}>
                 <span className="ui-agtc__pop-head">
-                  <span className="ui-agtc__status" data-status={agent.status}>
+                  <Badge size="sm" variant={STATUS_VARIANT[agent.status]}>
                     <StatusGlyph status={agent.status} />
-                  </span>
+                  </Badge>
                   <span className="ui-agtc__pop-name" dir="auto">
                     {agent.name}
                   </span>
@@ -818,21 +840,22 @@ export function AgentTree({
                   </span>
                 )}
                 <span className="ui-agtc__pop-actions">
-                  <button
+                  <Button
+                    size="xs"
+                    variant="outline"
                     type="button"
-                    className="ui-agtc__btn"
                     onClick={() => resolve(agent, dialog === `waiting` ? `reject` : `dismiss`)}
                   >
                     {dialog === `waiting` ? `Reject` : `Dismiss`}
-                  </button>
-                  <button
+                  </Button>
+                  <Button
+                    size="xs"
                     type="button"
-                    className="ui-agtc__btn ui-agtc__btn--primary"
                     autoFocus={i === 0}
                     onClick={() => resolve(agent, dialog === `waiting` ? `approve` : `retry`)}
                   >
                     {dialog === `waiting` ? `Approve` : `Retry`}
-                  </button>
+                  </Button>
                 </span>
               </div>
             ))}

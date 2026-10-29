@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS team (
   auto_approve_json TEXT,
   auto_takeover INTEGER NOT NULL DEFAULT 0,
   runtime TEXT NOT NULL DEFAULT 'worker',
+  archived_at TEXT,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 
@@ -204,6 +205,7 @@ export function openDb(file) {
   // 轻量迁移：老库补列（不重建表）
   ensureColumn(db, 'team', 'auto_takeover', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'team', 'runtime', "TEXT NOT NULL DEFAULT 'worker'");
+  ensureColumn(db, 'team', 'archived_at', 'TEXT');
   ensureColumn(db, 'member', 'agent_session_id', 'TEXT');
   ensureColumn(db, 'todo', 'task_id', 'TEXT');
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_todo_task ON todo(task_id, order_no)'); } catch { /* ignore */ }

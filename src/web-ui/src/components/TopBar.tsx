@@ -1,60 +1,124 @@
 /**
- * 顶栏（PRD FR-3.3）：保留连接状态、快照、刷新快照、导出报告与主题切换，
- * 适配 affectui AppShell 48px 顶栏；团队切换已移到左侧栏顶部（TeamSelect）。
+ * 顶栏：按反馈去掉快照信息、刷新快照、导出报告；连接正常（live）时不再常驻「实时」胶囊，
+ * 仅在连接中 / 重连 / 离线时提示。右侧：团队运行状态按钮（停止/删除/停止并删除）+ 主题切换。
  */
-import { useMemo } from 'react';
-import { Moon, Sun } from 'lucide-react';
+import { Archive, ChevronDown, Moon, Square, Sun, Trash2 } from 'lucide-react';
 import { usePanel } from '@/store';
-import { fmtDateTime } from '@/lib/format';
 import { Button } from '@/components/ui/button';
+import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from '@/components/ui/menu';
 import { Spinner } from '@/components/ui/spinner';
 import { useTheme } from '@/theme';
+import type { TeamRunStatus } from '@/types';
 
-const CONN_LABELS = { connecting: '连接中…', live: '实时', reconnecting: '重连中…', offline: '离线' } as const;
+const CONN_LABELS = { connecting: '连接中…', reconnecting: '重连中…', offline: '离线' } as const;
 const CONN_CLASS = {
   connecting: 'border-border text-muted-foreground',
-  live: 'border-emerald-500/50 text-emerald-600 dark:text-emerald-400',
   reconnecting: 'border-amber-500/50 text-amber-600 dark:text-amber-400',
   offline: 'border-red-500/50 text-red-600 dark:text-red-400',
 } as const;
 
+const RUN_LABEL: Record<TeamRunStatus, string> = { running: '运行中', blocked: '阻塞', idle: '空闲', empty: '无成员' };
+const RUN_DOT: Record<TeamRunStatus, string> = {
+  running: 'bg-emerald-500',
+  blocked: 'bg-amber-500',
+  idle: 'bg-muted-foreground/50',
+  empty: 'bg-muted-foreground/30',
+};
+
 export function TopBar() {
-  const { state, refreshTeams, refreshAll, exportReport, toast } = usePanel();
-  const { teamId, conn, snapshot } = state;
+  const { state, stopTeam, archiveTeam, deleteTeam } = usePanel();
+  const { conn, teamId, teams, members } = state;
   const [theme, toggleTheme] = useTheme();
 
-  const snapshotText = useMemo(
-    () => (snapshot
-      ? [snapshot.asOf ? '快照 ' + fmtDateTime(snapshot.asOf) : '', snapshot.version != null ? 'v' + snapshot.version : ''].filter(Boolean).join(' · ') || '—'
-      : '—'),
-    [snapshot],
-  );
+  const team = teams.find((t) => t.id === teamId) ?? null;
+  const active = members.filter((m) => m.status !== 'retired');
+  const runningCount = active.filter((m) => m.status === 'running' || m.status === 'provisioning').length;
+  const blockedCount = active.filter((m) => m.status === 'blocked').length;
+  const status: TeamRunStatus = !team
+    ? 'empty'
+    : runningCount > 0
+      ? 'running'
+      : blockedCount > 0
+        ? 'blocked'
+        : active.length > 0
+          ? 'idle'
+          : 'empty';
+  const canStop = status === 'running' || status === 'blocked';
+  const name = team ? team.name || team.id : '';
+  const extra = runningCount > 0 ? `\n该团队有 ${runningCount} 个成员正在运行，删除会中断它们。` : '';
+
+  const confirmDelete = () => {
+    if (!team) return;
+    if (!window.confirm(`删除团队「${name}」？成员、任务、事件记录都会一并删除，无法恢复。${extra}`)) return;
+    void deleteTeam();
+  };
+  const confirmArchive = () => {
+    if (!team) return;
+    if (!window.confirm(`封存团队「${name}」？${runningCount > 0 ? `运行中的 ${runningCount} 个成员会被停止；` : ''}封存后可在设置中恢复。`)) return;
+    void archiveTeam();
+  };
+  const stopAndDelete = () => {
+    if (!team) return;
+    if (!window.confirm(`停止并删除团队「${name}」？运行中的成员会被中断，成员、任务、事件记录都会一并删除，无法恢复。`)) return;
+    void (async () => {
+      await stopTeam();
+      await deleteTeam();
+    })();
+  };
 
   return (
-    <div className="flex min-w-0 flex-1 items-center gap-2">
-      <div className={`flex flex-none items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs ${CONN_CLASS[conn]}`} role="status" title="SSE 实时连接状态">
-        {conn === 'connecting' || conn === 'reconnecting' ? <Spinner className="size-3" /> : <span className="size-1.5 rounded-full bg-current" />}
-        {CONN_LABELS[conn]}
-      </div>
-      <div className="hidden min-w-0 truncate text-xs text-muted-foreground xl:block" title={snapshot?.asOf ? 'asOf=' + snapshot.asOf : ''}>
-        {snapshotText}
-      </div>
-      <div className="ms-auto flex flex-none items-center gap-1.5">
-        <Button size="sm" variant="outline" onClick={() => {
-          if (!teamId) return;
-          void refreshTeams().then(() => refreshAll()).then(() => { toast('快照已刷新', 'ok', 2000); }).catch((err) => toast('刷新失败：' + (err instanceof Error ? err.message : String(err)), 'error'));
-        }}>刷新快照</Button>
-        <Button size="sm" disabled={!teamId} onClick={() => void exportReport()}>导出报告</Button>
-        <Button
-          size="icon-sm"
-          variant="ghost"
-          aria-label={theme === 'dark' ? '切换到浅色' : '切换到深色'}
-          title={theme === 'dark' ? '切换到浅色' : '切换到深色'}
-          onClick={toggleTheme}
+    <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
+      {conn !== 'live' ? (
+        <div
+          className={`flex flex-none items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs ${CONN_CLASS[conn]}`}
+          role="status"
+          title="SSE 连接状态"
         >
-          {theme === 'dark' ? <Sun /> : <Moon />}
-        </Button>
-      </div>
+          {conn === 'connecting' || conn === 'reconnecting' ? <Spinner className="size-3" /> : <span className="size-1.5 rounded-full bg-current" />}
+          {CONN_LABELS[conn]}
+        </div>
+      ) : null}
+      <Menu>
+        <MenuTrigger
+          render={<Button size="sm" variant="ghost" className="gap-1.5 px-2 text-xs" disabled={!team} title="团队运行操作" />}
+        >
+          <span
+            aria-hidden="true"
+            className={`size-1.5 flex-none rounded-full ${RUN_DOT[status]} ${status === 'running' ? 'animate-pulse' : ''}`}
+          />
+          {team ? RUN_LABEL[status] : '无团队'}
+          <ChevronDown className="size-3.5 opacity-60" />
+        </MenuTrigger>
+        <MenuPopup align="end" className="w-40">
+          <MenuItem onClick={() => void stopTeam()} disabled={!canStop}>
+            <Square />
+            停止
+          </MenuItem>
+          <MenuItem onClick={confirmArchive} disabled={!team}>
+            <Archive />
+            封存
+          </MenuItem>
+          <MenuItem variant="destructive" onClick={confirmDelete} disabled={!team}>
+            <Trash2 />
+            删除
+          </MenuItem>
+          <MenuSeparator />
+          <MenuItem variant="destructive" onClick={stopAndDelete} disabled={!team}>
+            <Square />
+            <Trash2 />
+            停止并删除
+          </MenuItem>
+        </MenuPopup>
+      </Menu>
+      <Button
+        size="icon-sm"
+        variant="ghost"
+        aria-label={theme === 'dark' ? '切换到浅色' : '切换到深色'}
+        title={theme === 'dark' ? '切换到浅色' : '切换到深色'}
+        onClick={toggleTheme}
+      >
+        {theme === 'dark' ? <Sun /> : <Moon />}
+      </Button>
     </div>
   );
 }

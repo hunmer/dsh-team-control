@@ -22,6 +22,8 @@ import {
 } from "react";
 import { jsx, jsxs } from "react/jsx-runtime";
 import { AGENT_LANES_CSS } from "./agent-lanes-css";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 
 /* ------------------------------------------------------------------ types */
 
@@ -371,7 +373,12 @@ export function AgentLanes({
                                       ? undefined
                                       : "",
                                   "aria-hidden": active?.status === "running",
-                                  children: jsx("span", {
+                                  children: jsx(Badge, {
+                                    size: "sm",
+                                    variant:
+                                      active?.status === "waiting"
+                                        ? "warning"
+                                        : "secondary",
                                     children:
                                       active?.status === "waiting"
                                         ? "Needs you"
@@ -586,16 +593,16 @@ export function AgentLanes({
                             jsxs("span", {
                               className: "ui-alc__ask-actions",
                               children: [
-                                jsx("button", {
+                                jsx(Button, {
+                                  size: "xs",
                                   type: "button",
-                                  className: "ui-alc__btn",
+                                  variant: "outline",
                                   onClick: () => decide(openTask, false),
                                   children: `Reject`,
                                 }),
-                                jsx("button", {
+                                jsx(Button, {
+                                  size: "xs",
                                   type: "button",
-                                  className:
-                                    "ui-alc__btn ui-alc__btn--primary",
                                   autoFocus: true,
                                   onClick: () => decide(openTask, true),
                                   children: `Approve`,
@@ -655,9 +662,11 @@ export function AgentLanes({
                                 children: openTask.title,
                               }),
                           onOpen &&
-                            jsx("button", {
+                            jsx(Button, {
+                              className: "justify-self-start text-white dark:text-black",
+                              size: "xs",
                               type: "button",
-                              className: "ui-alc__tip-open",
+                              variant: "link",
                               onClick: () => onOpen(openTask),
                               children: `Open`,
                             }),
