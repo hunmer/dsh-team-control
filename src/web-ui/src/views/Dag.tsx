@@ -9,6 +9,7 @@ import { truncate } from '@/lib/format';
 import type { DagData, DagNode } from '@/types';
 import { AgentTree, type AgentStatus, type TreeAgent } from '@/components/agent-tree/agent-tree';
 import { EmptyState, MetaLine, SectionHead } from '@/components/Bits';
+import { DotPattern } from '@/components/DotPattern';
 import { modelAvatar } from '@/components/ModelAvatar';
 
 const shortId = (id: string) => (id.includes('_') ? id.slice(id.lastIndexOf('_') + 1) : id);
@@ -123,12 +124,20 @@ export function DagView() {
   );
 
   return (
-    <section className="space-y-3">
-      <AgentTree
-        root={tree}
-        title="依赖 DAG"
-        formatCost={() => ''}
+    <section className="relative flex h-full min-h-0 flex-col gap-3">
+      <DotPattern
+        width={18}
+        height={18}
+        cr={1}
+        className="fill-muted-foreground/30 [mask-image:radial-gradient(ellipse_at_center,black,transparent_85%)]"
       />
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <AgentTree
+          root={tree}
+          title="依赖 DAG"
+          formatCost={() => ''}
+        />
+      </div>
     </section>
   );
 }

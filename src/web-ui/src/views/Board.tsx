@@ -44,6 +44,9 @@ const WINDOWS: Array<[number, string]> = [
   [360, '近 6 小时'],
 ];
 
+/** Base UI Select 需要 items 才能把 value 映射回显示文案，否则触发器直接显示原始值（0/5/30…） */
+const WINDOW_ITEMS = WINDOWS.map(([value, label]) => ({ value: String(value), label }));
+
 export function BoardView() {
   const { state, refreshTrace, setTraceWindow } = usePanel();
   const { teamId, members, trace, errors, traceWindow } = state;
@@ -101,7 +104,11 @@ export function BoardView() {
         meta={<MetaLine>{metaParts.length ? metaParts.join(' · ') : '实时工具调用与步骤时间线'}</MetaLine>}
         controls={
           <div className="flex items-center gap-2">
-            <Select value={String(traceWindow)} onValueChange={(value) => setTraceWindow(Number(value))}>
+            <Select
+              items={WINDOW_ITEMS}
+              value={String(traceWindow)}
+              onValueChange={(value) => setTraceWindow(Number(value))}
+            >
               <SelectTrigger
                 size="sm"
                 className="w-40"

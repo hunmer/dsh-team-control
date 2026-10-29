@@ -26,7 +26,7 @@ export const COMPONENTS = [
   'alert', 'avatar', 'badge', 'button', 'card', 'collapsible', 'dialog', 'empty',
   'input', 'kbd', 'label', 'menu', 'popover', 'progress', 'scroll-area',
   'segmented-control', 'select', 'separator', 'sheet', 'sidebar', 'skeleton',
-  'spinner', 'table', 'tabs', 'textarea', 'toast', 'tooltip',
+  'spinner', 'switch', 'table', 'tabs', 'textarea', 'toast', 'tooltip',
 ];
 
 const rewriteImport = (code) => code

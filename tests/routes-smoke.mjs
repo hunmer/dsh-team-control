@@ -41,6 +41,19 @@ try {
   await hit('GET /api/teams', 'GET', '/api/teams');
   await hit('GET /api/teams/{id}', 'GET', `/api/teams/${team.id}`);
   await hit('PATCH /api/teams/{id}', 'PATCH', `/api/teams/${team.id}`, { maxConcurrency: 3, autoTakeover: true });
+  // 封存 / 恢复 / 面板设置
+  await hit('GET /api/settings', 'GET', '/api/settings');
+  await hit('PATCH /api/settings', 'PATCH', '/api/settings', { autoArchive: { enabled: true, days: 9 } });
+  await hit('PATCH /api/settings days=0(400)', 'PATCH', '/api/settings', { autoArchive: { days: 0 } }, 400);
+  const archivedTeam = (await hit('POST /api/teams/{id}/archive', 'POST', `/api/teams/${team.id}/archive`, {})).json;
+  assert(archivedTeam.archivedAt, 'archive 返回 archivedAt');
+  const activeIds = (await hit('GET /api/teams', 'GET', '/api/teams')).json.items.map((t) => t.id);
+  assert(!activeIds.includes(team.id), '已封存团队不在默认列表');
+  const archivedIds = (await hit('GET /api/teams?archived=1', 'GET', '/api/teams?archived=1')).json.items.map((t) => t.id);
+  assert(archivedIds.includes(team.id), '已封存团队出现在 archived=1 列表');
+  const restored = (await hit('POST /api/teams/{id}/restore', 'POST', `/api/teams/${team.id}/restore`, {})).json;
+  assert(restored.archivedAt == null, 'restore 清空 archivedAt');
+  await hit('PATCH /api/settings 复位', 'PATCH', '/api/settings', { autoArchive: { enabled: true, days: 7 } });
   await hit('POST /api/policies', 'POST', '/api/policies', { teamId: team.id, subjectType: 'team', subjectId: team.id, domain: 'fs', matcher: '**', ops: ['write', 'delete'], mode: 'allow' });
   const pols = (await hit('GET /api/policies', 'GET', `/api/policies?team=${team.id}`)).json;
   await hit('DELETE /api/policies/{id}', 'DELETE', `/api/policies/${pols.items.find((p) => p.matcher === '**' && p.domain === 'fs' && p.mode === 'allow').id}`);

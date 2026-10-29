@@ -45,10 +45,17 @@ export interface AgentInboxProps {
 }
 
 const LANES = [
-  { id: 'needs', label: '需要你' },
-  { id: 'running', label: '进行中' },
-  { id: 'done', label: '已完成' },
+  { id: 'needs', label: '需要你', tone: 'warning' as const },
+  { id: 'running', label: '进行中', tone: 'info' as const },
+  { id: 'done', label: '已完成', tone: 'success' as const },
 ] as const;
+
+/** 泳道标题配色：需要你=琥珀、进行中=天蓝、已完成=翠绿。 */
+const LANE_TONE = {
+  warning: { text: 'text-amber-600 dark:text-amber-400', dot: 'bg-amber-500' },
+  info: { text: 'text-sky-600 dark:text-sky-400', dot: 'bg-sky-500' },
+  success: { text: 'text-emerald-600 dark:text-emerald-400', dot: 'bg-emerald-500' },
+} as const;
 
 type LaneId = (typeof LANES)[number]['id'];
 
@@ -95,7 +102,7 @@ function TaskCard({ task, onApprove, onReject, onRetry, onOpen }: { task: AgentT
   const elapsed = task.elapsed ?? (task.startedAt !== undefined ? Math.max(0, now - toTime(task.startedAt)) : undefined);
 
   return (
-    <Card className="gap-0 p-3 shadow-none">
+    <Card className="min-w-0 gap-0 overflow-hidden p-3 shadow-none">
       <div className="flex items-start gap-2">
         <div className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
           {task.logo ?? <Sparkles className="size-3.5" />}
@@ -112,7 +119,9 @@ function TaskCard({ task, onApprove, onReject, onRetry, onOpen }: { task: AgentT
             <span className="truncate">{task.agent}</span>
             {elapsed !== undefined && <span className="shrink-0 tabular-nums">· {formatDuration(elapsed)}</span>}
           </div>
-          {task.description && <p className="mt-1 line-clamp-3 text-muted-foreground text-xs">{task.description}</p>}
+          {task.description && (
+            <p className="mt-1 line-clamp-3 break-words text-muted-foreground text-xs">{task.description}</p>
+          )}
 
           {steps.length > 0 && (
             <Collapsible className="mt-1.5">
@@ -167,21 +176,22 @@ function TaskCard({ task, onApprove, onReject, onRetry, onOpen }: { task: AgentT
 
 export function AgentInbox({ tasks, onApprove, onReject, onRetry, onOpen, title = '实时收件箱', className }: AgentInboxProps) {
   return (
-    <div className={cn('space-y-3', className)}>
-      <div className="flex items-center gap-2">
+    <div className={cn('flex min-h-0 flex-col gap-3', className)}>
+      <div className="flex shrink-0 items-center gap-2">
         <span className="font-semibold text-sm">{title}</span>
         <span className="text-muted-foreground text-xs">{tasks.length} 张卡</span>
       </div>
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 md:flex-row">
         {LANES.map((lane) => {
           const items = tasks.filter((task) => laneOf(task.status) === lane.id);
           return (
-            <div className="flex min-w-0 flex-col gap-2" key={lane.id}>
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2" key={lane.id}>
               <div className="flex items-center gap-1.5 px-1">
-                <span className="font-medium text-muted-foreground text-xs">{lane.label}</span>
-                <Badge size="sm" variant="secondary">{items.length}</Badge>
+                <span className={`size-1.5 shrink-0 rounded-full ${LANE_TONE[lane.tone].dot}`} />
+                <span className={`font-medium text-xs ${LANE_TONE[lane.tone].text}`}>{lane.label}</span>
+                <Badge size="sm" variant={lane.tone}>{items.length}</Badge>
               </div>
-              <div className="max-h-[520px] space-y-2 overflow-y-auto pr-0.5">
+              <div className="max-h-[420px] min-h-0 flex-1 space-y-2 overflow-y-auto pr-0.5 xl:max-h-none">
                 {items.length ? (
                   items.map((task) => (
                     <TaskCard

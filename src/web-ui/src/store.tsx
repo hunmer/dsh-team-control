@@ -63,7 +63,7 @@ interface PanelState {
 const initialState: PanelState = {
   teamId: null, team: null, teams: [], noTeams: false,
   members: [], staleMembers: new Set(), degraded: false, snapshot: null,
-  dag: null, tasks: [], todos: [], trace: null, traceWindow: 30, matrix: [], policies: [], scopeRequests: [], messages: [],
+  dag: null, tasks: [], todos: [], trace: null, traceWindow: 0, matrix: [], policies: [], scopeRequests: [], messages: [],
   errors: {}, timeline: [], paused: false, speed: 1,
   tab: 'home', filters: { member: '', phase: '' }, conn: 'connecting',
 };
@@ -77,6 +77,12 @@ export interface PanelActions {
   toast(message: string, kind?: ToastItem['kind'], ttl?: number): void;
   selectTeam(teamId: string): Promise<void>;
   refreshTeams(): Promise<Team[]>;
+  /** 停止团队：中断所有活跃成员并保留团队；不传 teamId 用当前团队。 */
+  stopTeam(teamId?: string): Promise<void>;
+  /** 封存团队（先停止运行，仍可在设置里恢复）；不传 teamId 用当前团队。 */
+  archiveTeam(teamId?: string): Promise<void>;
+  /** 删除团队（成员/任务/事件级联清理）；不传 teamId 用当前团队。 */
+  deleteTeam(teamId?: string): Promise<void>;
   refreshAll(): Promise<void>;
   /** 落盘一条越界申请决策，并刷新审批队列/权限矩阵。 */
   decideScope(id: string, decision: 'approved' | 'denied'): Promise<void>;
@@ -229,6 +235,16 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     patchUi({ teams, noTeams: teams.length === 0 });
     return teams;
   }, [patchUi]);
+
+  /** 团队状态 badge 依赖成员状态：member.status 帧到达时去抖刷新团队列表（避免每个 step 一次请求） */
+  const teamsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshTeamsSoon = useCallback(() => {
+    if (teamsTimer.current) return;
+    teamsTimer.current = setTimeout(() => {
+      teamsTimer.current = null;
+      void refreshTeams().catch(() => undefined);
+    }, 400);
+  }, [refreshTeams]);
 
   const refreshStatus = useCallback(async () => {
     const response = await api<{ asOf?: string; version?: number; members?: Member[]; staleMembers?: string[]; degraded?: boolean }>(
@@ -442,6 +458,8 @@ export function PanelProvider({ children }: { children: ReactNode }) {
             status: payload.status as string, step: payload.step as string, seq: payload.seq as number,
             next: payload.next as string, last: payload.last as string, leaseUntil: payload.leaseUntil as string,
           });
+          // 成员状态变化 → 团队运行状态 badge 去抖刷新
+          refreshTeamsSoon();
           break;
         }
         case 'step.append': {
@@ -508,7 +526,7 @@ export function PanelProvider({ children }: { children: ReactNode }) {
         if (frame && typeof frame.type === 'string' && SSE_TYPES.includes(frame.type)) handleFrame(frame.type, event);
       } catch { /* 忽略非 JSON 帧 */ }
     };
-  }, [patchUi, refreshAll, scheduleRefresh, patchMember, ingestTimelineEntry, memberName, toast, probeAuth]);
+  }, [patchUi, refreshAll, scheduleRefresh, patchMember, refreshTeamsSoon, ingestTimelineEntry, memberName, toast, probeAuth]);
 
   connectSSERef.current = connectSSE;
 
@@ -536,6 +554,90 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     await backfillTimeline();
     connectSSE();
   }, [refreshAll, backfillTimeline, connectSSE, stopPlayback]);
+
+  const stopTeam = useCallback(async (teamId?: string) => {
+    const id = teamId || stateRef.current.teamId;
+    if (!id) { toast('请先选择团队', 'warn'); return; }
+    try {
+      await api('/api/teams/' + enc(id) + '/stop', { method: 'POST', body: {}, onUnauthorized });
+      await refreshTeams();
+      if (stateRef.current.teamId === id) await refreshAll();
+      toast('已停止团队运行', 'ok');
+    } catch (err) {
+      toast('停止团队失败：' + (err instanceof Error ? err.message : String(err)), 'error');
+    }
+  }, [onUnauthorized, refreshTeams, refreshAll, toast]);
+
+  const deleteTeam = useCallback(async (teamId?: string) => {
+    const id = teamId || stateRef.current.teamId;
+    if (!id) { toast('请先选择团队', 'warn'); return; }
+    try {
+      await api('/api/teams/' + enc(id) + '?confirm=1', { method: 'DELETE', onUnauthorized });
+      const teams = await refreshTeams();
+      if (stateRef.current.teamId === id) {
+        if (teams.length) {
+          await selectTeam(teams[0].id);
+        } else {
+          // 已无团队：断开 SSE 并清空面板，回到「暂无团队」空态
+          esRef.current?.close();
+          esRef.current = null;
+          stopPlayback();
+          pendingTimelineRef.current = [];
+          timelineIdsRef.current = new Set();
+          const cleared: Partial<PanelState> = {
+            teamId: null, team: null, members: [], staleMembers: new Set(), degraded: false, snapshot: null,
+            dag: null, tasks: [], todos: [], trace: null, matrix: [], policies: [], scopeRequests: [], messages: [],
+            timeline: [], errors: {},
+          };
+          stateRef.current = { ...stateRef.current, ...cleared };
+          setState((prev) => ({ ...prev, ...cleared }));
+          try {
+            const url = new URL(location.href);
+            url.searchParams.delete('team');
+            history.replaceState(null, '', url.pathname + url.search + url.hash);
+          } catch { /* ignore */ }
+        }
+      }
+      toast('团队已删除', 'ok');
+    } catch (err) {
+      toast('删除团队失败：' + (err instanceof Error ? err.message : String(err)), 'error');
+    }
+  }, [onUnauthorized, refreshTeams, selectTeam, stopPlayback, toast]);
+
+  const archiveTeam = useCallback(async (teamId?: string) => {
+    const id = teamId || stateRef.current.teamId;
+    if (!id) { toast('请先选择团队', 'warn'); return; }
+    try {
+      await api('/api/teams/' + enc(id) + '/archive', { method: 'POST', body: {}, onUnauthorized });
+      const teams = await refreshTeams();
+      // 封存的正是当前团队：切到剩余第一个，没有则退回空态（清空逻辑同删除）
+      if (stateRef.current.teamId === id) {
+        if (teams.length) await selectTeam(teams[0].id);
+        else {
+          esRef.current?.close();
+          esRef.current = null;
+          stopPlayback();
+          pendingTimelineRef.current = [];
+          timelineIdsRef.current = new Set();
+          const cleared: Partial<PanelState> = {
+            teamId: null, team: null, members: [], staleMembers: new Set(), degraded: false, snapshot: null,
+            dag: null, tasks: [], todos: [], trace: null, matrix: [], policies: [], scopeRequests: [], messages: [],
+            timeline: [], errors: {},
+          };
+          stateRef.current = { ...stateRef.current, ...cleared };
+          setState((prev) => ({ ...prev, ...cleared }));
+          try {
+            const url = new URL(location.href);
+            url.searchParams.delete('team');
+            history.replaceState(null, '', url.pathname + url.search + url.hash);
+          } catch { /* ignore */ }
+        }
+      }
+      toast('团队已封存，可在设置中恢复', 'ok');
+    } catch (err) {
+      toast('封存团队失败：' + (err instanceof Error ? err.message : String(err)), 'error');
+    }
+  }, [onUnauthorized, refreshTeams, selectTeam, stopPlayback, toast]);
 
   const boot = useCallback(async () => {
     if (bootedRef.current) return;
@@ -657,15 +759,16 @@ export function PanelProvider({ children }: { children: ReactNode }) {
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       stopPlayback();
       for (const timer of Object.values(refreshTimers.current)) clearTimeout(timer);
+      if (teamsTimer.current) clearTimeout(teamsTimer.current);
     };
   }, [boot, patchUi, stopPlayback]);
 
   const actions = useMemo<PanelActions>(() => ({
     state, toasts, authOverlay, bootError, memberName, toast,
-    selectTeam, refreshTeams, refreshAll, decideScope, refreshPermissions, refreshMessages, refreshStatus, refreshTrace, setTraceWindow,
+    selectTeam, refreshTeams, stopTeam, archiveTeam, deleteTeam, refreshAll, decideScope, refreshPermissions, refreshMessages, refreshStatus, refreshTrace, setTraceWindow,
     setTab, setPaused, setSpeed, setFilterMember, setFilterPhase, exportReport,
     retryBoot, submitToken,
-  }), [state, toasts, authOverlay, bootError, memberName, toast, selectTeam, refreshTeams, refreshAll, decideScope, refreshPermissions, refreshMessages, refreshStatus, refreshTrace, setTraceWindow, setTab, setPaused, setSpeed, setFilterMember, setFilterPhase, exportReport, retryBoot, submitToken]);
+  }), [state, toasts, authOverlay, bootError, memberName, toast, selectTeam, refreshTeams, stopTeam, archiveTeam, deleteTeam, refreshAll, decideScope, refreshPermissions, refreshMessages, refreshStatus, refreshTrace, setTraceWindow, setTab, setPaused, setSpeed, setFilterMember, setFilterPhase, exportReport, retryBoot, submitToken]);
 
   return <PanelContext.Provider value={actions}>{children}</PanelContext.Provider>;
 }

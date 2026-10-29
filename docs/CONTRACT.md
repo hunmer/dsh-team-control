@@ -75,11 +75,16 @@ CLI 通过 `<home>/run/sidecar.json` 发现端口，读 `<home>/token` 鉴权；
 | 方法 路径 | 请求 | 响应 |
 |---|---|---|
 | `POST /api/teams` | `{name, workspace, runtime?, maxMembers?, maxConcurrency?, failurePolicy?, maxAttempts?}` | `{team}`；`maxMembers` 默认 64，`0`=不限；`runtime` 默认 `worker` |
-| `GET /api/teams` | — | `{items:[team]}` |
+| `GET /api/teams` | `?archived=1` 只列已封存 | `{items:[team]}`；默认排除已封存，并触发一次自动封存扫描 |
 | `GET /api/teams/{id}` | — | `{team}` |
 | `PATCH /api/teams/{id}` | 任意可改字段 | `{team}` |
+| `POST /api/teams/{id}/stop` | `{reason?}` | `{team, stopped:[memberId]}`；中断所有 running/provisioning/blocked 成员、在途任务回 `ready`，团队与成员保留 |
+| `POST /api/teams/{id}/archive` | `{}` | `{team}`；先停止活跃成员再写 `archivedAt`（团队从默认列表消失，可在设置中恢复） |
+| `POST /api/teams/{id}/restore` | `{}` | `{team}`；清空 `archivedAt`，团队回到默认列表 |
+| `DELETE /api/teams/{id}?confirm=1` | `confirm=1` 必填，否则 `400` | `{removed,id,name}`；物理删除团队及其 member/task/dep/event/policy/scope/decision/message/todo/audit/span（库无外键，手工级联） |
 
-`team` = `{id,name,workspace,runtime,maxMembers,maxConcurrency,failurePolicy,maxAttempts,createdAt}`
+`team` = `{id,name,workspace,runtime,maxMembers,maxConcurrency,failurePolicy,maxAttempts,createdAt,archivedAt,status,memberCount,runningCount,blockedCount}`
+`status` = `running | blocked | idle | empty`（按成员状态聚合：有 running/provisioning → `running`；否则有 blocked → `blocked`；否则有在职成员 → `idle`；否则 `empty`）
 `runtime` = `worker | agent`（创建后不可变）：`worker` 由 sidecar 拉起沙箱 Node 进程执行 `plan`（§5）；`agent` 由 Host 插件通过宿主的 `subagents.startActivation` 拉起**真 DSH sub-agent session**，sidecar 只做任务/DAG/审批/看板的真相源（§3.8）。
 `workspace` 必须是已存在目录的绝对路径；所有 fs 相对路径、glob、exec cwd 都以它为根。
 
@@ -229,6 +234,15 @@ root(run:team)                         ← 团队整体
 - 非 `partial` 同步会删除快照中已消失的 provider/model（适配器卸载后不残留启用项）。
 - 目录为空（Host 没有 `ctx.llm`，例如尚未同步）时，`team_spawn` 不限制 route，保持向后兼容；一旦有目录，**实际生效的** `(provider,model)` 必须是 `enabled=1`（显式指定与继承 Lead 同一闸门）；目录里查不到的 route 不拦（适配器临时提供的情况）；全停用有可读错误。
 - `team_spawn` 的实际 route 落到 `subagents.startActivation` 的 `request.agentOptions`（只传显式字段）；route 变化且未显式给 `reasoningEffort` 时按 DSH 合并规则丢弃继承值。
+
+### 3.10 面板设置（自动封存）
+
+| 方法 路径 | 请求 | 响应 |
+|---|---|---|
+| `GET /api/settings` | — | `{autoArchive:{enabled,days}}`，默认 `{enabled:true, days:7}` |
+| `PATCH /api/settings` | `{autoArchive?:{enabled?,days?}}` | 同 `GET`；`days` 必须是 1–365 的整数，否则 400 |
+
+`autoArchive` 存在 `meta.panel_settings`（全局，不区分团队）。`GET /api/teams`（未带 `archived=1`）会顺带执行一次自动封存扫描：超过 `days` 天没有任何活动（取 team.updated_at / event / task / member 更新时间最大值）且没有 running/blocked 成员的团队，写入 `archivedAt`。
 
 ---
 

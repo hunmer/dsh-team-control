@@ -7,8 +7,9 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/spinner';
+import { Switch } from '@/components/ui/switch';
 import { EmptyState, SectionHead } from '@/components/Bits';
-import { ModelAvatar, ProviderAvatar } from '@/components/ModelAvatar';
+import { ModelAvatar } from '@/components/ModelAvatar';
 
 /**
  * 模型路由页：目录来自 Host 的 DSH ctx.llm（Host 同步给 sidecar），
@@ -95,6 +96,43 @@ export function ModelsView() {
     }
   };
 
+  /** 整组启用/停用：只 PATCH 状态需要变化的模型，成功后本地重算 totals。 */
+  const mutateGroup = async (provider: LlmProvider, enabled: boolean) => {
+    const targets = provider.models.filter((m) => m.enabled !== enabled);
+    if (!targets.length) return;
+    const keys = targets.map(keyOf);
+    setBusy((prev) => new Set([...prev, ...keys]));
+    try {
+      await Promise.all(targets.map((m) => api('/api/llm/routes', {
+        method: 'PATCH',
+        body: { provider: m.provider, model: m.model, enabled },
+      })));
+      setCatalog((prev) => {
+        if (!prev) return prev;
+        const providers = prev.providers.map((p) => (p.id === provider.id
+          ? { ...p, models: p.models.map((m) => ({ ...m, enabled })) }
+          : p));
+        return {
+          ...prev,
+          providers,
+          totals: {
+            ...prev.totals,
+            enabled: providers.flatMap((p) => p.models).filter((m) => m.enabled).length,
+          },
+        };
+      });
+      toast(enabled ? `已启用 ${provider.name} 全部模型` : `已停用 ${provider.name} 全部模型`, 'ok', 1800);
+    } catch (err) {
+      setError('批量更新失败：' + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setBusy((prev) => {
+        const next = new Set(prev);
+        for (const k of keys) next.delete(k);
+        return next;
+      });
+    }
+  };
+
   const saveNote = (model: LlmModel) => {
     const key = keyOf(model);
     const value = notes[key] ?? '';
@@ -146,15 +184,28 @@ export function ModelsView() {
         />
       ) : null}
 
-      {groups.map((p) => (
+      {groups.map((p) => {
+        // 搜索会过滤掉不匹配的模型，但整组开关要作用于该 provider 的全部模型
+        const full = catalog?.providers.find((x) => x.id === p.id) ?? p;
+        const groupEnabled = full.models.every((m) => m.enabled);
+        return (
         <Card key={p.id}>
           <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 py-3">
             <div className="flex flex-wrap items-center gap-2">
-              <ProviderAvatar provider={p.id} size={16} />
               <CardTitle className="text-sm">{p.name}</CardTitle>
               <code className="text-[11px] text-muted-foreground">{p.id}</code>
             </div>
-            <span className="text-xs text-muted-foreground">{p.models.length} 个模型</span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">
+                {full.models.filter((m) => m.enabled).length}/{full.models.length} 个模型
+              </span>
+              <Switch
+                aria-label={groupEnabled ? `停用 ${p.name} 全部模型` : `启用 ${p.name} 全部模型`}
+                checked={groupEnabled}
+                disabled={full.models.some((m) => busy.has(keyOf(m)))}
+                onCheckedChange={(checked) => void mutateGroup(full, checked)}
+              />
+            </div>
           </CardHeader>
           <CardContent className="p-0">
             {p.models.map((m) => {
@@ -168,7 +219,6 @@ export function ModelsView() {
                       <span className="text-sm font-medium">{m.name || m.model}</span>
                       <code className="text-[11px] text-muted-foreground">{m.model}</code>
                       {m.modalities?.includes('image') ? <Badge variant="outline" size="sm">vision</Badge> : null}
-                      {!m.enabled ? <Badge variant="secondary" size="sm">已停用</Badge> : null}
                     </div>
                     {m.description ? <div className="text-xs text-muted-foreground">{m.description}</div> : null}
                   </div>
@@ -181,20 +231,21 @@ export function ModelsView() {
                     className="h-8 w-56"
                     disabled={disabled}
                   />
-                  <Button
-                    size="sm"
-                    variant={m.enabled ? 'outline' : 'default'}
-                    disabled={disabled}
-                    onClick={() => void mutate(m, { enabled: !m.enabled })}
-                  >
-                    {m.enabled ? '停用' : '启用'}
-                  </Button>
+                  <span className="flex h-8 items-center">
+                    <Switch
+                      aria-label={`${m.enabled ? '停用' : '启用'} ${m.model}`}
+                      checked={m.enabled}
+                      disabled={disabled}
+                      onCheckedChange={(checked) => void mutate(m, { enabled: checked })}
+                    />
+                  </span>
                 </div>
               );
             })}
           </CardContent>
         </Card>
-      ))}
+        );
+      })}
     </div>
   );
 }

@@ -1,4 +1,5 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
+import { Settings } from 'lucide-react';
 import { usePanel, type TabName } from '@/store';
 import { isUnacked } from '@/views/Messages';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -6,7 +7,9 @@ import { Toaster } from '@/components/Toaster';
 import { AuthOverlayDialog, BootErrorOverlay } from '@/components/Overlays';
 import { TopBar } from '@/components/TopBar';
 import { TeamSelect } from '@/components/TeamSelect';
+import { SettingsDialog } from '@/components/SettingsDialog';
 import { AppShell } from '@/components/app-shell';
+import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from '@/components/ui/sidebar';
 import { ToastProvider } from '@/components/ui/toast';
 import { buildNav, TAB_LABELS, tabFromLabel, type ShellChrome } from '@/shell';
 import { HomeView } from '@/views/Home';
@@ -22,7 +25,7 @@ function Banner() {
   const { state, memberName } = usePanel();
   const { noTeams, degraded, staleMembers, errors, teamId } = state;
   const parts: string[] = [];
-  if (noTeams) parts.push('尚未创建团队：请先用 CLI 或 REST（POST /api/teams）创建团队，然后点击"刷新快照"。');
+  if (noTeams) parts.push('尚未创建团队：请先用 CLI 或 REST（POST /api/teams）创建团队，创建后会自动同步。');
   if (degraded) parts.push('degraded=true：状态投影与事件流不一致，部分成员数据可能陈旧（C2/FR-5.5 告警）。');
   if (staleMembers.size) parts.push('stale 成员：' + [...staleMembers].map((id) => memberName(id)).join('、') + '（seq 与事件流不一致）。');
   const failed = Object.keys(errors).filter((key) => errors[key as keyof typeof errors] && teamId);
@@ -50,6 +53,23 @@ function ActiveView({ tab }: { tab: TabName }) {
   }
 }
 
+function SidebarSettings() {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <SidebarMenu>
+        <SidebarMenuItem>
+          <SidebarMenuButton type="button" tooltip="设置" onClick={() => setOpen(true)}>
+            <Settings />
+            <span>设置</span>
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+      </SidebarMenu>
+      <SettingsDialog open={open} onOpenChange={setOpen} />
+    </>
+  );
+}
+
 export default function App() {
   const { state, setTab } = usePanel();
   const { tab, members, scopeRequests, messages } = state;
@@ -71,15 +91,16 @@ export default function App() {
     },
     header: { title: TAB_LABELS[tab], actions: <TopBar /> },
     sidebarTop: <TeamSelect />,
+    footer: <SidebarSettings />,
   };
 
   return (
     <ToastProvider>
       <div className="fixed inset-x-0 top-0 z-50"><BootErrorOverlay /></div>
       <AppShell {...chrome}>
-        <div className="flex min-h-full flex-col">
+        <div className="flex h-full min-h-0 flex-col">
           <Banner />
-          <main className="flex-1 space-y-4 p-4">
+          <main className="min-h-0 flex-1 space-y-4 p-4">
             <ActiveView tab={tab} />
           </main>
         </div>

@@ -61,9 +61,17 @@ export function createRoutes(core) {
 
     // teams
     ['POST', /^\/api\/teams$/, async (ctx) => C.createTeam(ctx.body)],
-    ['GET', /^\/api\/teams$/, async () => ({ items: C.listTeams() })],
+    ['GET', /^\/api\/teams$/, async (ctx) => ({ items: C.listTeams({ archived: qs(ctx.url).get('archived') === '1' }) })],
     ['GET', /^\/api\/teams\/([^/]+)$/, async (ctx) => C.teamView(C.getTeam(ctx.p[0]))],
     ['PATCH', /^\/api\/teams\/([^/]+)$/, async (ctx) => C.patchTeam(ctx.p[0], ctx.body)],
+    ['POST', /^\/api\/teams\/([^/]+)\/stop$/, async (ctx) => C.stopTeam(ctx.p[0], ctx.body.reason)],
+    ['POST', /^\/api\/teams\/([^/]+)\/archive$/, async (ctx) => C.archiveTeam(ctx.p[0])],
+    ['POST', /^\/api\/teams\/([^/]+)\/restore$/, async (ctx) => C.restoreTeam(ctx.p[0])],
+    ['DELETE', /^\/api\/teams\/([^/]+)$/, async (ctx) => C.deleteTeam(ctx.p[0], { confirm: qs(ctx.url).get('confirm') === '1' })],
+
+    // 面板设置（目前只有「自动封存」）
+    ['GET', /^\/api\/settings$/, async () => C.panelSettings()],
+    ['PATCH', /^\/api\/settings$/, async (ctx) => C.patchPanelSettings(ctx.body)],
 
     // members
     ['POST', /^\/api\/teams\/([^/]+)\/members$/, async (ctx) => C.addMember(ctx.p[0], ctx.body)],

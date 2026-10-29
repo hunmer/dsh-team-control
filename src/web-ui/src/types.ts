@@ -132,9 +132,23 @@ export interface Task {
   createdAt?: string;
 }
 
+export type TeamRunStatus = 'running' | 'blocked' | 'idle' | 'empty';
+
 export interface Team {
   id: string;
   name?: string;
+  /** 运行状态汇总（GET /api/teams 由 member_state 聚合） */
+  status?: TeamRunStatus;
+  memberCount?: number;
+  runningCount?: number;
+  blockedCount?: number;
+  /** 封存时间（null/undefined 表示未封存） */
+  archivedAt?: string | null;
+}
+
+/** 面板全局设置（GET/PATCH /api/settings） */
+export interface PanelSettings {
+  autoArchive: { enabled: boolean; days: number };
 }
 
 /* ---------- Trace 瀑布（成员看板） ---------- */

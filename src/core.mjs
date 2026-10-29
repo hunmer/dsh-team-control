@@ -103,7 +103,27 @@ export class DshTeam {
       autoApprove: parseJson(t.auto_approve_json, null),
       autoTakeover: Number(t.auto_takeover) === 1,
       runtime: runtimeOf(t),
+      archivedAt: t.archived_at || null,
       createdAt: t.created_at,
+      ...this.teamRunState(t.id),
+    };
+  }
+
+  /** 团队运行状态（面板 badge / 停止按钮共用口径）：running > blocked > idle > empty */
+  teamRunState(teamId) {
+    const row = this.get(
+      `SELECT COUNT(*) AS members,
+              COALESCE(SUM(CASE WHEN COALESCE(s.status,'idle') IN ('running','provisioning') THEN 1 ELSE 0 END),0) AS running,
+              COALESCE(SUM(CASE WHEN s.status='blocked' THEN 1 ELSE 0 END),0) AS blocked
+         FROM member m LEFT JOIN member_state s ON s.member_id=m.id
+        WHERE m.team_id=? AND COALESCE(s.status,'idle') <> 'retired'`
+    ).get(teamId) || {};
+    const memberCount = Number(row.members || 0);
+    const runningCount = Number(row.running || 0);
+    const blockedCount = Number(row.blocked || 0);
+    return {
+      memberCount, runningCount, blockedCount,
+      status: runningCount > 0 ? 'running' : blockedCount > 0 ? 'blocked' : memberCount > 0 ? 'idle' : 'empty',
     };
   }
 
@@ -113,7 +133,14 @@ export class DshTeam {
     return t;
   }
 
-  listTeams() { return this.get('SELECT * FROM team ORDER BY created_at ASC').all().map((t) => this.teamView(t)); }
+  /** 团队列表：默认只列未封存；archived=true 只列已封存（按封存时间倒序） */
+  listTeams({ archived = false } = {}) {
+    if (!archived) { try { this.autoArchiveSweep(); } catch { /* 自动封存失败不影响列表 */ } }
+    const rows = archived
+      ? this.get('SELECT * FROM team WHERE archived_at IS NOT NULL ORDER BY archived_at DESC').all()
+      : this.get('SELECT * FROM team WHERE archived_at IS NULL ORDER BY created_at ASC').all();
+    return rows.map((t) => this.teamView(t));
+  }
 
   patchTeam(id, body = {}) {
     const t = this.getTeam(id);
@@ -129,6 +156,115 @@ export class DshTeam {
     sets.push('updated_at=?'); args.push(nowIso(), id);
     this.get(`UPDATE team SET ${sets.join(', ')} WHERE id=?`).run(...args);
     return this.teamView(this.getTeam(id));
+  }
+
+  /** 停止团队：中断所有活跃成员、在途任务回 ready（保留团队与成员，可再次派发）。 */
+  stopTeam(teamId, reason = 'panel stop') {
+    this.getTeam(teamId);
+    const ids = this.get(
+      `SELECT m.id FROM member m JOIN member_state s ON s.member_id=m.id
+        WHERE m.team_id=? AND s.status IN ('running','provisioning','blocked')`
+    ).all(teamId).map((r) => r.id);
+    const stopped = [];
+    for (const id of ids) {
+      // 竞态下成员可能已自行结束：interrupt 抛 invalidState 时跳过
+      try { this.interruptMember(id, reason); stopped.push(id); } catch { /* ignore */ }
+    }
+    this.get("UPDATE task SET status='ready', updated_at=? WHERE team_id=? AND status='running'").run(nowIso(), teamId);
+    return { ...this.teamView(this.getTeam(teamId)), stopped };
+  }
+
+  /** 删除团队：先杀掉 worker 进程/租约，再在一个事务里清掉所有 team_id 相关行（库无外键，手工级联）。 */
+  deleteTeam(teamId, { confirm = false } = {}) {
+    const t = this.getTeam(teamId);
+    if (!confirm) throw ERR.bad('delete requires confirm=1');
+    const memberIds = this.get('SELECT id FROM member WHERE team_id=?').all(teamId).map((r) => r.id);
+    for (const id of memberIds) {
+      try { this.runner.killWorker(id, { hard: true }); } catch { /* ignore */ }
+      try { this.runner.clearLease(id); } catch { /* ignore */ }
+    }
+    tx(this.db, () => {
+      for (const id of memberIds) {
+        this.get('DELETE FROM member_state WHERE member_id=?').run(id);
+        this.get('DELETE FROM member_runtime WHERE member_id=?').run(id);
+      }
+      for (const table of ['member', 'task', 'dep', 'event', 'policy', 'scope_request', 'scope_grant', 'decision', 'message', 'todo', 'audit', 'span']) {
+        this.get(`DELETE FROM ${table} WHERE team_id=?`).run(teamId);
+      }
+      this.get('DELETE FROM team WHERE id=?').run(teamId);
+    });
+    return { removed: true, id: teamId, name: t.name };
+  }
+
+  // ---------- 封存 / 面板设置 ----------
+  /** 面板全局设置（meta 表 JSON；默认自动封存开启、7 天） */
+  panelSettings() {
+    const row = this.get('SELECT value FROM meta WHERE key=?').get('panel_settings');
+    const s = parseJson(row ? row.value : null, null) || {};
+    const auto = s.autoArchive || {};
+    return { autoArchive: { enabled: auto.enabled !== false, days: clamp(Math.round(Number(auto.days) || 7), 1, 365) } };
+  }
+
+  patchPanelSettings(body = {}) {
+    const next = this.panelSettings();
+    const auto = body && typeof body.autoArchive === 'object' ? body.autoArchive : null;
+    if (auto) {
+      if (auto.enabled !== undefined) next.autoArchive.enabled = !!auto.enabled;
+      if (auto.days !== undefined) {
+        const days = Math.round(Number(auto.days));
+        if (!Number.isFinite(days) || days < 1 || days > 365) throw ERR.bad('autoArchive.days must be 1..365');
+        next.autoArchive.days = days;
+      }
+    }
+    this.get('INSERT INTO meta (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
+      .run('panel_settings', json(next));
+    return next;
+  }
+
+  /** 团队最后活动时间：team.updated_at / 事件 / 任务 / 成员更新时间取最大 */
+  teamLastActivity(teamId) {
+    const row = this.get(
+      `SELECT (SELECT updated_at FROM team WHERE id=?) AS t,
+              (SELECT MAX(ts) FROM event WHERE team_id=?) AS e,
+              (SELECT MAX(updated_at) FROM task WHERE team_id=?) AS k,
+              (SELECT MAX(updated_at) FROM member WHERE team_id=?) AS m`
+    ).get(teamId, teamId, teamId, teamId) || {};
+    const times = [row.t, row.e, row.k, row.m].filter(Boolean).map((s) => Date.parse(s)).filter((n) => Number.isFinite(n));
+    return times.length ? Math.max(...times) : 0;
+  }
+
+  /** 自动封存：超过设定天数无活动且没有活跃成员的团队归档；返回本次封存的 id 列表 */
+  autoArchiveSweep() {
+    const { autoArchive } = this.panelSettings();
+    if (!autoArchive.enabled) return [];
+    const cutoff = Date.now() - autoArchive.days * 86400000;
+    const archived = [];
+    for (const row of this.get('SELECT id FROM team WHERE archived_at IS NULL').all()) {
+      const run = this.teamRunState(row.id);
+      if (run.runningCount > 0 || run.blockedCount > 0) continue; // 正在跑的团队不封存
+      if (this.teamLastActivity(row.id) >= cutoff) continue;
+      const at = nowIso();
+      this.get('UPDATE team SET archived_at=?, updated_at=? WHERE id=?').run(at, at, row.id);
+      archived.push(row.id);
+    }
+    return archived;
+  }
+
+  /** 封存团队：先停止活跃成员（避免隐藏一个还在跑的团队），再打 archived_at */
+  archiveTeam(teamId) {
+    const t = this.getTeam(teamId);
+    if (t.archived_at) return this.teamView(t);
+    this.stopTeam(teamId, 'archive');
+    const at = nowIso();
+    this.get('UPDATE team SET archived_at=?, updated_at=? WHERE id=?').run(at, at, teamId);
+    return this.teamView(this.getTeam(teamId));
+  }
+
+  restoreTeam(teamId) {
+    const t = this.getTeam(teamId);
+    if (!t.archived_at) return this.teamView(t);
+    this.get('UPDATE team SET archived_at=NULL, updated_at=? WHERE id=?').run(nowIso(), teamId);
+    return this.teamView(this.getTeam(teamId));
   }
 
   // ---------- 成员 ----------
@@ -748,7 +884,7 @@ export class DshTeam {
         kind: ['agent', 'subagent', 'llm', 'tool'].includes(v.kind) ? v.kind : 'tool',
         status: v.status, startMs: v.startMs, endMs: v.endMs, parentId: parent,
         detail: v.detail, model: v.model, tokensIn: v.tokensIn, tokensOut: v.tokensOut,
-        cost: v.cost, input: v.input, output: v.output, error: v.error,
+        cost: v.cost, currency: v.meta?.currency || null, input: v.input, output: v.output, error: v.error,
       });
     }
 
@@ -765,7 +901,7 @@ export class DshTeam {
       add({
         id: `session:${sid}`, name: `Lead · ${short}`, kind: 'agent',
         status: running ? 'running' : 'done', startMs, endMs, parentId: null,
-        detail: `${mine.length} 个工具调用`,
+        detail: `${mine.length} 个调用`,
       });
     }
 
@@ -775,7 +911,7 @@ export class DshTeam {
       const n = add({
         id: `member:${m.id}`, name: m.name || m.id, kind: 'subagent',
         status: m.status === 'failed' ? 'failed' : m.status === 'running' ? 'running' : 'done',
-        startMs: null, endMs: null, parentId: null,
+        startMs: null, endMs: null, parentId: null, model: m.model || null,
         detail: [m.role, m.model, m.step].filter(Boolean).join(' · ') || m.status,
       });
       memberNodes.set(m.id, n);
@@ -813,7 +949,9 @@ export class DshTeam {
     root.startMs = originMs;
     root.endMs = running ? null : maxEnd;
     root.status = running ? 'running' : 'done';
-    root.detail = `${members.length} 成员 · ${stepMap.size} 步骤 · ${spans.length} 工具调用`;
+    root.detail = `${members.length} 成员 · ${stepMap.size} 步骤 · ${spans.length} 跨度`;
+    // 币种跟着 span 走（LLM 调用上报时写入 meta.currency）；根节点带一个，UI 按它渲染 ¥/$
+    root.currency = all.map((n) => n.currency).find(Boolean) || null;
     // root 不在 all 里，显式给出相对时间（起点恒为 0；结束时收尾到最晚子节点）
     root._s = 0;
     root._e = running ? null : Math.max(0, Math.round(maxEnd - originMs));
@@ -828,6 +966,7 @@ export class DshTeam {
         id: n.id, name: n.name, kind: n.kind, status: n.status, start: n._s,
         detail: n.detail || undefined, model: n.model || undefined,
         tokensIn: n.tokensIn ?? undefined, tokensOut: n.tokensOut ?? undefined, cost: n.cost ?? undefined,
+        currency: n.currency || undefined,
         input: n.input || undefined, output: n.output || undefined, error: n.error || undefined,
         children: n.children
           .slice()

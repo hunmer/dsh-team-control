@@ -85,4 +85,6 @@ export interface ShellChrome {
   header: { title: ReactNode; actions?: ReactNode };
   /** 侧栏顶部的团队切换器（AppShell 的 sidebarTop 插槽）。 */
   sidebarTop?: ReactNode;
+  /** 侧栏底部插槽（设置按钮）。 */
+  footer?: ReactNode;
 }

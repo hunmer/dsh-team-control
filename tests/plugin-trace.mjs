@@ -73,7 +73,47 @@ const main = async () => {
     assert.ok(session, 'trace 里出现 session 节点');
     assert.equal(session.children.length, 3, '3 次上报都进了 trace');
 
-    console.log('PASS plugin-trace — 上报链路：绑定/幂等/失败/trace 挂载 全部通过');
+    // ⑥ LLM 调用：llm/stream 抓到 usage → 落一条带 tokens + 金额的 llm span
+    const driveLlm = ctx.handlers.get('llm/stream');
+    assert.equal(typeof driveLlm, 'function', '插件注册了 llm/stream 监听器');
+    const usage = { inputTokens: 3000, cacheReadTokens: 50000, cacheWriteTokens: 0, outputTokens: 400 };
+    const chunks = [{ type: 'text', text: 'hi' }, { type: 'usage', usage }, { type: 'finish', reason: 'stop' }];
+    const runLlm = async (sessionId) => {
+      const source = (async function* () { yield* chunks; })();
+      const wrapped = driveLlm({ provider: 'deepseek-official', model: 'deepseek-flash', sessionId }, () => source);
+      const seen = [];
+      for await (const c of wrapped) seen.push(c);
+      return { wrapped, source, seen };
+    };
+
+    // 未归属团队的会话：原样透传，不上报
+    const passthrough = await runLlm('sess-other');
+    assert.equal(passthrough.wrapped, passthrough.source, '无团队归属时 llm/stream 原样透传');
+
+    const out2 = await runLlm('sess-probe');
+    assert.equal(out2.seen.length, 3, 'llm/stream 的 chunk 全部原样下发');
+    const llmSpan = await waitFor('llm span 落库', async () => {
+      const r = await api.get(`/api/spans?team=${team.id}`);
+      const hit = r.items.find((s) => s.kind === 'llm');
+      return hit && hit.status === 'done' ? hit : null;
+    }, { timeout: 4000, interval: 30 });
+    assert.equal(llmSpan.model, 'deepseek-flash');
+    assert.equal(llmSpan.tokensIn, 53000, 'tokensIn = 未缓存输入 + 缓存读 + 缓存写');
+    assert.equal(llmSpan.tokensOut, 400);
+    assert.equal(llmSpan.meta.currency, 'CNY', '币种写进 meta');
+    assert.ok(llmSpan.cost > 0, '按单价表折算出金额');
+
+    const trace2 = await api.get(`/api/trace?team=${team.id}`);
+    const flat = (n) => [n, ...(n.children ?? []).flatMap(flat)];
+    const llmNode = flat(trace2.root).find((n) => n.id === `span:${llmSpan.spanId}`);
+    assert.ok(llmNode, 'llm span 进了 trace');
+    const sessionNode = flat(trace2.root).find((n) => n.id === 'session:sess-probe');
+    assert.ok((sessionNode?.children ?? []).some((n) => n.id === `span:${llmSpan.spanId}`), 'llm span 挂在 session 节点下');
+    assert.equal(llmNode.currency, 'CNY', '节点带币种');
+    assert.ok(llmNode.cost > 0, '节点带金额');
+    assert.equal(trace2.root.currency, 'CNY', '根节点聚合出币种');
+
+    console.log('PASS plugin-trace — 上报链路：绑定/幂等/失败/trace 挂载/LLM 金额 全部通过');
   } finally {
     await sidecar.close();
   }

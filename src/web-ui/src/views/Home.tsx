@@ -1,9 +1,9 @@
 /**
  * 主页 = AffectUI 组件 + 真实 sidecar 数据（不保留 demo 数据）。
  *
- * 左列：Plan（任务计划清单，来自 `team_todo` 工具写入的 /api/todos）+ Activity（任务事件流；
- *        两者都按「当前选中的任务」过滤）。
- * 右列：`AgentInbox` 三列看板（Needs / Running / Done）。
+ * 布局（xl 及以上）：左列 `AgentInbox` 三列看板（Needs / Running / Done）占满高度，
+ *      右列上 Plan（任务计划清单，来自 `team_todo` 工具写入的 /api/todos）、下 Activity
+ *      （任务事件流），两者都按「当前选中的任务」过滤；窄屏时依次上下堆叠。
  *
  * 真实数据源：
  * - `GET /api/scope-requests?status=pending` → Needs you 卡；Approve/Reject → POST decide；
@@ -309,103 +309,14 @@ export function HomeView() {
   };
 
   return (
-    <>
-      <div className="grid gap-3 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-        {/* ---------------- Plan + Activity（真实数据，跟随选中任务） ---------------- */}
-        <section className="min-w-0 space-y-3">
-          <div className="rounded-xl border bg-card">
-            <header className="flex flex-wrap items-center gap-2 border-b px-4 py-2.5">
-              <span className="text-sm font-semibold">Plan</span>
-              <span className="truncate text-sm text-muted-foreground">{activeTitle}</span>
-              <span className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
-                <span>{activeDone ? '已完成' : '进行中'}</span>
-                {activeMemberId && <span>· {memberName(activeMemberId)}</span>}
-                {activeTask?.attempts ? <span>· 第 {activeTask.attempts} 次尝试</span> : null}
-              </span>
-            </header>
-            <div className="p-3">
-              {planSteps.length ? (
-                <PlanSteps key={activeId} title={activeTitle} steps={planSteps} status={planPhase} />
-              ) : (
-                <Empty className="gap-4 px-4 py-8 md:py-8">
-                  <EmptyHeader>
-                    <EmptyMedia variant="icon" className="mb-3">
-                      <ClipboardList />
-                    </EmptyMedia>
-                    <EmptyTitle className="text-sm">暂无计划</EmptyTitle>
-                    <EmptyDescription>Leader 用 team_todo 写入</EmptyDescription>
-                  </EmptyHeader>
-                </Empty>
-              )}
-            </div>
-          </div>
-
-          <div className="rounded-xl border bg-card">
-            <header className="flex flex-wrap items-center gap-2 border-b px-4 py-2.5">
-              <span className="text-sm font-semibold">Activity</span>
-              <span className="text-xs text-muted-foreground">
-                {activity.length ? `当前任务 ${activity.length} 条事件` : '暂无事件'}
-              </span>
-              <Button className="ml-auto" onClick={jumpToTimeline} size="xs" type="button" variant="link">
-                在时间线视图查看
-              </Button>
-            </header>
-            <div className="max-h-[420px] space-y-1 overflow-y-auto p-3">
-              {visibleActivity.length ? (
-                visibleActivity.map((entry) => (
-                  <div key={entry.id} className="flex items-start gap-2">
-                    {/* 高度对齐 ToolCall 头部（min-height 44px），展开时时间也不会被拉偏 */}
-                    <span className="flex h-11 w-14 shrink-0 items-center justify-end text-[11px] leading-none tabular-nums text-muted-foreground">
-                      {fmtClockSec(entry.ts)}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <ToolCall
-                        name={entry.action || entry.phase}
-                        summary={
-                          <span>
-                            {entry.phase}
-                            {entry.target ? ` · ${entry.target}` : ''}
-                            {entry.memberId ? ` · ${memberName(entry.memberId)}` : ''}
-                          </span>
-                        }
-                        status={eventStatus(entry)}
-                        args={{ phase: entry.phase, action: entry.action, target: entry.target, next: entry.next }}
-                        result={entry.result ? { result: entry.result } : undefined}
-                      />
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <Empty className="gap-4 px-4 py-8 md:py-8">
-                  <EmptyHeader>
-                    <EmptyMedia variant="icon" className="mb-3">
-                      <ListTree />
-                    </EmptyMedia>
-                    <EmptyTitle className="text-sm">暂无事件</EmptyTitle>
-                    <EmptyDescription>成员开始执行后实时出现</EmptyDescription>
-                  </EmptyHeader>
-                </Empty>
-              )}
-              {activity.length > visibleActivity.length && (
-                <Button
-                  className="mt-2 w-full"
-                  onClick={() => setActivityLimit((limit) => limit + 40)}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  显示更早的 {activity.length - visibleActivity.length} 条
-                </Button>
-              )}
-            </div>
-          </div>
-        </section>
-
-        {/* ---------------- AgentInbox（真实卡 + 真实动作） ---------------- */}
-        <section className="min-w-0">
-          <div className="rounded-xl border bg-card">
-            <div className="p-3">
+    <div className="flex min-h-0 flex-col gap-3 xl:h-full">
+      <div className="grid min-h-0 gap-3 xl:flex-1 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+        {/* ---------------- 左列：实时收件箱占满高度 ---------------- */}
+        <section className="min-w-0 xl:min-h-0">
+          <div className="flex h-full flex-col rounded-xl border bg-card">
+            <div className="flex min-h-0 flex-1 flex-col p-3">
               <AgentInbox
+                className="min-h-0 flex-1"
                 tasks={board}
                 title="实时收件箱"
                 onApprove={(task) => decide(task, 'approved')}
@@ -416,9 +327,103 @@ export function HomeView() {
             </div>
           </div>
         </section>
+
+        {/* ---------------- 右列：上 Plan、下 Activity ---------------- */}
+        <div className="grid min-h-0 gap-3 xl:grid-rows-2">
+          <section className="min-w-0 xl:min-h-0">
+            <div className="flex h-full flex-col rounded-xl border bg-card">
+              <header className="flex flex-wrap items-center gap-2 border-b px-4 py-2.5">
+                <span className="text-sm font-semibold">Plan</span>
+                <span className="truncate text-sm text-muted-foreground">{activeTitle}</span>
+                <span className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
+                  <span>{activeDone ? '已完成' : '进行中'}</span>
+                  {activeMemberId && <span>· {memberName(activeMemberId)}</span>}
+                  {activeTask?.attempts ? <span>· 第 {activeTask.attempts} 次尝试</span> : null}
+                </span>
+              </header>
+              <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                {planSteps.length ? (
+                  <PlanSteps key={activeId} title={activeTitle} steps={planSteps} status={planPhase} />
+                ) : (
+                  <Empty className="gap-4 px-4 py-8 md:py-8">
+                    <EmptyHeader>
+                      <EmptyMedia variant="icon" className="mb-3">
+                        <ClipboardList />
+                      </EmptyMedia>
+                      <EmptyTitle className="text-sm">暂无计划</EmptyTitle>
+                      <EmptyDescription>Leader 用 team_todo 写入</EmptyDescription>
+                    </EmptyHeader>
+                  </Empty>
+                )}
+              </div>
+            </div>
+          </section>
+
+          <section className="min-w-0 xl:min-h-0">
+            <div className="flex h-full flex-col rounded-xl border bg-card">
+              <header className="flex flex-wrap items-center gap-2 border-b px-4 py-2.5">
+                <span className="text-sm font-semibold">Activity</span>
+                <span className="text-xs text-muted-foreground">
+                  {activity.length ? `当前任务 ${activity.length} 条事件` : '暂无事件'}
+                </span>
+                <Button className="ml-auto" onClick={jumpToTimeline} size="xs" type="button" variant="link">
+                  在时间线视图查看
+                </Button>
+              </header>
+              <div className="min-h-0 max-h-[480px] flex-1 space-y-1 overflow-y-auto p-3 xl:max-h-none">
+                {visibleActivity.length ? (
+                  visibleActivity.map((entry) => (
+                    <div key={entry.id} className="flex items-start gap-2">
+                      {/* 高度对齐 ToolCall 头部（min-height 44px），展开时时间也不会被拉偏 */}
+                      <span className="flex h-11 w-14 shrink-0 items-center justify-end text-[11px] leading-none tabular-nums text-muted-foreground">
+                        {fmtClockSec(entry.ts)}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <ToolCall
+                          name={entry.action || entry.phase}
+                          summary={
+                            <span>
+                              {entry.phase}
+                              {entry.target ? ` · ${entry.target}` : ''}
+                              {entry.memberId ? ` · ${memberName(entry.memberId)}` : ''}
+                            </span>
+                          }
+                          status={eventStatus(entry)}
+                          args={{ phase: entry.phase, action: entry.action, target: entry.target, next: entry.next }}
+                          result={entry.result ? { result: entry.result } : undefined}
+                        />
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <Empty className="gap-4 px-4 py-8 md:py-8">
+                    <EmptyHeader>
+                      <EmptyMedia variant="icon" className="mb-3">
+                        <ListTree />
+                      </EmptyMedia>
+                      <EmptyTitle className="text-sm">暂无事件</EmptyTitle>
+                      <EmptyDescription>成员开始执行后实时出现</EmptyDescription>
+                    </EmptyHeader>
+                  </Empty>
+                )}
+                {activity.length > visibleActivity.length && (
+                  <Button
+                    className="mt-2 w-full"
+                    onClick={() => setActivityLimit((limit) => limit + 40)}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    显示更早的 {activity.length - visibleActivity.length} 条
+                  </Button>
+                )}
+              </div>
+            </div>
+          </section>
+        </div>
       </div>
 
-      <footer className="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 py-1 text-xs text-muted-foreground">
+      <footer className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 px-1 py-1 text-xs text-muted-foreground">
         {queued > 0 && (
           <Button onClick={() => setTab('dag')} size="xs" type="button" variant="link">
             另有 {queued} 个待派发 / 阻塞任务 · 查看依赖 DAG
@@ -428,6 +433,6 @@ export function HomeView() {
           <span className="text-amber-600">stale 成员 {staleMembers} 个（seq 与事件流不一致）</span>
         )}
       </footer>
-    </>
+    </div>
   );
 }

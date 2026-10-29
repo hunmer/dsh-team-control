@@ -5,6 +5,8 @@ import { useState, type ReactNode } from 'react';
 import { ChevronRight, CircleAlert, CircleCheck, LoaderCircle, Wrench } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { JsonViewer, type JsonValue } from '@/components/JsonViewer';
+import { parseLooseJson } from '@/lib/json';
 import { cn } from '@/lib/utils';
 
 export type ToolCallStatus = 'running' | 'success' | 'error';
@@ -25,6 +27,20 @@ const STATUS_META = {
   error: { label: '失败', variant: 'error' as const, Icon: CircleAlert },
 };
 
+/** 纯文本结果仍用 <pre>；对象或 JSON 字符串交给 JsonViewer 折叠展示。 */
+function asJson(value: unknown): JsonValue | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'object') {
+    try {
+      return JSON.parse(JSON.stringify(value)) as JsonValue;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof value !== 'string') return value as JsonValue;
+  return parseLooseJson(value)?.value ?? null;
+}
+
 function pretty(value: unknown): string {
   if (value === undefined || value === null) return '';
   if (typeof value === 'string') return value;
@@ -35,12 +51,28 @@ function pretty(value: unknown): string {
   }
 }
 
+function Payload({ label, value }: { label: string; value: unknown }) {
+  const json = asJson(value);
+  const text = json ? '' : pretty(value);
+  if (!json && !text) return null;
+  return (
+    <div>
+      <div className="mb-0.5 text-[11px] text-muted-foreground uppercase tracking-wide">{label}</div>
+      {json ? (
+        <div className="max-h-64 overflow-auto rounded-md border bg-muted/30">
+          <JsonViewer data={json} defaultExpanded={1} mini />
+        </div>
+      ) : (
+        <pre className="max-h-64 overflow-auto rounded-md bg-muted/50 p-2 text-[11px] leading-relaxed">{text}</pre>
+      )}
+    </div>
+  );
+}
+
 export function ToolCall({ name, summary, status, args, result, defaultOpen = false, className }: ToolCallProps) {
   const [open, setOpen] = useState(defaultOpen);
   const meta = STATUS_META[status] ?? STATUS_META.success;
   const { Icon } = meta;
-  const argsText = pretty(args);
-  const resultText = pretty(result);
 
   return (
     <Collapsible className={cn('w-full', className)} onOpenChange={setOpen} open={open}>
@@ -59,18 +91,8 @@ export function ToolCall({ name, summary, status, args, result, defaultOpen = fa
       </CollapsibleTrigger>
       <CollapsibleContent>
         <div className="mt-1 ml-6 space-y-2 border-l pl-3 pb-1">
-          {argsText && (
-            <div>
-              <div className="mb-0.5 text-[11px] text-muted-foreground uppercase tracking-wide">参数</div>
-              <pre className="max-h-64 overflow-auto rounded-md bg-muted/50 p-2 text-[11px] leading-relaxed">{argsText}</pre>
-            </div>
-          )}
-          {resultText && (
-            <div>
-              <div className="mb-0.5 text-[11px] text-muted-foreground uppercase tracking-wide">结果</div>
-              <pre className="max-h-64 overflow-auto rounded-md bg-muted/50 p-2 text-[11px] leading-relaxed">{resultText}</pre>
-            </div>
-          )}
+          <Payload label="参数" value={args} />
+          <Payload label="结果" value={result} />
         </div>
       </CollapsibleContent>
     </Collapsible>

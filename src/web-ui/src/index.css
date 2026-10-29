@@ -77,10 +77,10 @@
 }
 
 /* agent-tree（DAG 视图）：卡片用固定宽度并整体居中，
- * 覆盖组件窄屏模式把卡片拉伸到容器 100cqw 的规则 —— 保持示例中的留白效果 */
+ * 覆盖组件窄屏模式把卡片拉伸到容器 100cqw 的规则 —— 保持示例中的留白效果；
+ * 不设 max-width，DAG 铺满可用宽度。 */
 .ui-agtc {
-  max-width: min(100%, 1080px);
-  margin-inline: auto;
+  width: 100%;
 }
 /* Queued/Stopped 卡片保持正常不透明度（组件默认降为 0.6） */
 .ui-agtc .ui-agtc__node[data-status="queued"],

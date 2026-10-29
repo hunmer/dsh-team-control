@@ -3,6 +3,9 @@
  *
  * 由 coss 的 Sidebar / SidebarMenu / Separator / Tooltip 组合而成，
  * 取代原先从 affectui 迁移进来的 1111 行手写实现（.ui-as-* 类 + role="menu" 等）。
+ *
+ * 侧栏收起成图标条时，`sidebarTop`（团队切换器）会移进顶栏内联展示，
+ * 避免窄轨道里宽度超出侧栏、看起来像浮层。
  */
 import type { ReactNode } from 'react';
 import {
@@ -21,6 +24,7 @@ import {
   SidebarProvider,
   SidebarSeparator,
   SidebarTrigger,
+  useSidebar,
 } from '@/components/ui/sidebar';
 import { Separator } from '@/components/ui/separator';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -75,44 +79,57 @@ function NavList({ items, active, onNavigate }: { items: NavItem[]; active: stri
   );
 }
 
-export function AppShell({ nav, groups = [], active, onNavigate, header, sidebarTop, footer, children }: AppShellProps) {
+function ShellBody({ nav, groups = [], active, onNavigate, header, sidebarTop, footer, children }: AppShellProps) {
+  const { isMobile, state } = useSidebar();
+  // 收起到图标条时顶栏没有多余宽度，把团队切换器内联进 header
+  const topInHeader = !isMobile && state === 'collapsed';
+
+  return (
+    <>
+      <Sidebar collapsible="icon">
+        {sidebarTop && !topInHeader && <SidebarHeader className="p-2">{sidebarTop}</SidebarHeader>}
+        <SidebarContent>
+          <SidebarGroup>
+            <SidebarGroupLabel>导航</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <NavList items={nav} active={active} onNavigate={onNavigate} />
+            </SidebarGroupContent>
+          </SidebarGroup>
+          {groups.map((group, index) => (
+            <SidebarGroup key={group.label}>
+              {index === 0 && <SidebarSeparator />}
+              <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
+              <SidebarGroupContent>
+                {group.items.length === 0 ? (
+                  <p className="px-2 py-1.5 text-muted-foreground text-xs">{group.empty ?? '暂无内容'}</p>
+                ) : (
+                  <NavList items={group.items} active={active} onNavigate={onNavigate} />
+                )}
+              </SidebarGroupContent>
+            </SidebarGroup>
+          ))}
+        </SidebarContent>
+        {footer && <SidebarFooter>{footer}</SidebarFooter>}
+      </Sidebar>
+      <SidebarInset className="min-w-0">
+        <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
+          <SidebarTrigger />
+          <Separator className="h-5" orientation="vertical" />
+          {topInHeader && sidebarTop && <div className="w-44 shrink-0">{sidebarTop}</div>}
+          {!topInHeader && <div className="truncate font-medium text-sm">{header.title}</div>}
+          {header.actions && <div className="ml-auto flex items-center gap-2">{header.actions}</div>}
+        </header>
+        <div className="flex min-h-0 flex-1 flex-col overflow-auto">{children}</div>
+      </SidebarInset>
+    </>
+  );
+}
+
+export function AppShell(props: AppShellProps) {
   return (
     <TooltipProvider>
       <SidebarProvider className="h-svh">
-        <Sidebar collapsible="icon">
-          {sidebarTop && <SidebarHeader className="p-2">{sidebarTop}</SidebarHeader>}
-          <SidebarContent>
-            <SidebarGroup>
-              <SidebarGroupLabel>导航</SidebarGroupLabel>
-              <SidebarGroupContent>
-                <NavList items={nav} active={active} onNavigate={onNavigate} />
-              </SidebarGroupContent>
-            </SidebarGroup>
-            {groups.map((group, index) => (
-              <SidebarGroup key={group.label}>
-                {index === 0 && <SidebarSeparator />}
-                <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
-                <SidebarGroupContent>
-                  {group.items.length === 0 ? (
-                    <p className="px-2 py-1.5 text-muted-foreground text-xs">{group.empty ?? '暂无内容'}</p>
-                  ) : (
-                    <NavList items={group.items} active={active} onNavigate={onNavigate} />
-                  )}
-                </SidebarGroupContent>
-              </SidebarGroup>
-            ))}
-          </SidebarContent>
-          {footer && <SidebarFooter>{footer}</SidebarFooter>}
-        </Sidebar>
-        <SidebarInset className="min-w-0">
-          <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
-            <SidebarTrigger />
-            <Separator className="h-5" orientation="vertical" />
-            <div className="truncate font-medium text-sm">{header.title}</div>
-            {header.actions && <div className="ml-auto flex items-center gap-2">{header.actions}</div>}
-          </header>
-          <div className="flex min-h-0 flex-1 flex-col overflow-auto">{children}</div>
-        </SidebarInset>
+        <ShellBody {...props} />
       </SidebarProvider>
     </TooltipProvider>
   );
