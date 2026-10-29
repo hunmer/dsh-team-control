@@ -765,16 +765,22 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     const offline = () => patchUi({ conn: 'offline' });
     window.addEventListener('online', online);
     window.addEventListener('offline', offline);
+    // 团队列表没有 SSE 事件（team_create/封存由插件或 API 触发）：低频轮询 + 回到前台时立即刷新。
+    const pollTeams = () => { if (!document.hidden) void refreshTeams().catch(() => undefined); };
+    const teamsPoll = window.setInterval(pollTeams, 5000);
+    document.addEventListener('visibilitychange', pollTeams);
     return () => {
       window.removeEventListener('online', online);
       window.removeEventListener('offline', offline);
+      window.clearInterval(teamsPoll);
+      document.removeEventListener('visibilitychange', pollTeams);
       esRef.current?.close();
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       stopPlayback();
       for (const timer of Object.values(refreshTimers.current)) clearTimeout(timer);
       if (teamsTimer.current) clearTimeout(teamsTimer.current);
     };
-  }, [boot, patchUi, stopPlayback]);
+  }, [boot, patchUi, stopPlayback, refreshTeams]);
 
   const actions = useMemo<PanelActions>(() => ({
     state, toasts, authOverlay, bootError, memberName, toast,

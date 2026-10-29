@@ -189,14 +189,32 @@ function collectArtifacts(ctx, sessionId) {
   const since = lastArtifactSeq.get(key) ?? 0;
   const files = new Map();
   const counts = new Map();
+  /** 写文件时按行统计（present 只声明文件，不提供行数；workspace 摘要也不一定可用）。 */
+  const bump = (p, add, del) => {
+    const prev = counts.get(p) || { added: 0, deleted: 0, display: '' };
+    counts.set(p, { added: prev.added + add, deleted: prev.deleted + del, display: prev.display });
+  };
+  const lineCount = (text) => (typeof text === 'string' && text.length ? text.split('\n').length : 0);
   const changes = workspaceChangesOf(ctx);
   for (const ev of events) {
     if (!ev || !ev.type) continue;
     if (Number(ev.seq) <= since) continue;
     if (ev.type === 'tool/call') {
-      if (!ev.data || ev.data.name !== 'present') continue;
+      if (!ev.data) continue;
+      const tool = ev.data.name;
       let parsed;
-      try { parsed = JSON.parse(ev.data.arguments || '{}'); } catch { continue; }
+      try { parsed = JSON.parse(ev.data.arguments || '{}'); } catch { parsed = null; }
+      if (tool === 'write' && parsed && typeof parsed.file_path === 'string') {
+        bump(parsed.file_path, lineCount(parsed.content), 0);
+        continue;
+      }
+      if (tool === 'edit' && parsed && typeof parsed.file_path === 'string') {
+        const add = lineCount(parsed.new_string) * (parsed.replace_all ? 1 : 1);
+        const del = lineCount(parsed.old_string);
+        bump(parsed.file_path, add, del);
+        continue;
+      }
+      if (tool !== 'present') continue;
       for (const f of Array.isArray(parsed?.files) ? parsed.files : []) {
         if (!f || typeof f.path !== 'string' || !f.path.trim()) continue;
         const p = f.path.trim();
@@ -207,22 +225,31 @@ function collectArtifacts(ctx, sessionId) {
       try { summary = changes && typeof changes.summary === 'function' ? changes.summary(session.id, ev.seq) : undefined; } catch { summary = undefined; }
       for (const f of Array.isArray(summary?.files) ? summary.files : []) {
         if (!f || typeof f.path !== 'string' || !f.path) continue;
-        // 同一文件出现在多轮 summary 里：行数累加，展示整段任务的新增/删除。
-        const prev = counts.get(f.path) || { added: 0, deleted: 0 };
-        counts.set(f.path, {
-          added: prev.added + (Number(f.added) || 0),
-          deleted: prev.deleted + (Number(f.deleted) || 0),
-          display: typeof f.display === 'string' ? f.display : '',
-        });
+        // 同一文件出现在多轮 summary 里：行数累加；已有工具调用统计时以工具调用为准（更贴近实际写入行数）。
+        const prev = counts.get(f.path) || { added: 0, deleted: 0, display: '' };
+        if (!prev.added && !prev.deleted) {
+          counts.set(f.path, {
+            added: prev.added + (Number(f.added) || 0),
+            deleted: prev.deleted + (Number(f.deleted) || 0),
+            display: typeof f.display === 'string' ? f.display : '',
+          });
+        }
         if (files.has(f.path)) continue;
         files.set(f.path, { path: f.path, label: '', source: 'workspace' });
       }
     }
   }
   try { lastArtifactSeq.set(key, Number(session.seq) || 0); } catch { /* ignore */ }
+  const sameFile = (a, b) => a === b || String(a).endsWith(String(b)) || String(b).endsWith(String(a));
+  const findCounts = (p) => {
+    const direct = counts.get(p);
+    if (direct) return direct;
+    for (const [key, c] of counts) if (sameFile(key, p)) return c;
+    return undefined;
+  };
   const out = [];
   for (const item of files.values()) {
-    const c = counts.get(item.path);
+    const c = findCounts(item.path);
     out.push({
       ...item,
       label: item.label || (c && c.display) || '',
@@ -230,7 +257,9 @@ function collectArtifacts(ctx, sessionId) {
     });
   }
   for (const [p, c] of counts) {
-    if (files.has(p)) continue;
+    let seen = files.has(p);
+    if (!seen) for (const item of files.values()) if (sameFile(item.path, p)) { seen = true; break; }
+    if (seen) continue;
     out.push({ path: p, label: c.display || '', source: 'workspace', added: c.added, deleted: c.deleted });
   }
   return out.slice(-12);

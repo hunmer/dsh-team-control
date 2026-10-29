@@ -19,7 +19,8 @@ function mapStatus(node: DagNode): AgentStatus {
   if (status === 'running') return 'running';
   if (status === 'done' || status === 'succeeded') return 'done';
   if (status === 'failed') return 'failed';
-  if (node.blocked || status === 'blocked' || status === 'waiting') return 'waiting';
+  // 依赖未就绪（node.blocked）只是「排队等上游」，不是需要人来处理；只有成员被策略/审批挡住才显示 Needs you。
+  if (status === 'blocked') return 'waiting';
   return 'queued';
 }
 
@@ -67,7 +68,8 @@ export function dagToTree(
       task: `${memberName(node.assignee)} · 尝试 #${node.attempts || 0}`,
       tools: tags.map((tag) => <span key={tag} title={tag === 'CP' ? '关键路径' : tag === 'BLK' ? '被阻塞' : tag.startsWith('↑') ? `另有 ${tag.slice(1)} 个上游依赖` : '依赖就绪'}>{tag === 'CP' ? '★' : tag === 'BLK' ? '⏸' : tag.startsWith('↑') ? tag : '●'}</span>),
       status,
-      ask: status === 'waiting' ? '等待上游依赖完成…' : undefined,
+      // waiting 只留给「成员被策略/审批挡住」；依赖未就绪算 Queued，用 ask 文案说明原因。
+      ask: status === 'waiting' ? '需要你处理（策略 / 审批）' : node.blocked ? '等待上游依赖完成…' : undefined,
       children: visited.has(taskId)
         ? []
         : (visited.add(taskId), (downstreamList.get(taskId) ?? []).map(toAgent)),
