@@ -23,7 +23,7 @@ try {
       { id: 'dormant-x', name: 'Dormant X', source: 'dormant', error: 'not configured' },
     ],
     models: [
-      { provider: 'deepseek', model: 'deepseek-chat', name: 'DeepSeek Chat', description: 'fast', modalities: { text: 'text', image: 'image' } },
+      { provider: 'deepseek', model: 'deepseek-chat', name: 'DeepSeek Chat', description: 'fast', modalities: ['text', 'image'] },
       { provider: 'deepseek', model: 'deepseek-reasoner', name: 'DeepSeek Reasoner' },
       { provider: 'openai', model: 'gpt-5', name: 'GPT-5' },
     ],

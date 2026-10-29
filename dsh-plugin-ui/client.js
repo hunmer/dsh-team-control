@@ -48,6 +48,7 @@ window.__ModuleLoader__.load({
         status_retired: '已退出',
         status_queued: '排队中',
         status_provisioning: '启动中',
+        status_unknown: '未知状态',
       },
       en: {
         title: 'dsh-team console',
@@ -85,6 +86,7 @@ window.__ModuleLoader__.load({
         status_retired: 'retired',
         status_queued: 'queued',
         status_provisioning: 'provisioning',
+        status_unknown: 'Unknown',
       },
     };
 
@@ -124,25 +126,67 @@ window.__ModuleLoader__.load({
 .dsht-afc-pill-name { max-width:132px; overflow:hidden; text-overflow:ellipsis; font-weight:600; }
 .dsht-afc-pill-run { color:var(--dsw-alias-label-secondary); font-variant-numeric:tabular-nums; }
 .dsht-afc-pill-sev { display:inline-flex; align-items:center; gap:4px; font-variant-numeric:tabular-nums; }
-.dsht-afc-pill-sev[data-severity="critical"] { color:#d72400; }
-.dsht-afc-pill-sev[data-severity="warning"] { color:#cc4e00; }
+.dsht-afc-pill-sev[data-severity="critical"] { color:var(--dsw-alias-state-error-primary); }
+.dsht-afc-pill-sev[data-severity="warning"] { color:var(--dsw-alias-state-warn-primary); }
 .dsht-afc-pill-sev[data-zero] { opacity:.4; }
 .dsht-afc-pill-dot { width:6px; height:6px; border-radius:50%; background:currentColor; }
 /* 快照这一轮没取到（sidecar 抖动）时仍保留入口，只做轻微降权，避免卡片闪一下就消失 */
 .dsht-afc-pill[data-dsh-team-stale] { border-style:dashed; }
 .dsht-afc-pill[data-dsh-team-stale] .dsht-afc-pill-run::after { content:" ·!"; color:var(--dsw-alias-label-tertiary); font-weight:600; }
-.dark .dsht-afc-pill-sev[data-severity="critical"], [data-theme="dark"] .dsht-afc-pill-sev[data-severity="critical"] { color:#ff977d; }
-.dark .dsht-afc-pill-sev[data-severity="warning"], [data-theme="dark"] .dsht-afc-pill-sev[data-severity="warning"] { color:#ffa057; }
 
 /* 卡片停靠层（shell.overlay 是点击穿透层，卡片自己接管指针） */
 .dsht-afc-dock { position:fixed; top:56px; right:20px; width:368px; max-width:calc(100vw - 40px); z-index:80; pointer-events:auto; display:flex; flex-direction:column; gap:6px; }
-.dsht-afc-dock-bar { display:flex; align-items:center; gap:6px; padding:0 2px; font-size:11px; color:var(--dsw-alias-label-secondary); }
+.dsht-afc-dock-bar { display:flex; align-items:center; gap:6px; padding:4px 8px; border-radius:9px; font-size:11px; color:var(--dsw-alias-label-secondary); background:color-mix(in srgb, var(--dsw-alias-bg-overlay) 62%, transparent); border:1px solid color-mix(in srgb, var(--dsw-alias-border-l1) 55%, transparent); -webkit-backdrop-filter:blur(14px) saturate(150%); backdrop-filter:blur(14px) saturate(150%); }
 .dsht-afc-dock-name { font-weight:600; color:var(--dsw-alias-label-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.dsht-afc-dock-close { margin-left:auto; display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border:1px solid var(--dsw-alias-border-l1); border-radius:6px; background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-secondary); cursor:pointer; }
+.dsht-afc-dock-close { margin-left:auto; display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border:1px solid var(--dsw-alias-border-l1); border-radius:6px; background:color-mix(in srgb, var(--dsw-alias-bg-layer-2) 65%, transparent); color:var(--dsw-alias-label-secondary); cursor:pointer; }
 .dsht-afc-dock-close:hover { color:var(--dsw-alias-label-primary); border-color:var(--dsw-alias-brand-primary); }
-.dsht-afc-dock-card { max-height:calc(100vh - 140px); overflow:auto; border-radius:12px; }
+.dsht-afc-dock-card { max-height:var(--dsht-dock-max, calc(100vh - 140px)); overflow:auto; border-radius:12px; }
 .dsht-afc-dock-card .ui-afc { max-width:none; }
 .dsht-afc-dock-empty { padding:12px 14px; border-radius:10px; background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-secondary); font-size:12px; }
+
+/* 卡片配色跟随宿主主题：把 affectui 的 --ui-afc-* 设计变量重绑到 --dsw-alias-*，
+   不依赖 .dark / [data-theme] 类名，亮色暗色切换自动生效。 */
+.dsht-afc-dock .ui-afc {
+  --ui-afc-card: color-mix(in srgb, var(--dsw-alias-bg-overlay) 72%, transparent);
+  --ui-afc-strong: var(--dsw-alias-label-primary);
+  --ui-afc-ink: var(--dsw-alias-label-primary);
+  --ui-afc-text: var(--dsw-alias-label-secondary);
+  --ui-afc-muted: color-mix(in srgb, var(--dsw-alias-label-primary) 55%, transparent);
+  --ui-afc-faint: color-mix(in srgb, var(--dsw-alias-label-primary) 34%, transparent);
+  --ui-afc-line: var(--dsw-alias-border-l1);
+  --ui-afc-fill: color-mix(in srgb, var(--dsw-alias-label-primary) 8%, transparent);
+  --ui-afc-hover: color-mix(in srgb, var(--dsw-alias-label-primary) 5%, transparent);
+  --ui-afc-select: color-mix(in srgb, var(--dsw-alias-label-primary) 9%, transparent);
+  --ui-afc-run-bg: color-mix(in srgb, var(--dsw-alias-brand-primary) 18%, transparent);
+  --ui-afc-run-edge: color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, transparent);
+  --ui-afc-done-bg: color-mix(in srgb, var(--dsw-alias-label-primary) 12%, transparent);
+  --ui-afc-done-edge: var(--dsw-alias-border-l2);
+  --ui-afc-fail-bg: color-mix(in srgb, var(--dsw-alias-state-error-primary) 14%, transparent);
+  --ui-afc-fail-edge: color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent);
+  --ui-afc-crit: var(--dsw-alias-state-error-primary);
+  --ui-afc-warn: var(--dsw-alias-state-warn-primary);
+  --ui-afc-note: var(--dsw-alias-brand-primary);
+  --ui-afc-focus: color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, transparent);
+  --ui-afc-shadow: 0 0 0 0.5px var(--dsw-alias-border-l1), 0 18px 44px -26px color-mix(in srgb, #000 55%, transparent);
+}
+/* 磨砂玻璃：卡片半透明 + 背景模糊（backdrop-filter），下面有页面内容时能透出模糊底色。
+   宿主 Chromium 不支持 backdrop-filter 时退回不透明底色，保证可读性。 */
+.dsht-afc-dock .ui-afc__card {
+  border:1px solid color-mix(in srgb, var(--dsw-alias-border-l1) 80%, transparent);
+  background:color-mix(in srgb, var(--dsw-alias-bg-overlay) 72%, transparent);
+  -webkit-backdrop-filter:blur(24px) saturate(170%);
+  backdrop-filter:blur(24px) saturate(170%);
+  box-shadow:0 0 0 .5px color-mix(in srgb, var(--dsw-alias-border-l1) 70%, transparent), 0 18px 44px -26px color-mix(in srgb, #000 55%, transparent);
+}
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))) {
+  .dsht-afc-dock .ui-afc__card { background:var(--dsw-alias-bg-overlay); }
+  .dsht-afc-dock-bar { background:var(--dsw-alias-bg-layer-2); }
+}
+.dsht-afc-dock .ui-afc__spark { color:var(--dsw-alias-brand-primary); }
+.dsht-afc-dock .ui-afc__avatar { background:color-mix(in srgb, var(--dsw-alias-label-primary) 10%, transparent); }
+.dsht-afc-dock .ui-afc__agent[data-status="running"] .ui-afc__fill::before {
+  background:linear-gradient(90deg, transparent, color-mix(in srgb, var(--dsw-alias-label-primary) 14%, transparent), transparent);
+}
 `;
 
     // ---------- 右侧栏 Tab（sidebar.right.pane.tab）+ 侧边栏入口 ----------
@@ -200,7 +244,6 @@ window.__ModuleLoader__.load({
     /** 面板主体：iframe 复用 sidecar 自带 /panel（成员看板 Trace 瀑布 + 其余视图 + SSE）。 */
     function TeamView({ t, compact }) {
       return h('div', { className: 'dsht-page' },
-        h('style', null, CSS),
         h('header', { className: 'dsht-page-head' },
           h('span', { className: 'dsht-page-mark' }, h(TeamIcon, { size: compact ? 14 : 16 })),
           h('span', { className: 'dsht-page-title' }, t('title')),
@@ -291,6 +334,8 @@ window.__ModuleLoader__.load({
     const API_BASE = '/dsh-team-api/api';
     const POLL_MS = 4000;
     const ROW_HEIGHT = 40;
+    // 侧车只保证这几个状态；出现新状态时不要让卡片掉出原始 key
+    const KNOWN_STATUS = ['running', 'idle', 'blocked', 'failed', 'interrupted', 'retired', 'queued', 'provisioning'];
 
     /** 拉 sidecar JSON；非 2xx 抛错，由调用方决定降级。 */
     async function fetchJson(path) {
@@ -401,7 +446,9 @@ window.__ModuleLoader__.load({
     const memberStatus = (status) => {
       if (status === 'failed') return 'failed';
       if (status === 'running' || status === 'blocked' || status === 'provisioning' || status === 'queued') return 'running';
-      return 'done';
+      if (status === 'idle' || status === 'retired') return 'done';
+      // 侧车冒出未知状态时不要当成「已完成」，否则进度条会显示 1/1 全部完成
+      return 'idle';
     };
 
     /**
@@ -656,7 +703,8 @@ window.__ModuleLoader__.load({
         if (agent.status === 'done') return t('card_all_done');
         if (agent.status === 'failed') return t('card_stopped');
         if (agent.step) return agent.step;
-        return t('status_' + (agent.statusRaw || 'running'));
+        const raw = agent.statusRaw || 'running';
+        return t('status_' + (KNOWN_STATUS.includes(raw) ? raw : 'unknown'));
       };
       const agentName = (id) => {
         const hit = agents.find((agent) => agent.id === id);
@@ -668,7 +716,6 @@ window.__ModuleLoader__.load({
         'data-dsh-team-findings': agents.length,
         style: { '--ui-afc-rows': String(rows) },
       },
-      h('style', { href: 'ui-agent-findings-clean', precedence: 'default' }, AGENT_FINDINGS_CSS),
       h('div', { className: 'ui-afc__card' },
         h('header', { className: 'ui-afc__bar' },
           h('span', { className: 'ui-afc__spark' }, h(Spark, { size: 14 })),
@@ -810,11 +857,54 @@ window.__ModuleLoader__.load({
       };
     }
 
+    /**
+     * 量一下胶囊按钮的位置：卡片要贴着按钮正下方弹出（而不是钉在窗口右上角）。
+     * 胶囊在 header 的 utilities 槽里，卡片在 shell.overlay 全局浮层里，两者不在同一棵
+     * DOM 子树，所以只能按 data 属性找按钮再取 rect；取不到时返回 null，退回 CSS 兜底位置。
+     */
+    function measureDockAnchor(teamId) {
+      if (typeof document === 'undefined' || !document || typeof document.querySelector !== 'function') return null;
+      const node = document.querySelector('[data-dsh-team-pill="' + String(teamId || '') + '"]');
+      if (!node || typeof node.getBoundingClientRect !== 'function') return null;
+      const rect = node.getBoundingClientRect();
+      if (!rect || !rect.width) return null;
+      const viewportWidth = (typeof window !== 'undefined' && window && window.innerWidth) || 0;
+      const viewportHeight = (typeof window !== 'undefined' && window && window.innerHeight) || 0;
+      return {
+        top: Math.round(rect.bottom + 8),
+        right: Math.max(12, Math.round(viewportWidth - rect.right)),
+        maxHeight: viewportHeight ? Math.max(180, Math.round(viewportHeight - rect.bottom - 24)) : null,
+      };
+    }
+
     /** 浮层卡片（shell.overlay）：展示当前活跃会话的团队校验卡片。 */
     function teamCardDock(t, getService) {
       return function TeamCardDock() {
         const active = useActiveCard();
         const card = active.card;
+        const teamId = card && card.teamId ? card.teamId : '';
+        // position:fixed 贴着胶囊按钮：按钮在 header 槽、卡片在 overlay 槽，只能按按钮 rect 定位。
+        const [anchor, setAnchor] = React.useState(() => (teamId ? measureDockAnchor(teamId) : null));
+        React.useEffect(() => {
+          if (!teamId) return () => {};
+          // scroll 会高频触发：位置没变就复用旧对象，避免无意义重渲染
+          const sync = () => {
+            const next = measureDockAnchor(teamId);
+            setAnchor((prev) => (
+              prev && next && prev.top === next.top && prev.right === next.right && prev.maxHeight === next.maxHeight
+                ? prev
+                : next
+            ));
+          };
+          sync();
+          if (typeof window === 'undefined' || !window || typeof window.addEventListener !== 'function') return () => {};
+          window.addEventListener('resize', sync);
+          window.addEventListener('scroll', sync, true);
+          return () => {
+            window.removeEventListener('resize', sync);
+            window.removeEventListener('scroll', sync, true);
+          };
+        }, [teamId]);
         if (!card || !card.open || !card.teamId) return null;
         const openFinding = (finding) => {
           const agent = (card.agents || []).find((item) => item.id === finding.agentId);
@@ -822,7 +912,10 @@ window.__ModuleLoader__.load({
             openMemberAside(getService, active.sessionId, agent.agentSessionId);
           }
         };
-        return h('div', { className: 'dsht-afc-dock', 'data-dsh-team-card': card.teamId },
+        const dockStyle = anchor
+          ? { top: anchor.top + 'px', right: anchor.right + 'px', '--dsht-dock-max': anchor.maxHeight ? anchor.maxHeight + 'px' : undefined }
+          : undefined;
+        return h('div', { className: 'dsht-afc-dock', 'data-dsh-team-card': card.teamId, style: dockStyle },
           h('div', { className: 'dsht-afc-dock-bar' },
             h('span', { className: 'dsht-afc-dock-name' }, card.teamName || t('members_title')),
             h('span', {}, t('running_of', { n: card.running, m: card.memberCount })),
@@ -845,9 +938,47 @@ window.__ModuleLoader__.load({
       };
     }
 
+    /**
+     * 把插件样式一次性注入 <head>。
+     * 之前样式是随 TeamView / AgentFindings 一起用 <style> 节点渲染的：面板没打开时
+     * 胶囊和浮层就没有样式；卡片里的 <style> 还会在列表上方露出一段固定文本。
+     * 统一挂到 head 后，样式全局可用、只注入一份、也不再出现在组件树里。
+     */
+    /**
+     * 包一层 t：宿主 locale 里没有这个 key 时，t 会把 key 原样返回，卡片上就会出现
+     * 一行永远不变的 `status_provisioning`、`card_checks` 之类的原始 key。
+     * 这里兜底成本地字典的文案，并按 {name} 自己补一遍插值（宿主若不支持参数也不会露馅）。
+     */
+    function localizer(t, dict) {
+      const interpolate = (text, vars) => {
+        if (!text || !vars) return text;
+        return String(text).replace(/\{(\w+)\}/g, (match, name) => (
+          vars[name] === undefined || vars[name] === null ? match : String(vars[name])
+        ));
+      };
+      return function translate(key, vars) {
+        let out;
+        try { out = vars === undefined ? t(key) : t(key, vars); } catch { out = undefined; }
+        if (typeof out !== 'string' || !out || out === key) {
+          out = (dict && dict.zh && dict.zh[key]) || (dict && dict.en && dict.en[key]) || key;
+        }
+        return interpolate(out, vars);
+      };
+    }
+
+    function ensureStyles() {
+      if (typeof document === 'undefined' || !document || !document.head) return;
+      if (document.getElementById('dsh-team-ui-styles')) return;
+      const node = document.createElement('style');
+      node.id = 'dsh-team-ui-styles';
+      node.textContent = CSS + '\n' + AGENT_FINDINGS_CSS;
+      document.head.appendChild(node);
+    }
+
     return {
       inject: ['slots', 'locale'],
       apply(ctx) {
+        ensureStyles();
         if (ctx.locale && typeof ctx.locale.register === 'function') {
           try {
             ctx.locale.register(NS, 'zh', DICT.zh);
@@ -857,6 +988,9 @@ window.__ModuleLoader__.load({
         const t = ctx.locale && typeof ctx.locale.bind === 'function'
           ? ctx.locale.bind(NS)
           : (key) => DICT.zh[key] || key;
+        // 卡片文案统一走 T：宿主字典缺 key 时 t 会原样返回 key（界面上就是一行不变的
+        // `status_xxx` / `card_checks`），这里兜底成本地字典并自己补一遍 {var} 插值。
+        const T = localizer(t, DICT);
         const getService = (name) => {
           try {
             if (typeof ctx.get === 'function') return ctx.get(name);
@@ -956,14 +1090,14 @@ window.__ModuleLoader__.load({
             name: 'conversation.session.header.utilities',
             id: 'dsh-team:members',
             order: 5,
-            label: () => t('card_open'),
-          }, memberStrip(t, getService))));
+            label: () => T('card_open'),
+          }, memberStrip(T, getService))));
           disposers.push(slots.inject('shell.overlay', () => slots.register({
             name: 'shell.overlay',
             id: 'dsh-team:findings',
             order: 30,
-            label: () => t('card_title'),
-          }, teamCardDock(t, getService))));
+            label: () => T('card_title'),
+          }, teamCardDock(T, getService))));
           return () => {
             for (const dispose of disposers.splice(0).reverse()) {
               try { dispose(); } catch { /* ignore */ }

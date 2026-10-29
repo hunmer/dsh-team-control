@@ -52,11 +52,40 @@ affectui 提供了 `agent-findings`（`default-workspace/affectui-agent-findings
 3. **乱序保护**：每次轮询带递增 token，只有 token 不小于已应用 token 的响应才落库。
    没有这条时，先发后到的旧成功响应会覆盖新状态——表现就是「卡片闪一下就消失」。
 
-### D5：视觉原样移植，深色跟随主题
+### D5：视觉原样移植，配色绑定宿主 token
 
 CSS 从 `agent-findings-css.ts` 整段内联（`${ROW_HEIGHT}px` → `40px`），类名保持 `ui-afc__*`，
-暗色走它自带的 `:where(.dark,[data-theme="dark"])` 覆盖。仅新增外壳样式：
-`.dsht-afc-pill*`、`.dsht-afc-dock*`。
+仅新增外壳样式 `.dsht-afc-pill*`、`.dsht-afc-dock*`。
+
+不采用它在 `.dark` / `[data-theme="dark"]` 下的硬编码色值，而是在 `.dsht-afc-dock .ui-afc`
+这一层重绑 `--ui-afc-*` 变量：卡片底 `--dsw-alias-bg-overlay`、文字 `label-primary/secondary`、
+描边 `border-l1/l2`、严重/警告 `state-error-primary/state-warn-primary`，其余用 `color-mix()`
+派生。理由：宿主可能在 `<html>` 上挂 class、也可能只切 CSS 变量，绑 token 两种情况都对；
+且选择器具体度 (0,2,0) 高于 `:where(...) .ui-afc` (0,1,0)，不依赖加载顺序。
+
+卡片背景做**磨砂玻璃**：`--ui-afc-card` 换成 `color-mix(… bg-overlay 72%, transparent)`，
+`.ui-afc__card` 加 `backdrop-filter: blur(24px) saturate(170%)`（含 `-webkit-` 前缀），标题条
+`blur(14px)`。`@supports not` 分支退回 `bg-overlay` / `bg-layer-2` 实色——毛玻璃依赖合成层，
+宿主禁用或显卡受限时必须有可读兜底，否则半透明底叠在浅色页面上会糊成一片。
+
+### D6：浮层锚定在胶囊按钮下方
+
+胶囊在 `conversation.session.header.utilities`，卡片在 `shell.overlay`，两者不在同一棵 DOM
+子树，没有共同的定位祖先。方案是运行时测量：按 `[data-dsh-team-pill="<teamId>"]` 找到按钮，
+取 `getBoundingClientRect()` 得到 `top = rect.bottom + 8`、`right = innerWidth - rect.right`，
+以 `position: fixed` 贴到按钮正下方，并在 `resize` / 捕获阶段 `scroll` 时重算；
+卡片 `max-height` 也按下方剩余视口算（CSS 变量 `--dsht-dock-max`）。
+没有采用「把卡片渲染进 header 的同一个容器再 `position: absolute`」：header 与浮层的
+overflow/z-index 由宿主控制，卡片很容易被裁切。测量失败时退回 CSS 兜底坐标（右上角，`top:56px; right:20px`）。
+
+### D7：样式与文案的「只能出现一次」约束
+
+- 样式在 `apply()` 里注入 `<head>`（`#dsh-team-ui-styles`，`ensureStyles()` 去重），
+  **不再随组件树渲染 `<style>`**。原因：团队面板没打开时胶囊/浮层会完全无样式；而卡片里
+  内联的 `<style>` 在非 React 19 运行时不会被提升，会在列表上方露出一段固定文本。
+- 文案走 `localizer(t)` 兜底：宿主字典缺 key 时 `t` 返回原 key，界面就会出现一行不变的
+  `status_*` / `card_checks`；这层兜底本地 `DICT` 并自行插值 `{var}`，未知成员状态收敛到
+  `status_unknown`，且未知状态不再映射成「已完成」。
 
 ## 后果
 

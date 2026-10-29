@@ -9,6 +9,7 @@ import { truncate } from '@/lib/format';
 import type { DagData, DagNode } from '@/types';
 import { AgentTree, type AgentStatus, type TreeAgent } from '@/components/agent-tree/agent-tree';
 import { EmptyState, MetaLine, SectionHead } from '@/components/Bits';
+import { modelAvatar } from '@/components/ModelAvatar';
 
 const shortId = (id: string) => (id.includes('_') ? id.slice(id.lastIndexOf('_') + 1) : id);
 
@@ -22,7 +23,12 @@ function mapStatus(node: DagNode): AgentStatus {
 }
 
 /** DAG → TreeAgent 树（多父挂到第一个上游，防环） */
-export function dagToTree(dag: DagData, memberName: (id?: string | null) => string): TreeAgent {
+export function dagToTree(
+  dag: DagData,
+  memberName: (id?: string | null) => string,
+  /** 按成员 id 取模型，用于卡片头像；不传则回退到首字母 */
+  memberModel?: (id?: string | null) => string | null,
+): TreeAgent {
   const nodes = dag.nodes ?? [];
   const edges = dag.edges ?? [];
   const readySet = new Set<string>([...(dag.ready ?? [])]);
@@ -55,6 +61,7 @@ export function dagToTree(dag: DagData, memberName: (id?: string | null) => stri
     return {
       id: taskId,
       name: truncate(node.subject || taskId, 26),
+      avatar: memberModel ? modelAvatar(memberModel(node.assignee), undefined, undefined, 14) : undefined,
       model: shortId(taskId),
       task: `${memberName(node.assignee)} · 尝试 #${node.attempts || 0}`,
       tools: tags.map((tag) => <span key={tag} title={tag === 'CP' ? '关键路径' : tag === 'BLK' ? '被阻塞' : tag.startsWith('↑') ? `另有 ${tag.slice(1)} 个上游依赖` : '依赖就绪'}>{tag === 'CP' ? '★' : tag === 'BLK' ? '⏸' : tag.startsWith('↑') ? tag : '●'}</span>),
@@ -96,21 +103,22 @@ export function dagToTree(dag: DagData, memberName: (id?: string | null) => stri
 
 export function DagView() {
   const { state, memberName } = usePanel();
-  const { dag, teamId, errors } = state;
+  const { dag, teamId, errors, members } = state;
   const nodes = dag?.nodes ?? [];
   const edges = dag?.edges ?? [];
 
+  const modelByMember = useMemo(() => new Map(members.map((m) => [m.id, m.model ?? null])), [members]);
   const tree = useMemo(
-    () => (dag && nodes.length ? dagToTree(dag, memberName) : null),
-    [dag, nodes.length, memberName],
+    () => (dag && nodes.length ? dagToTree(dag, memberName, (id) => (id ? modelByMember.get(id) ?? null : null)) : null),
+    [dag, nodes.length, memberName, modelByMember],
   );
 
-  if (!teamId) return <section className="space-y-3"><SectionHead title="依赖 DAG" meta={<MetaLine>—</MetaLine>} /><EmptyState title="未选择团队" detail="等待 /api/teams 返回团队列表后自动加载。" /></section>;
+  if (!teamId) return <section className="space-y-3"><SectionHead title="依赖 DAG" meta={<MetaLine>—</MetaLine>} /><EmptyState title="未选择团队" /></section>;
   if (errors.dag && !nodes.length) return <section className="space-y-3"><SectionHead title="依赖 DAG" meta={<MetaLine>—</MetaLine>} /><EmptyState title="DAG 加载失败" detail={errors.dag} /></section>;
   if (!tree) return (
     <section className="space-y-3">
       <SectionHead title="依赖 DAG" meta={<MetaLine>0 节点</MetaLine>} />
-      <EmptyState title="暂无任务节点" detail="用 POST /api/tasks / /api/deps 建图后这里显示依赖关系。" />
+      <EmptyState title="暂无任务节点" detail="建任务后自动出现" />
     </section>
   );
 

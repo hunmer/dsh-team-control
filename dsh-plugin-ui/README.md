@@ -63,8 +63,24 @@ ctx.sidebarRight.openResource('dsh-resource://subagentchat/session/<childSession
   `ctx.uiWorkspace.openSession(address)`。
 - 抗抖动：连续 3 次拿不到快照才收起入口，单次失败只把胶囊标成虚线（`data-dsh-team-stale`）；
   轮询请求带递增 token，**旧请求的迟到响应不会覆盖新状态**（否则会出现卡片闪一下就消失）。
-- 卡片视觉与 `affectui/agent-findings` 一致（CSS 内联进 `client.js`，类名 `ui-afc__*`），
-  深色主题跟随 `[data-theme="dark"]` 变量覆盖。
+- 卡片视觉与 `affectui/agent-findings` 一致（CSS 内联进 `client.js`，类名 `ui-afc__*`）。
+- **浮层贴着胶囊按钮弹出**：卡片虽然挂在 `shell.overlay`（全局浮层），但用
+  `data-dsh-team-pill` 取按钮的 `getBoundingClientRect()`，定位到按钮正下方
+  （`top = bottom + 8`、`right = 视口宽 - 按钮右边`），并在 `resize`/`scroll` 时重算；
+  卡片高度上限也按按钮下方剩余空间算（`--dsht-dock-max`）。量不到按钮时才退回 CSS 兜底位置。
+- **样式只在 `apply()` 里注入一次**（`ensureStyles()` → `<head>` 里的 `#dsh-team-ui-styles`），
+  不随组件树渲染 `<style>`：否则团队面板页签没挂载时胶囊/浮层会完全没样式，卡片里还会多出一段
+  固定文本。样式节点用 `getElementById` 去重，热替换不会叠加。
+- **配色绑定宿主主题 token**，不靠 `.dark` / `[data-theme]` 类名：`.dsht-afc-dock .ui-afc`
+  把 `--ui-afc-card` 映射到 `--dsw-alias-bg-overlay`、文字用 `--dsw-alias-label-primary/secondary`、
+  描边用 `--dsw-alias-border-l1/l2`、严重/警告用 `--dsw-alias-state-error-primary/state-warn-primary`，
+  其余层次用 `color-mix()` 从这些 token 派生。亮暗切换由宿主变量即时生效，卡片里没有硬编码色值。
+- 文案统一走 `localizer(t)`：宿主字典缺 key 时 `t` 会把 key 原样返回（界面上就是一行永远不变的
+  `status_xxx`），这层兜底成本地 `DICT.zh/en` 并自己补 `{var}` 插值；未知成员状态收敛到
+  `status_unknown`（本地文案「未知状态」），且未知状态不再被当成「已完成」（不会出现 1/1 全绿）。
+- **磨砂玻璃背景**：卡片底色是 `color-mix(… --dsw-alias-bg-overlay 72%, transparent)` 配
+  `backdrop-filter: blur(24px) saturate(170%)`，标题条 `blur(14px)`；`@supports not` 里退回
+  不透明底色，宿主不支持 `backdrop-filter` 时仍可读。
 
 这与 `dsh-better-sidebar` 的「侧边对话」是同一套机制：better-sidebar 打开子代理对话时也是
 `openResource(subagentChatAddress(address), { kind: 'subagentchat' })`，只是它的入口在它自己的

@@ -185,3 +185,17 @@ export interface TraceData {
   root: TraceNode;
   stats: TraceStats;
 }
+
+/** 任务计划清单（/api/todos）。Leader/成员通过 team_todo 维护，主页 Plan 区域实时渲染。 */
+export interface Todo {
+  id: string;
+  teamId: string;
+  taskId?: string | null;
+  memberId?: string | null;
+  title: string;
+  status: string;
+  orderNo: number;
+  blockedBy?: string[];
+  createdAt?: string;
+  updatedAt?: string;
+}

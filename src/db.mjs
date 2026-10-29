@@ -205,6 +205,8 @@ export function openDb(file) {
   ensureColumn(db, 'team', 'auto_takeover', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'team', 'runtime', "TEXT NOT NULL DEFAULT 'worker'");
   ensureColumn(db, 'member', 'agent_session_id', 'TEXT');
+  ensureColumn(db, 'todo', 'task_id', 'TEXT');
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_todo_task ON todo(task_id, order_no)'); } catch { /* ignore */ }
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_member_session ON member(agent_session_id)'); } catch { /* ignore */ }
   const get = q(db);
   const cur = get('SELECT value FROM meta WHERE key=?').get('schema_version');

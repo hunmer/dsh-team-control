@@ -22,6 +22,8 @@ export interface AgentTask {
   title: string;
   description?: string;
   agent: string;
+  /** 成员头像插槽（模型图标）；缺省时回退到内置 spark 图标。 */
+  logo?: ReactNode;
   status: AgentTaskStatus;
   startedAt?: number | Date;
   elapsed?: number;
@@ -246,9 +248,15 @@ function TaskCard({ task, open, onToggle, since, onApprove, onReject, onRetry, o
         onClick={onToggle}
       >
         <span className="ui-aic__title-row">
-          <span className="ui-aic__spark">
-            <Spark />
-          </span>
+          {task.logo ? (
+            <span className="ui-aic__logo" aria-hidden>
+              {task.logo}
+            </span>
+          ) : (
+            <span className="ui-aic__spark">
+              <Spark />
+            </span>
+          )}
           <span className="ui-aic__title" dir="auto">
             {task.title}
           </span>
@@ -508,10 +516,6 @@ export function AgentInbox({
       </style>
       <header className="ui-aic__bar">
         <span className="ui-aic__heading">
-          <span className="ui-aic__crumb">Agents</span>
-          <span className="ui-aic__slash" aria-hidden="true">
-            /
-          </span>
           <span className="ui-aic__heading-title" title={title}>
             {title}
           </span>
@@ -571,7 +575,7 @@ export function AgentInbox({
                     onOpen={onOpen}
                   />
                 ))}
-                {laneTasks.length === 0 && <li className="ui-aic__empty">Nothing here</li>}
+                {laneTasks.length === 0 && <li className="ui-aic__empty">暂无</li>}
               </ul>
             </section>
           );

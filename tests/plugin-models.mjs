@@ -17,15 +17,20 @@ const mkFakeCtx = () => {
     list: () => ['spawn', 'fork'],
   };
   const llm = {
-    listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }, { id: 'openai', name: 'OpenAI' }],
-    listConfigurableProviders: () => [{ provider: 'deepseek', displayName: 'DeepSeek' }, { provider: 'openai', displayName: 'OpenAI' }],
+    listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }, { id: 'openai', name: 'OpenAI' }, { id: 'empty', name: 'Empty Provider' }],
+    listConfigurableProviders: () => [
+      { provider: 'deepseek', displayName: 'DeepSeek' },
+      { provider: 'openai', displayName: 'OpenAI' },
+      { provider: 'dormant', displayName: '未配置的提供商' },
+    ],
     async listModels(provider) {
       if (provider === 'deepseek') {
         return [
-          { provider, id: 'deepseek-chat', name: 'DeepSeek Chat', description: 'fast', inputModalities: { text: 'text' } },
+          { provider, id: 'deepseek-chat', name: 'DeepSeek Chat', description: 'fast', inputModalities: ['text', 'image'] },
           { provider, id: 'deepseek-reasoner', name: 'DeepSeek Reasoner' },
         ];
       }
+      if (provider === 'empty') return [];
       return [{ provider, id: 'gpt-5', name: 'GPT-5', description: 'strong reasoning' }];
     },
   };
@@ -61,6 +66,13 @@ const main = async () => {
     assert.equal(models.total, 3, `team_models 列出 3 条，实际 ${models.total}（${JSON.stringify(models)}）`);
     assert.deepEqual(models.models.map((m) => `${m.provider}/${m.model}`).sort(), ['deepseek/deepseek-chat', 'deepseek/deepseek-reasoner', 'openai/gpt-5']);
     assert(models.models.find((m) => m.model === 'deepseek-chat').description === 'fast', 'description 透传');
+    assert.deepEqual(models.models.find((m) => m.model === 'deepseek-chat').modalities, ['text', 'image'], 'modalities 是 DSH 的 array 形状（面板 vision 徽标依赖它）');
+
+    // 没模型的 provider（空列表 / 未配置的 dormant）不写进目录，也不会出现在面板
+    const catalog = await api.get('/api/llm/catalog');
+    assert.deepEqual(catalog.providers.map((p) => p.id).sort(), ['deepseek', 'openai'], `只保留有模型的 provider，实际 ${JSON.stringify(catalog.providers.map((p) => p.id))}`);
+    assert.equal(catalog.totals.providers, 2, '空 provider 不计数');
+    assert(!catalog.providers.some((p) => p.models.length === 0), '目录里没有空分组');
 
     // 显式 route + effort → 原样进 agentOptions
     const alice = await tool('team_spawn').execute(

@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/spinner';
 import { EmptyState, SectionHead } from '@/components/Bits';
+import { ModelAvatar, ProviderAvatar } from '@/components/ModelAvatar';
 
 /**
  * 模型路由页：目录来自 Host 的 DSH ctx.llm（Host 同步给 sidecar），
@@ -18,7 +19,7 @@ interface LlmModel {
   model: string;
   name: string;
   description?: string | null;
-  modalities?: Record<string, string> | null;
+  modalities?: string[] | null;
   source?: string;
   enabled: boolean;
   note?: string | null;
@@ -109,14 +110,20 @@ export function ModelsView() {
         ...p,
         models: p.models.filter((m) => !q || [p.id, p.name, m.model, m.name, m.description || '', m.note || ''].some((v) => v.toLowerCase().includes(q))),
       }))
-      .filter((p) => p.models.length || !q);
+      // 没有模型的 provider 不展示（Host 也不会再上报，这里兜住旧数据）
+      .filter((p) => p.models.length > 0);
   }, [catalog, query]);
+
+  const providerCount = useMemo(
+    () => (catalog ? catalog.providers.filter((p) => p.models.length > 0).length : 0),
+    [catalog],
+  );
 
   return (
     <div className="space-y-3">
       <SectionHead
         title="模型路由"
-        meta={catalog ? `${catalog.totals.enabled}/${catalog.totals.models} 条已启用 · ${catalog.totals.providers} 个提供商 · 同步于 ${catalog.asOf}` : '目录由 Host 从 DSH 模型服务同步'}
+        meta={catalog ? `${catalog.totals.enabled}/${catalog.totals.models} 条已启用 · ${providerCount} 个提供商 · 同步于 ${catalog.asOf}` : '目录由 Host 从 DSH 模型服务同步'}
         controls={(
           <>
             <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索 provider / model / 备注" className="h-8 w-60" />
@@ -135,7 +142,7 @@ export function ModelsView() {
       {!loading && catalog && !catalog.totals.models ? (
         <EmptyState
           title="还没有模型目录"
-          detail="在 DSH 里配置一个模型提供商后，让 Lead 调用一次 team_models（或任意团队工具），Host 就会把 provider/model 映射同步到这里。"
+          detail="配置模型提供商后自动同步"
         />
       ) : null}
 
@@ -143,24 +150,24 @@ export function ModelsView() {
         <Card key={p.id}>
           <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 py-3">
             <div className="flex flex-wrap items-center gap-2">
+              <ProviderAvatar provider={p.id} size={16} />
               <CardTitle className="text-sm">{p.name}</CardTitle>
               <code className="text-[11px] text-muted-foreground">{p.id}</code>
-              {p.source === 'dormant' ? <Badge variant="warning" size="sm">未激活</Badge> : null}
-              {p.error ? <Badge variant="error" size="sm" title={p.error}>目录读取失败</Badge> : null}
             </div>
             <span className="text-xs text-muted-foreground">{p.models.length} 个模型</span>
           </CardHeader>
           <CardContent className="p-0">
-            {p.models.length ? p.models.map((m) => {
+            {p.models.map((m) => {
               const key = keyOf(m);
               const disabled = busy.has(key);
               return (
                 <div key={key} className="flex flex-wrap items-start gap-3 border-t px-3 py-2 first:border-t-0">
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
+                      <ModelAvatar model={m.model} name={m.name} provider={m.provider} size={14} />
                       <span className="text-sm font-medium">{m.name || m.model}</span>
                       <code className="text-[11px] text-muted-foreground">{m.model}</code>
-                      {m.modalities?.image ? <Badge variant="outline" size="sm">vision</Badge> : null}
+                      {m.modalities?.includes('image') ? <Badge variant="outline" size="sm">vision</Badge> : null}
                       {!m.enabled ? <Badge variant="secondary" size="sm">已停用</Badge> : null}
                     </div>
                     {m.description ? <div className="text-xs text-muted-foreground">{m.description}</div> : null}
@@ -184,7 +191,7 @@ export function ModelsView() {
                   </Button>
                 </div>
               );
-            }) : <div className="px-3 py-4 text-xs text-muted-foreground">该提供商暂无可用模型（未激活或目录读取失败）。</div>}
+            })}
           </CardContent>
         </Card>
       ))}

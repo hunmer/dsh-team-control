@@ -213,7 +213,7 @@ root(run:team)                         ← 团队整体
 
 ### 3.9 模型路由目录
 
-目录由 Host 插件从 `ctx.llm` 读取后推送，sidecar 只做持久化与开关，**不调用任何 LLM、不保存凭据**。`provider`/`model` 是 DSH 的真实 id，`source` 为 `live`（`listProviders`）或 `dormant`（`listConfigurableProviders` 中尚未配置的 provider）。
+目录由 Host 插件从 `ctx.llm` 读取后推送，sidecar 只做持久化与开关，**不调用任何 LLM、不保存凭据**。`provider`/`model` 是 DSH 的真实 id；Host 只推送**能列出模型**的 provider（`listProviders` + `listModels` 成功的），空列表与未配置的 provider 不进目录，`source` 目前恒为 `live`。
 
 | 方法 路径 | 请求 | 响应 |
 |---|---|---|

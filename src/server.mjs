@@ -142,7 +142,8 @@ export function createRoutes(core) {
     ['POST', /^\/api\/scope-requests\/([^/]+)\/decide$/, async (ctx) => C.decideScopeRequest(ctx.p[0], ctx.body)],
 
     // todos
-    ['GET', /^\/api\/todos$/, async (ctx) => C.listTodos({ teamId: need(qs(ctx.url).get('team'), 'team'), memberId: qs(ctx.url).get('member') })],
+    ['GET', /^\/api\/todos$/, async (ctx) => C.listTodos({ teamId: need(qs(ctx.url).get('team'), 'team'), memberId: qs(ctx.url).get('member'), taskId: qs(ctx.url).get('task') })],
+    ['POST', /^\/api\/tasks\/([^/]+)\/todos$/, async (ctx) => C.setTaskTodos(ctx.p[0], ctx.body.items, { by: ctx.body.by ?? null })],
     ['POST', /^\/api\/todos$/, async (ctx) => C.createTodo(ctx.body)],
     ['PATCH', /^\/api\/todos\/([^/]+)$/, async (ctx) => C.patchTodo(ctx.p[0], ctx.body)],
 
@@ -183,7 +184,9 @@ export async function startServer({ home, port = 4317, host = '127.0.0.1', lease
 
     // 静态面板（公开）
     if (pathname === '/' || pathname === '/panel' || pathname.startsWith('/panel/')) {
-      const rel = pathname === '/' || pathname === '/panel' ? 'panel.html' : decodeURIComponent(pathname.slice('/panel/'.length));
+      const rel = pathname === '/' || pathname === '/panel' || pathname === '/panel/'
+        ? 'panel.html'
+        : decodeURIComponent(pathname.slice('/panel/'.length));
       const target = path.resolve(PANEL_DIR.pathname.replace(/^\/([A-Za-z]:)/, '$1'), rel);
       const base = path.resolve(PANEL_DIR.pathname.replace(/^\/([A-Za-z]:)/, '$1'));
       if (!target.startsWith(base)) { res.writeHead(403); res.end('forbidden'); return; }

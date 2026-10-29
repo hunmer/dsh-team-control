@@ -77,6 +77,10 @@ try {
   const todo = (await hit('POST /api/todos', 'POST', '/api/todos', { teamId: team.id, memberId: m1.id, title: 't' })).json;
   await hit('GET /api/todos', 'GET', `/api/todos?team=${team.id}`);
   await hit('PATCH /api/todos/{id}', 'PATCH', `/api/todos/${todo.id}`, { status: 'done' });
+  await hit('POST /api/tasks/{id}/todos（整体替换）', 'POST', `/api/tasks/${a.id}/todos`, {
+    by: 'smoke', items: [{ title: 'plan-1', status: 'done' }, { title: 'plan-2', status: 'active' }],
+  });
+  await hit('GET /api/todos?task=', 'GET', `/api/todos?team=${team.id}&task=${a.id}`);
 
   // 审批（人工创建 + 决策）
   const sr = (await hit('POST scope-request', 'POST', '/api/scope-requests', { memberId: m2.id, domain: 'fs', target: 'config/y.json', reason: 'routes', diffSize: 5 })).json;

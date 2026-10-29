@@ -57,7 +57,7 @@ export const TOOL_CALLS_CSS = `
   gap: 10px;
   width: 100%;
   min-height: 44px;
-  padding: 8px 10px 8px 9px;
+  padding: 8px 10px 8px 13px;
   border-radius: 12px;
   cursor: pointer;
   transition: background-color 160ms ease;

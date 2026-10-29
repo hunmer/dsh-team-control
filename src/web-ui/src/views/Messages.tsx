@@ -75,7 +75,7 @@ export function MessagesView() {
       {errors.messages && !messages.length
         ? <EmptyState title="消息加载失败" detail={errors.messages} />
         : !messages.length
-          ? <EmptyState title="暂无消息" detail="信箱来自 GET /api/messages；请求-响应按 correlationId 自动配对。" />
+          ? <EmptyState title="暂无消息" detail="请求与响应按 correlationId 配对" />
           : (
             <div className="space-y-2">
               {groups.map(([key, list]) => {

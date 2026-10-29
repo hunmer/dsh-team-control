@@ -103,7 +103,7 @@ export function ApprovalsView() {
       {errors.approvals && !scopeRequests.length
         ? <EmptyState title="审批队列加载失败" detail={errors.approvals} />
         : !scopeRequests.length
-          ? <EmptyState title="审批队列为空 ✓" detail="当前没有 pending 的越界申请。SSE scope.request 到达时会自动出现在这里。" />
+          ? <EmptyState title="审批队列为空" detail="没有待审批的越界申请" />
           : <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">{scopeRequests.map((request) => <ApprovalCard key={request.id} request={request} />)}</div>}
     </section>
   );

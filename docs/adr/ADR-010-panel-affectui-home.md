@@ -159,3 +159,44 @@ home 打补丁；已逐视图目视确认布局无溢出。
   专属布局；`src/components/ui/tabs.tsx` 已无人引用但保留；`src/affectui/diff-card.tsx` 保留未删。
 - **回退方式**：`store.tsx` 默认值改回 `'board'` 并删掉 App 的 home 分支即可回到旧布局；
   `src/affectui/` 是纯新增目录，删除不影响其它视图。
+
+## 后续修订（2026-10-29）：主页改为 Plan / Activity / AgentInbox 组合，三者全接真实数据
+
+用户要求：「在主页增加 `affectui-agent-inbox` 组件展示，并接入真实的数据；不要删掉已有的 Plan 和
+Activity，它们也要接真实数据」。此前 home 整屏是 `AgentRun`（上一条修订后只剩审批卡是真实的），
+本修订取代「主页由 AgentRun 承载」这一形态：
+
+1. **主页不再用 `AgentRun`**。`agent-run.tsx` 声明了 `children` 但从不渲染，且内部自带 `AppShell`，
+   无法在其中插入 AgentInbox，也无法避免双壳。现在 `src/App.tsx` 的 home 分支与其它视图走同一条
+   `AppShell` 路径，内容由新建的 `src/web-ui/src/views/Home.tsx` 组合：
+   - 左列上：`PlanSteps`（vendored）渲染任务级计划清单；
+   - 左列下：Activity，按当前任务过滤真实事件流（`/api/events/history`），每条用 `ToolCall`
+     呈现 phase/action/target，可展开 Result/Next；
+   - 右列：`AgentInbox`（`src/affectui/agent-inbox.tsx` 原样复制），展示真实任务卡与审批。
+   `AgentRun` 不再被引用（文件保留，回退时可用）。
+2. **计划清单的数据源是 sidecar 的 `todo` 表，不是 `task.plan_json`**。`task.plan_json` 是 worker
+   运行时可执行的步骤，改写会破坏调度；`todo` 本来就是人工待办表，此前只缺三件事：`task_id` 关联、
+   agent 可调用的工具、面板 UI。本次补齐：
+   - `src/db.mjs`：`todo.task_id` 列 + `idx_todo_task` 索引（迁移）；
+   - `src/core.mjs`：`setTaskTodos(taskId, items, { by })` 整体替换、`listTodos({ taskId })` 过滤；
+     事件 `phase=step, action=task.todo, target="done/total done"` 用于 SSE 刷新。事件流按成员分片，
+     **未派发任务写入时跳过事件**（归属不到成员，不能因此 400），任务被派发时由 `task.state` 触发刷新；
+   - `src/server.mjs`：`POST /api/tasks/:id/todos`、`GET /api/todos?task=`；
+   - `dsh-plugin/index.js`：新增 `team_todo(teamId, taskId, items[{title,status,blockedBy?}], by?)`，
+     与内置 `todo_write`（只在会话内、落不到面板）区分，`by` 记录写入者（默认 `lead`）。
+3. **收件箱的四个动作全部接真实数据**（组件在任一回调缺失时会本地假动作，因此必须全传）：
+   `waiting`（来自 pending scopeRequest）→ Approve/Reject 走 `decideScope`；`failed`（DAG 失败节点）
+   → Retry 以原 subject/acceptance/writeScopes/deps 克隆一个新任务（sidecar 没有原地重试路由）；
+   `running`/`done` → Open 切换 Plan/Activity 跟随的任务。
+4. **状态映射**：`todo.status` → PlanSteps 为 open/blocked → pending、active → active、done → done、
+   skipped → skipped（blocked 不是失败，不渲染红色失败态，阻塞原因放 detail）；卡片 lane 由任务
+   status + 未决审批推导，`needs` = 该任务有 pending 审批或任务 failed。
+5. **测试**：新增 `tests/todo-plan.mjs`（task_id 关联、未派发可写、整体替换、校验、事件进度），
+   `tests/routes-smoke.mjs` 增补新路由。`node tests/run-all.mjs` 26/26 通过。
+6. **文案与空态**：主页不再输出说明性长段文字。空态统一改用 vendored coss `Empty`
+   （`src/web-ui/src/components/ui/empty.tsx`，图标 + 一句标题，必要时一行说明）：
+   主页 Plan/Activity 局部空态、`components/Bits.tsx` 的共享 `EmptyState`（Board/DAG/审批/消息/
+   模型/权限/时间线全部复用）都走同一套。收件箱去掉了多余的内部 crumb 与每 lane 的英文
+   「Nothing here」，改为「暂无」；卡片头部只留标题与 Board/List 切换。
+7. **已知限制**：`src/web/` 存的是构建产物，仍留有历史 hashed 资源；inbox 卡片状态文案与 Plan
+   「Done in …」来自 vendored 组件的英文/相对时间文案，未做 i18n。

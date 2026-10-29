@@ -39,8 +39,8 @@
 ## 模型路由（每个成员不同的 provider / model / effort）
 
 目录的**唯一来源**是 Host 进程的 `ctx.llm`：`listProviders()`（`{id,name}`）+ `listModels(provider)`
-（`{provider,id,name,description?,inputModalities?}`），`listConfigurableProviders()` 里未配置的 provider 也以
-`source:"dormant"` + `error` 保留。插件把这份映射快照 `POST /api/llm/catalog` 给 sidecar（30s 节流，
+（`{provider,id,name,description?,inputModalities?}`）。只上报**能列出模型**的 provider（空列表或未配置的直接跳过），
+所以目录和面板里不会出现空分组。插件把这份映射快照 `POST /api/llm/catalog` 给 sidecar（30s 节流，
 `llm/adapters-updated` 事件会重置节流）；sidecar 只存 provider/model 映射、启用开关和备注，**不代理 LLM 请求、
 不保存凭据**，所以面板独立打开（`:4317/panel`）也能用。
 

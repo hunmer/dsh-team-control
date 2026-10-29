@@ -37,6 +37,10 @@ const STATUS = {
       status: 'idle', currentTaskId: null, step: null, pct: null, blockers: [],
     },
     {
+      id: 'm4', teamId: 'team_t1', name: 'future-member', model: null, agentSessionId: 'c4',
+      status: 'weird_state', currentTaskId: null, step: null, pct: null, blockers: [],
+    },
+    {
       id: 'm3', teamId: 'team_other', name: '别人家的成员', agentSessionId: 'c-other',
       status: 'running', blockers: [],
     },
@@ -59,8 +63,23 @@ const EVENTS = {
 let definition;
 const requested = [];
 let serveStatus = true;
+// 假 document：ensureStyles() 应把「全局唯一一份」样式挂到 head（不在组件树里）
+const headChildren = [];
 const sandbox = {
-  window: { __ModuleLoader__: { load: (def) => { definition = def; } } },
+  window: {
+    __ModuleLoader__: { load: (def) => { definition = def; } },
+    innerWidth: 1280,
+    innerHeight: 800,
+  },
+  document: {
+    head: { appendChild: (node) => { headChildren.push(node); } },
+    getElementById: (id) => headChildren.find((node) => node.id === id) || null,
+    createElement: (tag) => ({ tag, id: '', textContent: '' }),
+    // 胶囊按钮：卡片要贴着它正下方弹出
+    querySelector: (selector) => (String(selector).includes('data-dsh-team-pill')
+      ? { getBoundingClientRect: () => ({ width: 120, right: 1200, bottom: 40 }) }
+      : null),
+  },
   console,
   fetch: async (url) => {
     requested.push(url);
@@ -120,6 +139,19 @@ const ctx = {
 
 plugin.apply(ctx);
 
+// 样式必须在 head 里只有一份：亮/暗主题走 --dsw-alias-* token，卡片里不应再塞 <style>
+assert.equal(headChildren.length, 1, '插件样式只注入一次到 <head>');
+assert.equal(headChildren[0].id, 'dsh-team-ui-styles', '样式节点 id');
+assert.match(headChildren[0].textContent, /\.dsht-afc-dock\s*\{/, '样式含浮层样式');
+assert.match(headChildren[0].textContent, /\.ui-afc__card\s*\{/, '样式含 affectui 卡片样式');
+assert.match(headChildren[0].textContent, /--dsw-alias-bg-overlay/, '卡片配色绑定宿主主题 token');
+assert.ok(headChildren[0].textContent.includes('backdrop-filter:blur(24px)'), '卡片用磨砂玻璃背景（backdrop-filter）');
+assert.ok(
+  headChildren[0].textContent.includes('--ui-afc-card: color-mix(in srgb, var(--dsw-alias-bg-overlay) 72%, transparent)'),
+  '卡片底色半透明，才能透出磨砂',
+);
+assert.ok(headChildren[0].textContent.includes('@supports not ((backdrop-filter'), '不支持 backdrop-filter 时有不透明兜底');
+
 const strip = registrations.find((r) => r.desc && r.desc.name === 'conversation.session.header.utilities');
 assert.ok(strip, '应注册 conversation.session.header.utilities');
 assert.equal(strip.desc.id, 'dsh-team:members', 'slot 条目 id');
@@ -169,7 +201,7 @@ const pill = strip.component({ sessionId: 's1', useSessions });
 assert.equal(pill.props['data-dsh-team-pill'], TEAM.id, 'pill 绑定团队 id');
 assert.equal(pill.props['aria-expanded'], 'true', '有运行中成员时卡片自动展开');
 assert.equal(textOf(byClass(pill, 'dsht-afc-pill-name')[0]), '小说团队', 'pill 显示团队名');
-assert.equal(textOf(byClass(pill, 'dsht-afc-pill-run')[0]), 'running_of[1,2]', '运行中 1 / 成员 2（不含他会话成员）');
+assert.equal(textOf(byClass(pill, 'dsht-afc-pill-run')[0]), 'running_of[1,3]', '运行中 1 / 成员 3（不含他会话成员）');
 
 const sevs = byClass(pill, 'dsht-afc-pill-sev');
 assert.equal(sevs.length, 2, '严重/警告两个计数');
@@ -181,15 +213,21 @@ assert.equal(textOf(sevs[1]), '1', 'scope_request 计 1 条警告');
 // --- 浮层卡片：成员进度 + 最新发现 ---
 const card = dock.component({});
 assert.ok(card, '卡片展开时浮层渲染');
+// 卡片必须贴着胶囊按钮（bottom 40 / right 1200，视口 1280）下方弹出，而不是钉在窗口右上角
+assert.equal(card.props.style.top, '48px', '浮层贴在按钮下方（bottom 40 + 8）');
+assert.equal(card.props.style.right, '80px', '浮层右边与按钮右边对齐（视口 1280 - 1200）');
+assert.equal(card.props.style['--dsht-dock-max'], '736px', '卡片高度上限按剩余视口算');
 assert.equal(card.props['data-dsh-team-card'], TEAM.id);
 const afc = byClass(card, 'ui-afc')[0];
 assert.ok(afc, '卡片本体是 affectui AgentFindings');
-assert.equal(afc.props['data-dsh-team-findings'], 2, '两个团队成员行');
+assert.equal(afc.props['data-dsh-team-findings'], 3, '三个团队成员行');
 
 const agentRows = byClass(card, 'ui-afc__agent');
-assert.equal(agentRows.length, 2);
+assert.equal(agentRows.length, 3);
 assert.equal(textOf(byClass(agentRows[0], 'ui-afc__name')[0]), 'plot-designer');
 assert.equal(textOf(byClass(agentRows[0], 'ui-afc__count')[0]), '2/4', '当前任务 plan 进度 2/4');
+assert.ok(textOf(agentRows[2]).includes('未知状态'), '未知状态兜底成本地文案，不露 status_* 原始 key');
+assert.ok(!textOf(agentRows[2]).includes('status_'), '卡片里不出现原始 i18n key');
 assert.equal(byClass(agentRows[0], 'ui-afc__fill')[0].props.style.width, '50%');
 assert.equal(textOf(byClass(agentRows[1], 'ui-afc__count')[0]), '1/1', '已完成任务的成员进度 1/1');
 
