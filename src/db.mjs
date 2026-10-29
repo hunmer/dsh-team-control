@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -135,6 +135,22 @@ CREATE TABLE IF NOT EXISTS audit (
   detail_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_audit_team ON audit(team_id, id);
+
+-- Trace 瀑布（成员看板）：显式上报的跨度。Worker 步骤跨度由 event 现场推导，不入此表。
+-- 幂等：客户端用稳定的 span_id（如 tool:<session>:<callId>）上报 running → done/failed 两次。
+CREATE TABLE IF NOT EXISTS span (
+  span_id TEXT PRIMARY KEY, team_id TEXT NOT NULL,
+  member_id TEXT, session_id TEXT, parent_id TEXT,
+  name TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'tool',
+  status TEXT NOT NULL DEFAULT 'running',
+  start_ms INTEGER NOT NULL, end_ms INTEGER,
+  detail TEXT, model TEXT, tokens_in INTEGER, tokens_out INTEGER, cost REAL,
+  input_text TEXT, output_text TEXT, error TEXT,
+  meta_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_span_team ON span(team_id, start_ms);
+CREATE INDEX IF NOT EXISTS idx_span_parent ON span(team_id, parent_id);
 
 -- fs.write 的版本基线（C3/FR-3.6 乐观并发）
 CREATE TABLE IF NOT EXISTS file_state (

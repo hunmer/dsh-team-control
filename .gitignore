@@ -8,3 +8,8 @@ tests/.tmp/
 demo/.tmp/
 *.log
 .DS_Store
+
+# web-ui（coss ui / Vite 前端子项目）
+src/web-ui/.npm-cache/
+src/web-ui/.tmp/
+src/web-ui/.vite/

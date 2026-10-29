@@ -1,7 +1,7 @@
 // core.mjs — 组合根：装配 StateStore/EventStore/PermBroker/Scheduler/Runner/Bus/SSE，并承载业务查询
 import fs from 'node:fs';
 import path from 'node:path';
-import { openDb, closeDb, q } from './db.mjs';
+import { openDb, closeDb, q, tx } from './db.mjs';
 import { EventStore, rowToEvent } from './eventstore.mjs';
 import { PermBroker } from './broker.mjs';
 import { Scheduler, rowToTask } from './scheduler.mjs';
@@ -10,7 +10,7 @@ import { MessageBus, rowToMessage } from './bus.mjs';
 import { SseHub } from './sse.mjs';
 import {
   ERR, now, nowIso, newId, json, parseJson, clamp, redactor, REDACTED,
-  isSensitiveName, percentile, sha256,
+  isSensitiveName, percentile, sha256, truncate,
 } from './util.mjs';
 import { DOMAINS, OPS_BY_DOMAIN } from './policy.mjs';
 
@@ -340,6 +340,284 @@ export class DshTeam {
 
   history(teamId, { since = 0, member = null, limit = 500 } = {}) {
     return { asOf: nowIso(), version: this.scheduler.version(teamId), items: this.events.history(teamId, { since, member, limit }) };
+  }
+
+  // ---------- Trace 瀑布（成员看板）：显式 span + Worker 步骤事件 ----------
+
+  /** span 行 → API 形状。 */
+  spanView(r) {
+    if (!r) return null;
+    return {
+      spanId: r.span_id, teamId: r.team_id,
+      memberId: r.member_id ?? null, sessionId: r.session_id ?? null, parentId: r.parent_id ?? null,
+      name: r.name, kind: r.kind, status: r.status,
+      startMs: Number(r.start_ms), endMs: r.end_ms == null ? null : Number(r.end_ms),
+      detail: r.detail ?? null, model: r.model ?? null,
+      tokensIn: r.tokens_in == null ? null : Number(r.tokens_in),
+      tokensOut: r.tokens_out == null ? null : Number(r.tokens_out),
+      cost: r.cost == null ? null : Number(r.cost),
+      input: r.input_text ?? null, output: r.output_text ?? null, error: r.error ?? null,
+      meta: parseJson(r.meta_json, {}),
+    };
+  }
+
+  /**
+   * 上报跨度（幂等 upsert）。单条或 {spans:[...]} 批量均可。
+   * Agent 侧在工具开始时先报 running，结束时用同一个 spanId 再报 done/failed。
+   */
+  appendSpans(input = {}) {
+    const teamId = String(input.teamId || '');
+    if (!teamId) throw ERR.bad('teamId required');
+    this.getTeam(teamId);
+    const sessionId = input.sessionId ? String(input.sessionId) : null;
+    const memberId = input.memberId ? String(input.memberId) : null;
+    const list = Array.isArray(input.spans) ? input.spans : [input];
+    const t = nowIso();
+    const items = tx(this.db, () => {
+      const out = [];
+      for (const raw of list) {
+        if (!raw || typeof raw !== 'object') continue;
+        const name = String(raw.name || '').trim().slice(0, 200);
+        if (!name) continue;
+        const spanId = String(raw.spanId || newId('span')).trim().slice(0, 200);
+        const status = ['running', 'done', 'failed'].includes(raw.status) ? raw.status : 'running';
+        const kind = ['agent', 'subagent', 'llm', 'tool', 'step', 'task'].includes(raw.kind) ? raw.kind : 'tool';
+        const startRaw = Number(raw.startMs ?? raw.start);
+        const start = Number.isFinite(startRaw) && startRaw > 0 ? Math.round(startRaw) : now();
+        const endRaw = Number(raw.endMs ?? raw.end);
+        const end = Number.isFinite(endRaw) && endRaw > 0 ? Math.round(endRaw) : null;
+        const meta = redactor.obj(raw.meta && typeof raw.meta === 'object' ? raw.meta : {});
+        this.get(
+          `INSERT INTO span (span_id, team_id, member_id, session_id, parent_id, name, kind, status, start_ms, end_ms,
+             detail, model, tokens_in, tokens_out, cost, input_text, output_text, error, meta_json, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(span_id) DO UPDATE SET
+             status=excluded.status, end_ms=excluded.end_ms, detail=excluded.detail, model=excluded.model,
+             tokens_in=excluded.tokens_in, tokens_out=excluded.tokens_out, cost=excluded.cost,
+             input_text=excluded.input_text, output_text=excluded.output_text, error=excluded.error,
+             meta_json=excluded.meta_json, updated_at=excluded.updated_at`,
+        ).run(
+          spanId, teamId,
+          raw.memberId != null ? String(raw.memberId) : memberId,
+          raw.sessionId != null ? String(raw.sessionId) : sessionId,
+          raw.parentId != null ? String(raw.parentId) : null,
+          name, kind, status, start, end,
+          raw.detail != null ? String(raw.detail).slice(0, 500) : null,
+          raw.model != null ? String(raw.model).slice(0, 120) : null,
+          Number.isFinite(Number(raw.tokensIn)) ? Math.round(Number(raw.tokensIn)) : null,
+          Number.isFinite(Number(raw.tokensOut)) ? Math.round(Number(raw.tokensOut)) : null,
+          Number.isFinite(Number(raw.cost)) ? Number(raw.cost) : null,
+          raw.input != null ? truncate(String(raw.input), 4000) : null,
+          raw.output != null ? truncate(String(raw.output), 4000) : null,
+          raw.error != null ? truncate(String(raw.error), 2000) : null,
+          json(meta), t, t,
+        );
+        out.push(this.spanView(this.get('SELECT * FROM span WHERE span_id=?').get(spanId)));
+      }
+      return out;
+    });
+    for (const span of items) {
+      try { this.sse.broadcastSynthetic('span.append', { teamId, span }, { teamId, memberId: span.memberId }); } catch { /* ignore */ }
+    }
+    return { ok: true, items };
+  }
+
+  /** 某团队/成员/会话的显式 span 列表（按开始时间升序）。 */
+  listSpans({ teamId, memberId = null, sessionId = null, since = 0, limit = 2000 } = {}) {
+    if (!teamId) throw ERR.bad('teamId required');
+    this.getTeam(teamId);
+    let sql = 'SELECT * FROM span WHERE team_id=? AND start_ms>=?';
+    const args = [teamId, Number(since) || 0];
+    if (memberId) { sql += ' AND member_id=?'; args.push(String(memberId)); }
+    if (sessionId) { sql += ' AND session_id=?'; args.push(String(sessionId)); }
+    sql += ' ORDER BY start_ms ASC, rowid ASC LIMIT ?';
+    args.push(clamp(Math.round(Number(limit) || 2000), 1, 5000));
+    return {
+      asOf: nowIso(), version: this.scheduler.version(teamId),
+      items: this.get(sql).all(...args).map((r) => this.spanView(r)),
+    };
+  }
+
+  /**
+   * Trace 瀑布树：把「Worker 计划步骤事件 + 显式上报 span」拼成 ui-trace-waterfall 的输入。
+   * 返回的 start/end 均为相对 originMs 的毫秒数；running 节点不带 end，客户端按 now 拉长。
+   */
+  trace(teamId, { limit = 4000, windowMs = 0 } = {}) {
+    const team = this.getTeam(teamId);
+    const members = this.listMembers(teamId);
+    const maxRows = clamp(Math.round(Number(limit) || 4000), 1, 40000);
+    const nowMs = now();
+    const windowSize = Math.max(0, Number(windowMs) || 0);
+    const cutoff = windowSize > 0 ? nowMs - windowSize : 0;
+    const all = [];
+    const byId = new Map();
+    const add = (n) => {
+      if (!n || byId.has(n.id)) return byId.get(n.id);
+      n.children = [];
+      byId.set(n.id, n);
+      all.push(n);
+      return n;
+    };
+
+    // 1) Worker 计划步骤：同一 (member, stepIndex) 首条 RUNNING 起算，末条终态收尾
+    const evRows = (cutoff
+      ? this.get(
+        `SELECT member_id, task_id, seq, ts, phase, action, target, result, meta_json
+           FROM event WHERE team_id=? AND ts >= ? ORDER BY id DESC LIMIT ?`,
+      ).all(teamId, new Date(cutoff).toISOString(), maxRows)
+      : this.get(
+        `SELECT member_id, task_id, seq, ts, phase, action, target, result, meta_json
+           FROM event WHERE team_id=? ORDER BY id DESC LIMIT ?`,
+      ).all(teamId, maxRows)).reverse();
+    const stepKey = (memberId, idx) => memberId + '\u0000' + idx;
+    const stepMap = new Map();
+    for (const r of evRows) {
+      if (!r.member_id) continue;
+      const meta = parseJson(r.meta_json, {});
+      const idx = meta.stepIndex;
+      if (!Number.isInteger(idx) || idx < 0) continue;
+      const ts = Date.parse(r.ts) || 0;
+      const key = stepKey(r.member_id, idx);
+      let s = stepMap.get(key);
+      if (!s) {
+        s = {
+          id: `step:${r.member_id}:${idx}`,
+          name: meta.step || `S${idx + 1}`,
+          kind: 'tool', status: 'done', startMs: ts, endMs: ts,
+          parentId: `member:${r.member_id}`,
+          detail: [r.phase, r.action, r.target].filter(Boolean).join(' · ') || null,
+          error: null,
+        };
+        stepMap.set(key, s);
+        add(s);
+      }
+      if (ts > s.endMs) s.endMs = ts;
+      if (ts && ts < s.startMs) s.startMs = ts;
+      // escape.probes 是 C1 证据行，不参与步骤成败判定
+      if (r.action === 'escape.probes') continue;
+      const result = String(r.result || '');
+      if (result.startsWith('FAIL')) { s.status = 'failed'; s.error = String(meta.error || result).slice(0, 500); }
+      else if (result === 'RUNNING') { s.status = 'running'; s.error = null; }
+      else if (result) { s.status = 'done'; s.error = null; }
+    }
+
+    // 2) 显式 span（工具调用等）
+    const spans = cutoff
+      ? this.get('SELECT * FROM span WHERE team_id=? AND COALESCE(end_ms, start_ms) >= ? ORDER BY start_ms ASC LIMIT ?')
+        .all(teamId, cutoff, clamp(maxRows, 1, 20000))
+      : this.get('SELECT * FROM span WHERE team_id=? ORDER BY start_ms ASC LIMIT ?')
+        .all(teamId, clamp(maxRows, 1, 20000));
+    for (const row of spans) {
+      const v = this.spanView(row);
+      const parent = v.parentId
+        ? (v.parentId.startsWith('span:') || v.parentId.startsWith('member:') || v.parentId.startsWith('session:')
+          ? v.parentId : `span:${v.parentId}`)
+        : (v.memberId ? `member:${v.memberId}` : v.sessionId ? `session:${v.sessionId}` : null);
+      add({
+        id: `span:${v.spanId}`, name: v.name,
+        kind: ['agent', 'subagent', 'llm', 'tool'].includes(v.kind) ? v.kind : 'tool',
+        status: v.status, startMs: v.startMs, endMs: v.endMs, parentId: parent,
+        detail: v.detail, model: v.model, tokensIn: v.tokensIn, tokensOut: v.tokensOut,
+        cost: v.cost, input: v.input, output: v.output, error: v.error,
+      });
+    }
+
+    // 3) 会话节点（Lead 进程）——没有成员归属的 span 挂到这里
+    const sessionIds = [...new Set(spans.map((r) => r.session_id).filter(Boolean))];
+    for (const sid of sessionIds) {
+      const mine = spans.filter((r) => r.session_id === sid);
+      const startMs = Math.min(...mine.map((r) => Number(r.start_ms)));
+      const running = mine.some((r) => r.status === 'running');
+      const endMs = running ? null : Math.max(...mine.map((r) => (r.end_ms == null ? Number(r.start_ms) : Number(r.end_ms))));
+      add({
+        id: `session:${sid}`, name: `Lead · ${String(sid).slice(0, 8)}`, kind: 'agent',
+        status: running ? 'running' : 'done', startMs, endMs, parentId: null,
+        detail: `${mine.length} 个工具调用`,
+      });
+    }
+
+    // 4) 成员节点（先建，时间范围随后由子节点推出）
+    const memberNodes = new Map();
+    for (const m of members) {
+      const n = add({
+        id: `member:${m.id}`, name: m.name || m.id, kind: 'subagent',
+        status: m.status === 'failed' ? 'failed' : m.status === 'running' ? 'running' : 'done',
+        startMs: null, endMs: null, parentId: null,
+        detail: [m.role, m.model, m.step].filter(Boolean).join(' · ') || m.status,
+      });
+      memberNodes.set(m.id, n);
+    }
+
+    // 5) 挂树 + 补成员时间范围；成员已不在 running 时收尾悬挂的步骤
+    const root = { id: `run:${teamId}`, name: team.name || teamId, kind: 'agent', status: 'done', startMs: null, endMs: null, parentId: null, children: [] };
+    for (const n of all) {
+      const parent = (n.parentId && byId.get(n.parentId)) || root;
+      n.parentId = parent.id;
+      parent.children.push(n);
+    }
+    for (const [mid, n] of memberNodes) {
+      const kids = n.children;
+      const live = members.find((m) => m.id === mid);
+      if (live && live.status !== 'running') {
+        for (const k of kids) {
+          if (k.status === 'running') { k.status = live.status === 'failed' ? 'failed' : 'done'; if (k.endMs == null) k.endMs = k.startMs; }
+        }
+      }
+      const starts = kids.map((k) => k.startMs).filter((v) => Number.isFinite(v));
+      const ends = kids.map((k) => k.endMs).filter((v) => Number.isFinite(v));
+      const anyRunning = kids.some((k) => k.status === 'running');
+      n.startMs = starts.length ? Math.min(...starts) : null;
+      n.endMs = anyRunning ? null : (ends.length ? Math.max(...ends) : null);
+      if (n.startMs == null) { n.startMs = null; n.endMs = null; }
+    }
+
+    // 6) 相对时间轴 + 根节点
+    const starts = all.map((n) => n.startMs).filter((v) => Number.isFinite(v));
+    const minStart = starts.length ? Math.min(...starts) : nowMs;
+    const originMs = cutoff > 0 ? Math.max(cutoff, Math.min(minStart, nowMs)) : minStart;
+    const running = all.some((n) => n.status === 'running');
+    const maxEnd = all.reduce((m, n) => (Number.isFinite(n.endMs) ? Math.max(m, n.endMs) : m), originMs);
+    root.startMs = originMs;
+    root.endMs = running ? null : maxEnd;
+    root.status = running ? 'running' : 'done';
+    root.detail = `${members.length} 成员 · ${stepMap.size} 步骤 · ${spans.length} 工具调用`;
+    // root 不在 all 里，显式给出相对时间（起点恒为 0；结束时收尾到最晚子节点）
+    root._s = 0;
+    root._e = running ? null : Math.max(0, Math.round(maxEnd - originMs));
+
+    for (const n of all) {
+      if (n.startMs == null) { n.startMs = originMs; n.endMs = originMs; }
+      n._s = n.startMs == null ? 0 : Math.max(0, Math.round(n.startMs - originMs));
+      n._e = n.endMs == null ? null : Math.max(n._s, Math.round(n.endMs - originMs));
+    }
+    const toSpan = (n) => {
+      const span = {
+        id: n.id, name: n.name, kind: n.kind, status: n.status, start: n._s,
+        detail: n.detail || undefined, model: n.model || undefined,
+        tokensIn: n.tokensIn ?? undefined, tokensOut: n.tokensOut ?? undefined, cost: n.cost ?? undefined,
+        input: n.input || undefined, output: n.output || undefined, error: n.error || undefined,
+        children: n.children
+          .slice()
+          .sort((a, b) => a._s - b._s)
+          .map(toSpan),
+      };
+      if (n._e != null) span.end = n._e;
+      return span;
+    };
+    const rootSpan = toSpan(root);
+    const count = (n) => 1 + n.children.reduce((acc, c) => acc + count(c), 0);
+    return {
+      asOf: nowIso(), version: this.scheduler.version(teamId),
+      teamId, originMs, now: nowMs, windowMs: windowSize, cutoffMs: cutoff || null,
+      root: rootSpan,
+      stats: {
+        members: members.length, steps: stepMap.size, spans: spans.length,
+        nodes: count(rootSpan),
+        running: all.filter((n) => n.status === 'running').length,
+        failed: all.filter((n) => n.status === 'failed').length,
+        durationMs: running ? nowMs - originMs : Math.max(0, maxEnd - originMs),
+      },
+    };
   }
 
   verify(teamId = null) {

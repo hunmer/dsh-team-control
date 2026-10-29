@@ -27,7 +27,8 @@ PRD D-9 写的是「独立端口，可选 iframe 嵌入 DSH GUI」。实现时�
     自动回退到中央面板（`main` + `sidebar.panellist`）。
   - **Tab 内默认「网页版」**：iframe 直接加载 sidecar 自带面板 `/panel`，内容与
     `:4317/panel` **完全一致**（7 视图 + SSE + 消息 + 报告导出），单一实现、零漂移。
-    头部可切「精简版」（本插件 React 重写、5 视图）。
+    2026-10-29 更新：用户要求移除 DSH 原生渲染的「精简版」，该分支与 5 个视图已从
+    `dsh-plugin-ui/client.js` 删除，Tab 内只保留 iframe。
   - **Host half** 在 DSH 的 `webServer` 上注册两条同源前缀路由：
     `/dsh-team-api/**`（透传到 sidecar 根，即数据与 SSE）与 `/panel/**`（面板本体与静态资源，
     因为 `panel.html` 用绝对 `/panel/app.js|css` 引用）；代理在 Host 侧注入
@@ -55,17 +56,16 @@ PRD D-9 写的是「独立端口，可选 iframe 嵌入 DSH GUI」。实现时�
 用户明确要求「直接用 web 的页面」。最终取「iframe 复用同一份页面」：
 - 收益：内容 100% 一致、只有一份 UI 实现、SSE 实时性保留、token 不下发。
 - 代价：iframe 不继承 DSH 主题/locale，沿用面板自有配色；跨文档交互（如跳转会话）不可用。
-- 兜底：保留「精简版」React 渲染，偏好主题一致性时可切换。
+- 2026-10-29：按用户要求移除「精简版」兜底，UI 只保留 iframe 一份实现。
 
 ## 后果
 
 - ✅ 面板在**右侧栏 Tab** 内停靠，与文件/终端等内置 Tab 同机制；浏览器永远看不到 sidecar token。
-- ⚠️「网页版」是 iframe，不继承 DSH 主题（沿用面板配色）；要主题一致切「精简版」。
+- ⚠️ iframe 不继承 DSH 主题（沿用面板配色）；这是单实现换来的已知代价（「精简版」已移除）。
 - ✅ 工具与界面分成两个可用独立安装/卸载的 bundle，互不影响。
 - ⚠️ 视觉渲染未能在本环境用浏览器验证（无浏览器控制）：已验证 JS 语法、Slot 注册
   （`Slots.listSubTree` 出现 `id: dsh-team, active: true`）、同源代理与全部数据端点、
   无外部 import、无字面色值。**不能据此声称视觉正确**。
 - ⚠️ `webServer` 路由不继承 DSH 鉴权：靠回环限制兜底。若将来 DSH 以反向代理远程暴露，
   需在外层拒绝 `/dsh-team-api`（或卸载该 bundle）。
-- ⚠️ 时间线暂用 2s 轮询；Host 代理已支持 SSE，后续可换 `EventSource` 获得真正推送。
 - ⚠️ 权限矩阵只读；编辑规则仍走 `team_scope` 工具或独立面板。

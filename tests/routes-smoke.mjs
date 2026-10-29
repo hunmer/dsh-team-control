@@ -20,9 +20,9 @@ const hit = async (name, method, path, body, expectStatus = 200) => {
 try {
   s = await startSidecar({ dataDir: tmp.dataDir, ws: tmp.ws });
 
-  // 鉴权与 404
+  // 免 token 访问（鉴权已移除，sidecar 仅监听回环）
   const noAuth = await fetch(s.url + '/api/teams');
-  out.push({ name: 'auth 401 without token', ok: noAuth.status === 401, info: String(noAuth.status) });
+  out.push({ name: 'no-token access allowed', ok: noAuth.status === 200, info: String(noAuth.status) });
   await hit('404 route', 'GET', '/api/nope', undefined, 404);
 
   await hit('health', 'GET', '/api/health');

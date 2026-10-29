@@ -34,6 +34,9 @@ function resolveConfig(config) {
     entry: path.resolve(c.sidecarEntry || DEFAULT_ENTRY),
     startTimeoutMs: Number(c.startTimeoutMs) || 20000,
     requestTimeoutMs: Number(c.requestTimeoutMs) || 60000,
+    // 把每次工具调用作为 trace span 上报到 sidecar（成员看板瀑布实时展示）
+    reportToolCalls: c.reportToolCalls !== false,
+    traceInputMax: Number(c.traceInputMax) || 1200,
   };
 }
 
@@ -478,6 +481,82 @@ function buildTools(s) {
   return tools;
 }
 
+// ---------- trace 上报：把每次工具调用写成 span（running → done/failed） ----------
+/** 会话 → 团队 的粘性绑定：参数里出现 teamId 或 team_create 返回后记住，后续调用自动归属。 */
+const teamBySession = new Map();
+
+const clipText = (value, max) => {
+  if (value == null) return null;
+  let text;
+  try { text = typeof value === 'string' ? value : JSON.stringify(value); } catch { text = String(value); }
+  return text.length > max ? text.slice(0, max) + '…' : text;
+};
+
+/** 后台 POST，1.2s 超时；sidecar 未起/网络抖动绝不影响工具调用本身。 */
+function postSpan(s, payload) {
+  if (!payload.teamId) return;
+  const body = JSON.stringify(payload);
+  void fetch(s.baseUrl + '/api/spans', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body,
+    signal: AbortSignal.timeout(1200),
+  }).catch(() => { /* ignore */ });
+}
+
+function bindSessionTeam(sessionId, args, resultValue) {
+  if (!sessionId) return null;
+  const teamId = args?.teamId || resultValue?.team?.id || resultValue?.teamId
+    || (Array.isArray(resultValue?.items) && resultValue.items[0]?.team?.id);
+  if (teamId) teamBySession.set(sessionId, String(teamId));
+  return sessionId ? (teamBySession.get(sessionId) || null) : null;
+}
+
+/**
+ * `tools/execute` waterfall：进入前报 running，返回/抛错后报终态。
+ * 同一 spanId 幂等 upsert，因此面板可在调用进行中就先画出增长中的条。
+ */
+async function traceToolCall(s, exec, next) {
+  const sessionId = exec?.agent?.id != null ? String(exec.agent.id) : null;
+  const callId = exec?.callId != null ? String(exec.callId) : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const spanId = `tool:${sessionId || 'host'}:${callId}`;
+  const name = String(exec?.name || 'tool');
+  const args = exec?.arguments && typeof exec.arguments === 'object' ? exec.arguments : {};
+  const startMs = Date.now();
+  const teamId = (args.teamId && String(args.teamId)) || (sessionId && teamBySession.get(sessionId)) || null;
+  if (teamId) {
+    postSpan(s, {
+      teamId, sessionId, spanId, name, kind: 'tool', status: 'running', startMs,
+      detail: Object.keys(args).length ? clipText(args, 160) : null,
+      input: clipText(args, s.traceInputMax),
+    });
+  }
+  let result;
+  try {
+    result = await next();
+  } catch (err) {
+    if (teamId) {
+      postSpan(s, {
+        teamId, sessionId, spanId, name, kind: 'tool', status: 'failed', startMs, endMs: Date.now(),
+        error: clipText(err && err.message ? err.message : String(err), 2000),
+      });
+    }
+    throw err;
+  }
+  const failed = !!result && (result.isError === true || result.error != null);
+  const bound = bindSessionTeam(sessionId, args, failed ? null : result?.value);
+  const finalTeam = teamId || bound;
+  if (finalTeam) {
+    postSpan(s, {
+      teamId: finalTeam, sessionId, spanId, name, kind: 'tool',
+      status: failed ? 'failed' : 'done', startMs, endMs: Date.now(),
+      output: failed ? null : clipText(result?.value, s.traceInputMax),
+      error: failed ? clipText(result?.error?.message || result?.value || 'tool error', 2000) : null,
+    });
+  }
+  return result;
+}
+
 /** Cordis apply：注册全局工具，并接管自动拉起的 sidecar 进程。 */
 export function apply(ctx, config) {
   const s = resolveConfig(config);
@@ -491,4 +570,7 @@ export function apply(ctx, config) {
       }
     };
   }, 'dsh-team.tools()');
+  if (s.reportToolCalls) {
+    ctx.on('tools/execute', (exec, next) => traceToolCall(s, exec, next));
+  }
 }
