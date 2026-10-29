@@ -315,6 +315,15 @@ export class DshTeam {
     const last = this.events.lastEvent(id);
     const total = task ? parseJson(this.get('SELECT plan_json FROM task WHERE id=?').get(task.id)?.plan_json, []).length : null;
     const idx = Number.isInteger(last?.meta?.stepIndex) ? last.meta.stepIndex : -1;
+    // agent 运行时成员通常没有 plan 步：退化为「成员自管 todo 的完成比例」，再退化为「运行中任务的半步」。
+    let pct = total ? clamp((idx + 1) / total, 0, 1) : null;
+    if (pct == null) {
+      const todos = task
+        ? this.get('SELECT status FROM todo WHERE member_id=? AND task_id=?').all(id, task.id)
+        : this.get('SELECT status FROM todo WHERE member_id=? ORDER BY created_at DESC LIMIT 20').all(id);
+      if (todos.length) pct = clamp(todos.filter((r) => r.status === 'done').length / todos.length, 0, 1);
+    }
+    if (pct == null && task) pct = 0.5;
     return {
       id: m.id, teamId: m.team_id, name: m.name, role: m.role, model: m.model, contextMode: m.context_mode,
       createdAt: m.created_at,
@@ -322,8 +331,8 @@ export class DshTeam {
       status: st.status, leaseUntil: rt.leaseUntil, currentTaskId: task?.id ?? null,
       step: st.step, seq: st.seq, last: st.last, next: st.next,
       blockers: st.blockers || [], stale: !!st.stale, asOf: st.asOf,
-      // 进度比例 0..1（契约 §3.2：已完成 step 数 / 计划 step 总数）
-      pct: total ? clamp((idx + 1) / total, 0, 1) : null,
+      // 进度比例 0..1（契约 §3.2：优先「已完成 step 数 / 计划 step 总数」）
+      pct,
     };
   }
 
