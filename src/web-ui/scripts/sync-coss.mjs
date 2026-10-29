@@ -23,9 +23,10 @@ const UTILS_URL =
   'https://raw.githubusercontent.com/cosscom/ui/main/apps/ui/registry/default/lib/utils.ts';
 
 export const COMPONENTS = [
-  'button', 'badge', 'card', 'table', 'tabs', 'select', 'input', 'textarea',
-  'label', 'spinner', 'skeleton', 'alert', 'progress', 'separator', 'dialog',
-  'kbd',
+  'alert', 'avatar', 'badge', 'button', 'card', 'collapsible', 'dialog', 'empty',
+  'input', 'kbd', 'label', 'menu', 'popover', 'progress', 'scroll-area',
+  'segmented-control', 'select', 'separator', 'sheet', 'sidebar', 'skeleton',
+  'spinner', 'table', 'tabs', 'textarea', 'toast', 'tooltip',
 ];
 
 const rewriteImport = (code) => code

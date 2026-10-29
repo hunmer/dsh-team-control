@@ -3,7 +3,7 @@
  *
  * 两套配色都要生效（PRD FR-6）：
  * - coss/Tailwind 主题靠 `<html class="dark">`（coss-theme.css 的 `@custom-variant dark (&:is(.dark *))`）；
- * - affectui 组件的暗色覆盖写作 `:where(.dark, [data-theme="dark"]) .ui-as`，需要祖先节点同时带 class 与 data 属性。
+ * - 图表组件（agent-tree / agent-lanes / trace-waterfall）的暗色覆盖写作 `:where(.dark, [data-theme="dark"]) .ui-*`，需要祖先节点同时带 class 与 data 属性。
  * 因此切换时两处一起设置；不做系统主题跟随，保持面板默认浅色不变。
  */
 import { useCallback, useEffect, useState } from 'react';
@@ -21,7 +21,7 @@ function readStoredTheme(): ThemeName {
   }
 }
 
-/** 把主题写到 <html>：class 供 Tailwind/coss，data-theme 供 affectui。 */
+/** 把主题写到 <html>：class 供 Tailwind/coss，data-theme 供图表组件。 */
 export function applyTheme(theme: ThemeName): void {
   const root = document.documentElement;
   root.classList.toggle('dark', theme === 'dark');

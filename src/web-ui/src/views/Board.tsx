@@ -11,6 +11,7 @@ import type { Member } from '@/types';
 import { fmtClock } from '@/lib/format';
 import { TraceWaterfall, type TraceSpan } from '@/components/trace-waterfall/trace-waterfall';
 import { Button } from '@/components/ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { EmptyState, MetaLine, SectionHead, StatusPill } from '@/components/Bits';
 import { ModelAvatar } from '@/components/ModelAvatar';
 
@@ -100,15 +101,21 @@ export function BoardView() {
         meta={<MetaLine>{metaParts.length ? metaParts.join(' · ') : '实时工具调用与步骤时间线'}</MetaLine>}
         controls={
           <div className="flex items-center gap-2">
-            <select
-              className="h-8 rounded-md border border-input bg-card px-2 text-xs text-foreground"
-              value={traceWindow}
-              onChange={(event) => setTraceWindow(Number(event.target.value))}
-              title="只统计该时间窗内的事件与工具调用"
-              aria-label="Trace 时间窗"
-            >
-              {WINDOWS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-            </select>
+            <Select value={String(traceWindow)} onValueChange={(value) => setTraceWindow(Number(value))}>
+              <SelectTrigger
+                size="sm"
+                className="w-40"
+                title="只统计该时间窗内的事件与工具调用"
+                aria-label="Trace 时间窗"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {WINDOWS.map(([value, label]) => (
+                  <SelectItem key={value} value={String(value)}>{label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Button size="sm" variant="outline" disabled={!teamId || busy} onClick={refresh}>
               {busy ? '刷新中…' : '刷新 Trace'}
             </Button>

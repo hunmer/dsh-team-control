@@ -6,7 +6,8 @@ import { Toaster } from '@/components/Toaster';
 import { AuthOverlayDialog, BootErrorOverlay } from '@/components/Overlays';
 import { TopBar } from '@/components/TopBar';
 import { TeamSelect } from '@/components/TeamSelect';
-import { AppShell } from '@/affectui/app-shell';
+import { AppShell } from '@/components/app-shell';
+import { ToastProvider } from '@/components/ui/toast';
 import { buildNav, TAB_LABELS, tabFromLabel, type ShellChrome } from '@/shell';
 import { HomeView } from '@/views/Home';
 import { BoardView } from '@/views/Board';
@@ -73,10 +74,10 @@ export default function App() {
   };
 
   return (
-    <>
+    <ToastProvider>
       <div className="fixed inset-x-0 top-0 z-50"><BootErrorOverlay /></div>
       <AppShell {...chrome}>
-        <div className="panel-coss flex min-h-full flex-col">
+        <div className="flex min-h-full flex-col">
           <Banner />
           <main className="flex-1 space-y-4 p-4">
             <ActiveView tab={tab} />
@@ -86,6 +87,6 @@ export default function App() {
       <AuthOverlayDialog />
       <Toaster />
       <noscript><p className="p-4 text-sm">本面板需要启用 JavaScript 才能显示实时数据。</p></noscript>
-    </>
+    </ToastProvider>
   );
 }
