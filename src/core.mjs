@@ -8,6 +8,7 @@ import { Scheduler, rowToTask } from './scheduler.mjs';
 import { WorkerRunner } from './runner.mjs';
 import { MessageBus, rowToMessage } from './bus.mjs';
 import { SseHub } from './sse.mjs';
+import { LlmCatalog } from './llm.mjs';
 import {
   ERR, now, nowIso, newId, json, parseJson, clamp, redactor, REDACTED,
   isSensitiveName, percentile, sha256, truncate,
@@ -16,12 +17,21 @@ import { DOMAINS, OPS_BY_DOMAIN } from './policy.mjs';
 
 const STATUSES = ['queued', 'provisioning', 'idle', 'running', 'blocked', 'done', 'failed', 'interrupted', 'retired'];
 
+/** 成员运行时：worker = 沙箱 Node 进程（sidecar 内派发）；agent = 真 DSH sub-agent（Host 插件派发） */
+export const RUNTIMES = ['worker', 'agent'];
+const runtimeOf = (team) => (team && team.runtime) || 'worker';
+/** status() 里附加 runtime；未知团队退回 'worker'，不让一次查询失败。 */
+const safeRuntimeOf = (core, teamId) => {
+  try { return runtimeOf(core.getTeam(teamId)); } catch { return 'worker'; }
+};
+
 export class DshTeam {
   constructor({ home, log = () => {}, leaseMs = 15000 } = {}) {
     this.home = home;
     this.log = log;
     this.db = openDb(path.join(home, 'team.db'));
     this.get = q(this.db);
+    this.llm = new LlmCatalog(this.db, this.get);
     this.sse = null;
     this.events = new EventStore(this.db, { onEvent: (ev) => { try { this.sse?.broadcastEvent(ev); } catch { /* ignore */ } } });
     this.broker = new PermBroker(this.db, { events: this.events, log });
@@ -51,17 +61,18 @@ export class DshTeam {
   }
 
   // ---------- 团队 ----------
-  createTeam({ name, workspace, maxMembers = 64, maxConcurrency = 8, failurePolicy = 'continue', maxAttempts = 3, autoApprove = null }) {
+  createTeam({ name, workspace, maxMembers = 64, maxConcurrency = 8, failurePolicy = 'continue', maxAttempts = 3, autoApprove = null, runtime = 'worker' }) {
     if (!name) throw ERR.bad('name required');
     if (!workspace) throw ERR.bad('workspace required');
+    if (!RUNTIMES.includes(runtime)) throw ERR.bad(`runtime must be one of ${RUNTIMES.join('|')}`);
     const abs = path.resolve(workspace);
     fs.mkdirSync(abs, { recursive: true });
     const id = newId('team');
     const t = nowIso();
     this.get(
-      `INSERT INTO team (id, name, workspace, max_members, max_concurrency, failure_policy, max_attempts, auto_approve_json, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`
-    ).run(id, name, abs, Number(maxMembers), Number(maxConcurrency), failurePolicy, Number(maxAttempts), autoApprove ? json(autoApprove) : null, t, t);
+      `INSERT INTO team (id, name, workspace, max_members, max_concurrency, failure_policy, max_attempts, auto_approve_json, runtime, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+    ).run(id, name, abs, Number(maxMembers), Number(maxConcurrency), failurePolicy, Number(maxAttempts), autoApprove ? json(autoApprove) : null, runtime, t, t);
     this.seedDefaultPolicies(id);
     return this.teamView(this.get('SELECT * FROM team WHERE id=?').get(id));
   }
@@ -91,6 +102,7 @@ export class DshTeam {
       failurePolicy: t.failure_policy, maxAttempts: Number(t.max_attempts),
       autoApprove: parseJson(t.auto_approve_json, null),
       autoTakeover: Number(t.auto_takeover) === 1,
+      runtime: runtimeOf(t),
       createdAt: t.created_at,
     };
   }
@@ -105,7 +117,8 @@ export class DshTeam {
 
   patchTeam(id, body = {}) {
     const t = this.getTeam(id);
-    const map = { name: 'name', workspace: 'workspace', maxMembers: 'max_members', maxConcurrency: 'max_concurrency', failurePolicy: 'failure_policy', maxAttempts: 'max_attempts' };
+    if (body.runtime !== undefined && !RUNTIMES.includes(body.runtime)) throw ERR.bad(`runtime must be one of ${RUNTIMES.join('|')}`);
+    const map = { name: 'name', workspace: 'workspace', maxMembers: 'max_members', maxConcurrency: 'max_concurrency', failurePolicy: 'failure_policy', maxAttempts: 'max_attempts', runtime: 'runtime' };
     const sets = []; const args = [];
     for (const [k, col] of Object.entries(map)) {
       if (body[k] !== undefined) { sets.push(`${col}=?`); args.push(body[k]); }
@@ -133,7 +146,7 @@ export class DshTeam {
     ).get(teamId).c);
   }
 
-  addMember(teamId, { name, role = 'worker', model = null, contextMode = 'isolated', defaultPlan = null }) {
+  addMember(teamId, { name, role = 'worker', model = null, contextMode = 'isolated', defaultPlan = null, agentSessionId = null }) {
     const team = this.getTeam(teamId);
     if (!name) throw ERR.bad('name required');
     const dup = this.get('SELECT id FROM member WHERE team_id=? AND name=?').get(teamId, name);
@@ -144,14 +157,14 @@ export class DshTeam {
     const id = newId('m');
     const t = nowIso();
     this.get(
-      `INSERT INTO member (id, team_id, name, role, model, context_mode, default_plan_json, quota_json, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,NULL,?,?)`
-    ).run(id, teamId, name, role, model, contextMode, defaultPlan ? json(defaultPlan) : null, t, t);
+      `INSERT INTO member (id, team_id, name, role, model, context_mode, default_plan_json, quota_json, agent_session_id, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,NULL,?,?,?)`
+    ).run(id, teamId, name, role, model, contextMode, defaultPlan ? json(defaultPlan) : null, agentSessionId ? String(agentSessionId) : null, t, t);
     this.events.append({
       teamId, memberId: id, taskId: null, phase: 'init', action: 'member.create',
       target: name, result: 'OK', next: status === 'queued' ? 'wait for capacity' : 'wait for task',
       status, blockers: status === 'queued' ? [{ kind: 'quota', detail: `maxMembers=${team.max_members}` }] : [],
-      meta: { stepIndex: -1, role, contextMode },
+      meta: { stepIndex: -1, role, contextMode, runtime: runtimeOf(team), sessionId: agentSessionId ? String(agentSessionId) : null },
     });
     if (status === 'idle') this.scheduler.wake(id);
     return this.memberView(id);
@@ -168,6 +181,7 @@ export class DshTeam {
     const idx = Number.isInteger(last?.meta?.stepIndex) ? last.meta.stepIndex : -1;
     return {
       id: m.id, teamId: m.team_id, name: m.name, role: m.role, model: m.model, contextMode: m.context_mode,
+      agentSessionId: m.agent_session_id ?? null,
       status: st.status, leaseUntil: rt.leaseUntil, currentTaskId: task?.id ?? null,
       step: st.step, seq: st.seq, last: st.last, next: st.next,
       blockers: st.blockers || [], stale: !!st.stale, asOf: st.asOf,
@@ -254,6 +268,10 @@ export class DshTeam {
   wakeMember(memberId) {
     const m = this.get('SELECT * FROM member WHERE id=?').get(memberId);
     if (!m) return { woken: false, reason: 'member_not_found' };
+    // agent 团队的成员是 DSH sub-agent，由 Host 插件用 sendMessage 唤醒，sidecar 不拉 worker
+    if (runtimeOf(this.get('SELECT * FROM team WHERE id=?').get(m.team_id)) === 'agent') {
+      return { woken: false, reason: 'agent_runtime' };
+    }
     const existing = this.runner.workers.get(memberId);
     if (existing && !existing.exited) return { woken: false, reason: 'running' };
     const st = this.events.state(memberId);
@@ -284,6 +302,212 @@ export class DshTeam {
     } catch (e) { this.log({ level: 'error', msg: 'onWorkerGone', err: String(e.message) }); }
   }
 
+  // ---------- Agent 运行时：成员是真 DSH sub-agent（Host 插件派发） ----------
+
+  /** 该成员是否为 agent 成员（已绑定 DSH session）。 */
+  agentMember(memberId) {
+    const m = this.memberRow(memberId);
+    if (!m.agent_session_id) throw ERR.bad(`member ${memberId} is not an agent member (no agent session)`);
+    return m;
+  }
+
+  /**
+   * Host 插件在 spawnTeammate 成功后调用：把成员登记进团队并绑定 DSH session。
+   * 幂等 upsert——同名成员已存在时只更新 session，不重复建行。
+   */
+  registerAgent(input = {}) {
+    const { teamId, name, sessionId = null, role = 'teammate', model = null, contextMode = 'fresh' } = input;
+    if (!teamId) throw ERR.bad('teamId required');
+    if (!name) throw ERR.bad('name required');
+    const team = this.getTeam(teamId);
+    const existing = this.get('SELECT * FROM member WHERE team_id=? AND name=?').get(teamId, name);
+    let id;
+    if (existing) {
+      id = existing.id;
+      this.get('UPDATE member SET agent_session_id=?, role=COALESCE(?, role), model=COALESCE(?, model), updated_at=? WHERE id=?')
+        .run(sessionId != null ? String(sessionId) : existing.agent_session_id, role || null, model || null, nowIso(), id);
+    } else {
+      id = this.addMember(teamId, { name, role, model, contextMode, agentSessionId: sessionId }).id;
+    }
+    const st = this.events.state(id);
+    // 重新报到（Host/DSH 重启后 sub-agent session 仍活着）：只要没有在途任务就回到 idle
+    if (!st || !['running', 'blocked'].includes(st.status)) {
+      this.events.append({
+        teamId, memberId: id, taskId: null, phase: 'init', action: 'agent.spawn',
+        target: name, result: 'OK', next: 'wait for task', status: 'idle', blockers: [],
+        meta: { stepIndex: -1, runtime: runtimeOf(team), sessionId: sessionId != null ? String(sessionId) : null, model: model ?? null },
+      });
+    }
+    return { member: this.memberView(id), runtime: runtimeOf(team) };
+  }
+
+  /** 该团队里可以接活的 agent 成员（idle 且没有在跑的任务）。 */
+  pickIdleAgent(teamId, memberId = null) {
+    const sql = memberId
+      ? `SELECT m.id FROM member m JOIN member_state s ON s.member_id=m.id
+         WHERE m.id=? AND m.team_id=? AND m.agent_session_id IS NOT NULL AND s.status='idle'
+           AND m.id NOT IN (SELECT assignee FROM task WHERE team_id=? AND status='running' AND assignee IS NOT NULL)`
+      : `SELECT m.id FROM member m JOIN member_state s ON s.member_id=m.id
+         WHERE m.team_id=? AND m.agent_session_id IS NOT NULL AND s.status='idle'
+           AND m.id NOT IN (SELECT assignee FROM task WHERE team_id=? AND status='running' AND assignee IS NOT NULL)
+         ORDER BY m.created_at ASC`;
+    const r = memberId ? this.get(sql).get(memberId, teamId, teamId) : this.get(sql).get(teamId, teamId);
+    return r ? this.memberView(r.id) : null;
+  }
+
+  /** agent 团队的就绪视图（人工/调试用，供 Host 校对）。 */
+  agentReady(teamId) {
+    const team = this.getTeam(teamId);
+    const dag = this.scheduler.dag(teamId);
+    const idleMembers = this.get(
+      `SELECT m.id FROM member m JOIN member_state s ON s.member_id=m.id
+       WHERE m.team_id=? AND m.agent_session_id IS NOT NULL AND s.status='idle' ORDER BY m.created_at ASC`
+    ).all(teamId).map((r) => this.memberView(r.id));
+    const readyTasks = dag.nodes
+      .filter((n) => n.ready && (n.status === 'ready' || n.status === 'pending'))
+      .map((n) => ({ taskId: n.taskId, subject: n.subject, assignee: n.assignee, planSize: n.planSize }));
+    return { teamId, runtime: runtimeOf(team), asOf: nowIso(), version: this.scheduler.version(teamId), idleMembers, readyTasks };
+  }
+
+  /**
+   * Host 调度器取活：原子认领一条 ready 任务给一个 idle agent 成员。
+   * 认领即置 running（含事件/SSE），随后由 Host 用 sendMessage 把任务交给该成员。
+   */
+  dispatchAgentTask(teamId) {
+    const team = this.getTeam(teamId);
+    if (runtimeOf(team) !== 'agent') throw ERR.bad('team runtime is not agent');
+    this.scheduler.evaluate(teamId);
+    const running = Number(this.get("SELECT COUNT(*) AS c FROM task WHERE team_id=? AND status='running'").get(teamId).c);
+    const maxConc = Number(team.max_concurrency) || 8;
+    if (running >= maxConc) return { dispatched: false, reason: 'concurrency', running, maxConcurrency: maxConc };
+    const candidates = this.get(
+      "SELECT * FROM task WHERE team_id=? AND status='ready' ORDER BY priority ASC, created_at ASC"
+    ).all(teamId);
+    for (const row of candidates) {
+      const task = rowToTask(row);
+      if (!this.scheduler.readiness(task, team.workspace).ready) continue;
+      // 建任务后留 settle 窗口，让 Lead 有机会先声明依赖
+      if (Date.now() - Date.parse(task.createdAt) < this.scheduler.settleMs) continue;
+      const member = this.pickIdleAgent(teamId, task.assignee || null);
+      if (!member) return { dispatched: false, reason: 'no_idle_agent' };
+      this.get("UPDATE task SET status='running', assignee=?, attempts=attempts+1, attempted_at=?, updated_at=? WHERE id=?")
+        .run(member.id, nowIso(), nowIso(), task.id);
+      this.events.append({
+        teamId, memberId: member.id, taskId: task.id,
+        phase: 'init', action: 'task.dispatch', target: task.subject, result: 'OK',
+        next: 'agent turn', status: 'running', blockers: [],
+        meta: { stepIndex: -1, step: 'S0', stepTotal: 0, taskId: task.id, attempt: task.attempts + 1, runtime: 'agent', sessionId: member.agentSessionId },
+      });
+      this.scheduler.emitTaskState(teamId, task.id, 'running', member.id);
+      try { this.sse.broadcastSynthetic('member.state', { teamId, memberId: member.id, status: 'running' }, { teamId, memberId: member.id }); } catch { /* ignore */ }
+      return { dispatched: true, task: rowToTask(this.get('SELECT * FROM task WHERE id=?').get(task.id)), member: this.memberView(member.id) };
+    }
+    return { dispatched: false, reason: 'no_ready_task' };
+  }
+
+  /** 成员状态上报（Host 监听 agent/status 后回写）；idle/failed 且有待跑任务时兜底收尾。 */
+  agentStatus(memberId, body = {}) {
+    const m = this.agentMember(memberId);
+    this.assertSessionOwner(m, body.sessionId);
+    const want = ['idle', 'running', 'blocked', 'failed', 'interrupted'].includes(body.status) ? body.status : 'idle';
+    const detail = body.detail != null ? String(body.detail).slice(0, 2000) : null;
+    const task = this.get("SELECT * FROM task WHERE assignee=? AND status='running' ORDER BY updated_at DESC LIMIT 1").get(memberId);
+    if (want === 'idle' || want === 'failed') {
+      if (task) {
+        if (want === 'failed') this.scheduler.onTaskFailed({ teamId: m.team_id, memberId, taskId: task.id }, { error: detail || 'agent reported failure' });
+        else this.scheduler.onTaskDone({ teamId: m.team_id, memberId, taskId: task.id }, { result: detail || 'agent turn finished' });
+        return { member: this.memberView(memberId), task: rowToTask(this.get('SELECT * FROM task WHERE id=?').get(task.id)), completed: true };
+      }
+      this.events.append({
+        teamId: m.team_id, memberId, taskId: null, phase: 'done', action: 'agent.idle', target: m.name,
+        result: 'OK', next: 'wait for task', status: want === 'failed' ? 'failed' : 'idle', blockers: [],
+        meta: { stepIndex: -1, detail },
+      });
+      return { member: this.memberView(memberId), completed: false };
+    }
+    if (want === 'interrupted') {
+      if (task) {
+        this.get("UPDATE task SET status='ready', updated_at=? WHERE id=?").run(nowIso(), task.id);
+        this.scheduler.emitTaskState(m.team_id, task.id, 'ready', memberId);
+      }
+      this.events.append({
+        teamId: m.team_id, memberId, taskId: task?.id ?? null, phase: 'wait', action: 'agent.interrupt', target: m.name,
+        result: 'OK', next: detail || 'await lead', status: 'interrupted',
+        blockers: [{ kind: 'interrupt', detail: detail || 'interrupted by lead' }],
+        meta: { stepIndex: -1, detail },
+      });
+      this.scheduler.evaluate(m.team_id);
+      return { member: this.memberView(memberId), task: task ? rowToTask(this.get('SELECT * FROM task WHERE id=?').get(task.id)) : null, completed: false };
+    }
+    this.events.append({
+      teamId: m.team_id, memberId, taskId: task?.id ?? null, phase: 'init', action: 'agent.running', target: m.name,
+      result: 'RUNNING', next: detail || 'agent turn', status: 'running', blockers: [],
+      meta: { stepIndex: -1, detail, taskId: task?.id ?? null },
+    });
+    return { member: this.memberView(memberId), completed: false };
+  }
+
+  /** 成员显式回报任务结果（team_report_task）：精确摘要 + 成败。 */
+  agentReport(memberId, body = {}) {
+    const m = this.agentMember(memberId);
+    this.assertSessionOwner(m, body.sessionId);
+    const failed = body.status === 'failed';
+    const summary = body.summary != null ? String(body.summary).slice(0, 4000) : null;
+    let task = body.taskId ? this.get('SELECT * FROM task WHERE id=?').get(String(body.taskId)) : null;
+    if (!task) task = this.get("SELECT * FROM task WHERE assignee=? AND status='running' ORDER BY updated_at DESC LIMIT 1").get(memberId);
+    if (!task) {
+      this.events.append({
+        teamId: m.team_id, memberId, taskId: null, phase: 'done', action: 'agent.report', target: m.name,
+        result: failed ? `FAIL:${summary || 'agent reported failure'}` : 'OK', next: null, status: 'idle', blockers: [],
+        meta: { stepIndex: -1, summary },
+      });
+      return { ok: true, task: null, status: failed ? 'failed' : 'done', summary };
+    }
+    if (task.assignee && task.assignee !== memberId) throw ERR.bad('task is not owned by this member');
+    if (body.status === 'blocked') {
+      // 阻塞不是失败：任务回到 blocked（不消耗重试），成员置 blocked 并带上阻塞原因，
+      // 依赖推进（evaluate）照常跑；Lead 决策后 resume/dispatch 可再发一次。
+      this.get("UPDATE task SET status='blocked', updated_at=? WHERE id=?").run(nowIso(), task.id);
+      this.scheduler.emitTaskState(m.team_id, task.id, 'blocked', memberId);
+      this.events.append({
+        teamId: m.team_id, memberId, taskId: task.id, phase: 'wait', action: 'agent.blocked', target: task.subject,
+        result: 'BLOCKED', next: 'await lead', status: 'blocked',
+        blockers: [{ kind: 'agent', detail: summary || 'agent reported blocked' }],
+        meta: { stepIndex: -1, summary, runtime: 'agent' },
+      });
+      this.scheduler.evaluate(m.team_id);
+      return { ok: true, task: rowToTask(this.get('SELECT * FROM task WHERE id=?').get(task.id)), status: 'blocked', summary };
+    }
+    if (failed) this.scheduler.onTaskFailed({ teamId: m.team_id, memberId, taskId: task.id }, { error: summary || 'agent reported failure' });
+    else this.scheduler.onTaskDone({ teamId: m.team_id, memberId, taskId: task.id }, { result: summary });
+    return { ok: true, task: rowToTask(this.get('SELECT * FROM task WHERE id=?').get(task.id)), status: failed ? 'failed' : 'done', summary };
+  }
+
+  /** 归属校验：成员绑定了 session 时，上报方必须是同一个 session。 */
+  assertSessionOwner(memberRow, sessionId) {
+    if (sessionId == null || sessionId === '' || !memberRow.agent_session_id) return;
+    if (String(sessionId) !== String(memberRow.agent_session_id)) throw ERR.bad('session does not own this member');
+  }
+
+  /** 按 DSH session 找成员（Host 侧只知道 sessionId，不知道 sidecar 成员 id）。 */
+  memberBySession(sessionId) {
+    if (sessionId == null || sessionId === '') return null;
+    const r = this.get('SELECT * FROM member WHERE agent_session_id=?').get(String(sessionId));
+    return r ? this.memberView(r.id) : null;
+  }
+
+  agentStatusBySession(sessionId, body = {}) {
+    const r = this.get('SELECT id FROM member WHERE agent_session_id=?').get(String(sessionId ?? ''));
+    if (!r) return { ok: false, reason: 'unknown_session', sessionId: sessionId ?? null };
+    return { ok: true, ...this.agentStatus(r.id, { ...body, sessionId }) };
+  }
+
+  agentReportBySession(sessionId, body = {}) {
+    const r = this.get('SELECT id FROM member WHERE agent_session_id=?').get(String(sessionId ?? ''));
+    if (!r) return { ok: false, reason: 'unknown_session', sessionId: sessionId ?? null };
+    return this.agentReport(r.id, { ...body, sessionId });
+  }
+
   // ---------- 状态/事件 ----------
   status({ teamId = null, memberId = null } = {}) {
     let members;
@@ -299,6 +523,7 @@ export class DshTeam {
       asOf: nowIso(),
       version: teamId ? this.scheduler.version(teamId) : this.events.lastEventId(),
       members,
+      ...(teamId ? { runtime: safeRuntimeOf(this, teamId) } : {}),
       staleMembers: members.filter((m) => m.stale).map((m) => m.id),
       degraded: members.some((m) => m.stale),
     };
@@ -445,6 +670,9 @@ export class DshTeam {
   trace(teamId, { limit = 4000, windowMs = 0 } = {}) {
     const team = this.getTeam(teamId);
     const members = this.listMembers(teamId);
+    // agent 成员的 span 只带 sessionId：先建 session → member 映射，把它们的工具调用挂到成员节点下
+    const sessionToMember = new Map();
+    for (const m of members) if (m.agentSessionId) sessionToMember.set(String(m.agentSessionId), m.id);
     const maxRows = clamp(Math.round(Number(limit) || 4000), 1, 40000);
     const nowMs = now();
     const windowSize = Math.max(0, Number(windowMs) || 0);
@@ -469,7 +697,7 @@ export class DshTeam {
         `SELECT member_id, task_id, seq, ts, phase, action, target, result, meta_json
            FROM event WHERE team_id=? ORDER BY id DESC LIMIT ?`,
       ).all(teamId, maxRows)).reverse();
-    const stepKey = (memberId, idx) => memberId + '\u0000' + idx;
+    const stepKey = (memberId, taskId, idx) => memberId + '\u0000' + (taskId || '') + '\u0000' + idx;
     const stepMap = new Map();
     for (const r of evRows) {
       if (!r.member_id) continue;
@@ -477,11 +705,11 @@ export class DshTeam {
       const idx = meta.stepIndex;
       if (!Number.isInteger(idx) || idx < 0) continue;
       const ts = Date.parse(r.ts) || 0;
-      const key = stepKey(r.member_id, idx);
+      const key = stepKey(r.member_id, r.task_id, idx);
       let s = stepMap.get(key);
       if (!s) {
         s = {
-          id: `step:${r.member_id}:${idx}`,
+          id: `step:${r.member_id}:${r.task_id || 'none'}:${idx}`,
           name: meta.step || `S${idx + 1}`,
           kind: 'tool', status: 'done', startMs: ts, endMs: ts,
           parentId: `member:${r.member_id}`,
@@ -509,10 +737,12 @@ export class DshTeam {
         .all(teamId, clamp(maxRows, 1, 20000));
     for (const row of spans) {
       const v = this.spanView(row);
+      const sid = v.sessionId ? String(v.sessionId) : null;
+      const mappedMember = v.memberId || (sid ? sessionToMember.get(sid) : null);
       const parent = v.parentId
         ? (v.parentId.startsWith('span:') || v.parentId.startsWith('member:') || v.parentId.startsWith('session:')
           ? v.parentId : `span:${v.parentId}`)
-        : (v.memberId ? `member:${v.memberId}` : v.sessionId ? `session:${v.sessionId}` : null);
+        : (mappedMember ? `member:${mappedMember}` : sid ? `session:${sid}` : null);
       add({
         id: `span:${v.spanId}`, name: v.name,
         kind: ['agent', 'subagent', 'llm', 'tool'].includes(v.kind) ? v.kind : 'tool',
@@ -523,14 +753,17 @@ export class DshTeam {
     }
 
     // 3) 会话节点（Lead 进程）——没有成员归属的 span 挂到这里
-    const sessionIds = [...new Set(spans.map((r) => r.session_id).filter(Boolean))];
+    const sessionIds = [...new Set(spans.map((r) => r.session_id).filter(Boolean))]
+      .filter((sid) => !sessionToMember.has(String(sid)));
     for (const sid of sessionIds) {
       const mine = spans.filter((r) => r.session_id === sid);
       const startMs = Math.min(...mine.map((r) => Number(r.start_ms)));
       const running = mine.some((r) => r.status === 'running');
       const endMs = running ? null : Math.max(...mine.map((r) => (r.end_ms == null ? Number(r.start_ms) : Number(r.end_ms))));
+      // 会话 id 形如 session-xxxx：去掉前缀再截短，避免所有会话都显示成 "Lead · session-"
+      const short = String(sid).replace(/^session[-_]/, '').slice(0, 6) || String(sid).slice(0, 6);
       add({
-        id: `session:${sid}`, name: `Lead · ${String(sid).slice(0, 8)}`, kind: 'agent',
+        id: `session:${sid}`, name: `Lead · ${short}`, kind: 'agent',
         status: running ? 'running' : 'done', startMs, endMs, parentId: null,
         detail: `${mine.length} 个工具调用`,
       });

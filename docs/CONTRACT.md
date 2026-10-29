@@ -74,12 +74,13 @@ CLI 通过 `<home>/run/sidecar.json` 发现端口，读 `<home>/token` 鉴权；
 ### 3.1 团队
 | 方法 路径 | 请求 | 响应 |
 |---|---|---|
-| `POST /api/teams` | `{name, workspace, maxMembers?, maxConcurrency?, failurePolicy?, maxAttempts?}` | `{team}`；`maxMembers` 默认 64，`0`=不限 |
+| `POST /api/teams` | `{name, workspace, runtime?, maxMembers?, maxConcurrency?, failurePolicy?, maxAttempts?}` | `{team}`；`maxMembers` 默认 64，`0`=不限；`runtime` 默认 `worker` |
 | `GET /api/teams` | — | `{items:[team]}` |
 | `GET /api/teams/{id}` | — | `{team}` |
 | `PATCH /api/teams/{id}` | 任意可改字段 | `{team}` |
 
-`team` = `{id,name,workspace,maxMembers,maxConcurrency,failurePolicy,maxAttempts,createdAt}`
+`team` = `{id,name,workspace,runtime,maxMembers,maxConcurrency,failurePolicy,maxAttempts,createdAt}`
+`runtime` = `worker | agent`（创建后不可变）：`worker` 由 sidecar 拉起沙箱 Node 进程执行 `plan`（§5）；`agent` 由 Host 插件通过宿主的 `subagents.startActivation` 拉起**真 DSH sub-agent session**，sidecar 只做任务/DAG/审批/看板的真相源（§3.8）。
 `workspace` 必须是已存在目录的绝对路径；所有 fs 相对路径、glob、exec cwd 都以它为根。
 
 ### 3.2 成员
@@ -93,7 +94,8 @@ CLI 通过 `<home>/run/sidecar.json` 发现端口，读 `<home>/token` 鉴权；
 | `POST /api/members/{id}/resume` | `{}` | `{member}`；从 `max(event.seq)` 的下一步继续 |
 | `POST /api/members/{id}/assign` | `{taskId}` | `{member,task}`；仅 `idle` 可接 |
 
-`member` = `{id,teamId,name,role,model,contextMode,status,leaseUntil,currentTaskId,step,seq,next,blockers,stale,asOf,pct}`
+`member` = `{id,teamId,name,role,model,contextMode,status,leaseUntil,currentTaskId,step,seq,next,blockers,stale,asOf,pct,agentSessionId}`
+`agentSessionId`：`agent` 团队成员对应的 DSH sub-agent SessionId（= `subagents.startActivation` 返回的子会话 id），`worker` 成员为 `null`。trace 用它把该 session 的工具 span 挂到成员节点下（§3.4.1）。
 `blockers` = `[{kind:"scope_request"|"dep"|"message"|"manual", id?, detail?}]`
 `pct` = 已完成 step 数 / 计划 step 总数（无计划则 `null`）。
 
@@ -184,6 +186,50 @@ root(run:team)                         ← 团队整体
 | `GET /api/report?team=&format=md` | `text/markdown` 运行报告（AC-12：含 actor/domain/target/before_hash/after_hash 表） |
 | `GET /panel` | HTML 面板 |
 
+### 3.8 Agent 运行时（`runtime: "agent"`）
+
+`agent` 团队的成员是**真 DSH sub-agent session**（由 Host 插件用宿主的 `ctx.get('subagents').startActivation(...)` 拉起，continuable child），sidecar 仍是任务/DAG/审批/看板/审计的唯一真相源；进程生命周期归 Host 与 DSH session。这些端点只被 Host 插件与调试脚本调用。
+
+| 方法 路径 | 请求 | 响应 |
+|---|---|---|
+| `POST /api/agents/register` | `{teamId, name, sessionId?, role?, model?, contextMode?}` | `{member, runtime}`；按 `(teamId,name)` **幂等 upsert**，无在途任务时写 `agent.spawn` 并置 `idle` |
+| `GET /api/agents/ready?team=` | — | `{teamId, runtime, idleMembers:[member], readyTasks:[{taskId,subject,assignee,planSize}]}`（调试/校对用） |
+| `POST /api/agents/dispatch` | `{teamId}` | `{dispatched:true, task, member}` 或 `{dispatched:false, reason:"concurrency"\|"no_idle_agent"\|"no_ready_task"}` |
+| `POST /api/agents/status` | `{sessionId, status, detail?}` | 按 session 路由到成员；未知 session → `{ok:false, reason:"unknown_session"}` |
+| `POST /api/agents/report` | `{sessionId, taskId?, status?:"done"\|"failed"\|"blocked", summary?}` | 按 session 路由；`{ok, task, status, summary}` |
+| `GET /api/agents/by-session/{sessionId}` | — | `{member}` 或 `{ok:false, reason:"unknown_session"}` |
+| `POST /api/members/{id}/agent-status` | `{sessionId?, status, detail?}` | 直连成员的同一逻辑（归属校验：session 必须等于 `agentSessionId`） |
+
+语义：
+
+- **宿主前提**：`runtime: "agent"` 依赖宿主已挂载 `subagents` 服务（`dsh-subagent` bundle，几乎所有 profile 都启用）。插件不用 `ctx.inject` 硬依赖它，而是 `ctx.get('subagents')` 探测；缺失时 `team_spawn`/派发返回可读错误（`subagents 服务不可用`），worker 团队不受影响。
+
+- **dispatch 是原子认领**：`evaluate()` 推 readiness → 校验 `maxConcurrency` → 按 `priority,created_at` 找 ready 任务（尊重 `assignee` 预绑与 `settleMs` 建图窗口，派发前重算依赖）→ 找 `idle` 且无在途任务的 agent 成员 → 同事务把任务置 `running` 并写 `task.dispatch` 事件。**不启动任何进程**；随后 Host 用 `subagents.sendMessage(lead, sessionId, content)` 把任务说明发进该成员的信箱。
+- `agentStatus` 的 `idle`/`failed` 带在途任务时**兜底收尾**（`onTaskDone`/`onTaskFailed`），保证 agent 忘了显式回报时 DAG 也能推进；`interrupted` 会把任务退回 `ready` 并重挂到成员。
+- `agentReport` 的 `blocked` **不消耗重试**：任务置 `blocked`、成员置 `blocked` 并带 `blockers:[{kind:"agent",detail}]`，Lead 决策后 `dispatch`/`resume` 再发一次。
+- 归属校验：成员绑定了 `agentSessionId` 时，`status`/`report` 的 `sessionId` 必须一致，否则 `400`。
+- trace：`sessionToMember` 由 `member.agent_session_id` 建立，该 session 的 span 直接挂 `member:<id>` 节点下，不再单独建 `session:` 节点（§3.4.1）。
+- 调度器在 `runtime === "agent"` 时**跳过 worker 派发循环**（只推进依赖）——否则会给 agent 团队拉起沙箱 worker。
+
+### 3.9 模型路由目录
+
+目录由 Host 插件从 `ctx.llm` 读取后推送，sidecar 只做持久化与开关，**不调用任何 LLM、不保存凭据**。`provider`/`model` 是 DSH 的真实 id，`source` 为 `live`（`listProviders`）或 `dormant`（`listConfigurableProviders` 中尚未配置的 provider）。
+
+| 方法 路径 | 请求 | 响应 |
+|---|---|---|
+| `POST /api/llm/catalog` | `{providers:[{id,name,source?,error?}], models:[{provider,model,name,description?,modalities?}], partial?}` | `{ok, asOf, providers, models, enabled}`；按 `(provider,model)` upsert，**保留既有 enabled/note**；`partial` 为真时跳过删除；空 `providers` → 400 |
+| `GET /api/llm/catalog` | — | `{asOf, source:"dsh-llm", providers:[{id,name,source,error,models:[route]}], totals}` |
+| `GET /api/llm/models?all=` | 默认只返回 `enabled=1`；`all=1` 返回全部 | `{asOf, total, items:[route]}` |
+| `PATCH /api/llm/routes` | `{provider, model, enabled?, note?}` | `{route}`；未知 route → 404；`enabled` 非 boolean → 400；`note` 截断到 240 字符 |
+
+`route` = `{provider, model, name, description, modalities, contextWindow, source, enabled, note}`。
+
+语义：
+
+- 非 `partial` 同步会删除快照中已消失的 provider/model（适配器卸载后不残留启用项）。
+- 目录为空（Host 没有 `ctx.llm`，例如尚未同步）时，`team_spawn` 不限制 route，保持向后兼容；一旦有目录，**实际生效的** `(provider,model)` 必须是 `enabled=1`（显式指定与继承 Lead 同一闸门）；目录里查不到的 route 不拦（适配器临时提供的情况）；全停用有可读错误。
+- `team_spawn` 的实际 route 落到 `subagents.startActivation` 的 `request.agentOptions`（只传显式字段）；route 变化且未显式给 `reasoningEffort` 时按 DSH 合并规则丢弃继承值。
+
 ---
 
 ## 4. SSE
@@ -203,6 +249,8 @@ data: {"id":42,"type":"step.append","teamId":"t_1","memberId":"m_1","taskId":"ta
 ---
 
 ## 5. Worker 进程
+
+> 仅 `runtime:"worker"` 的团队走本章（sidecar 拉起沙箱 Node 进程）；`runtime:"agent"` 的团队见 §3.8，sidecar **不**启动任何子进程。
 
 ### 5.1 启动
 ```
@@ -280,6 +328,19 @@ node --permission --allow-fs-read=<home>/workers/<memberId> \
 
 `tests/lib/harness.mjs` 提供：`startSidecar()`, `api()`, `sse()`, `sha256()`, `waitFor()`, `mkWorkspace()`, `readDb()`（用 `node:sqlite` 只读校验）, `killSidecar()`。
 
+**例外（AC-15）**：Host 插件（`dsh-plugin/index.js`）跑在 DSH 进程内，AC 脚本无法拉起真 DSH；`tests/ac-15-agent-runtime.mjs` 因此用**假 ctx** 捕获插件注册的工具/事件处理器并直接驱动，而 sidecar 仍是真实进程、真实 HTTP。AC-15 覆盖：`runtime` 落库、`/api/agents/register` 幂等、dispatch 原子认领与并发拒绝、归属校验、`done` 推进依赖、`blocked` 不消耗重试、`agent/status` idle 兜底、trace 把 session span 挂到成员节点，以及同一脚本里 worker 团队回归正常。
+
+**插件侧脚本（不占 AC 编号）**：`tests/plugin-*.mjs` 与 `tests/panel-contract.mjs`、`tests/routes-smoke.mjs`、`tests/cli-smoke.mjs` 用同一套 harness（真 sidecar + 假 ctx），按被测面命名：
+
+| 脚本 | 覆盖 |
+| --- | --- |
+| `tests/plugin-agent.mjs` | 插件这一半的 agent 闭环：`team_spawn` 真调 `subagents.startActivation` 并回注 session、任务简报含 `taskId`/`team_report_task` 指引、成员回报推进任务、未知 session 回报被拒（工具与 `POST /api/members/:id/agent-status` 两处）、`agent/status=idle` 兜底收尾并自动接着派发、`interrupt` 走 `subagents.interrupt` 且任务回 `ready`、worker 团队回归 |
+| `tests/plugin-client.mjs` | 客户端入口注册与工具清单 |
+| `tests/plugin-trace.mjs` | Trace 上报链路（session span 挂成员节点） |
+| `tests/db-migration.mjs` | 老库就地迁移：schema v1（`team` 无 `runtime`、`member` 无 `agent_session_id`）能补列/补索引/升版本，旧数据保留且默认 `worker`，二次打开幂等 |
+
+`tests/run-all.mjs` 先跑全部 `ac-*.mjs`，再跑上述插件/面板/路由/CLI/迁移脚本，任一失败即非零退出。
+
 ---
 
 ## 8. 目录与所有权
@@ -299,6 +360,8 @@ src/sse.mjs           # SSE hub
 src/server.mjs        # HTTP/SSE/静态
 src/util.mjs          # 时间/ID/glob/哈希/脱敏
 src/worker/worker.mjs # 受限 Worker（单文件，零 import 除 node:module）
+dsh-plugin/**         # Host 插件（team_* 工具、agent 成员调度、span 上报）
+dsh-plugin-ui/**      # 面板挂载到 GUI（better-sidebar 页签/回退）
 src/web/**            # 面板（panel-owner）
 tests/**              # AC 脚本
 docs/adr/**           # ADR

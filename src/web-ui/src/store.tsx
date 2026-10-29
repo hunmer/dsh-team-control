@@ -10,8 +10,12 @@ import { API_BASE, api, ApiError, EMBEDDED, enc, getToken, initUrlToken, pickIte
 import { fmtClock, storeGet, storeSet } from './lib/format';
 import type { DagData, MatrixRow, Member, Policy, ScopeRequest, Team, TeamMessage, TimelineEntry, TraceData } from './types';
 
-export const TAB_NAMES = ['board', 'dag', 'timeline', 'permissions', 'approvals', 'messages'] as const;
-export type TabName = (typeof TAB_NAMES)[number];
+export const TAB_NAMES = ['board', 'dag', 'timeline', 'models', 'permissions', 'approvals', 'messages'] as const;
+/**
+ * 面板视图。`home` 是 affectui 风格的默认主页（FR-2/FR-4）：
+ * 它不在 TAB_NAMES 里，因此不会被持久化；旧版本存下的 7 个业务 tab 仍按白名单恢复。
+ */
+export type TabName = (typeof TAB_NAMES)[number] | 'home';
 
 export const PHASES = ['init', 'read', 'write', 'exec', 'net', 'env', 'msg', 'wait', 'verify', 'interrupt', 'resume', 'done', 'fail', 'decision', 'recover'];
 const SSE_TYPES = ['member.status', 'step.append', 'task.state', 'message.delivered', 'scope.request', 'decision', 'lease.warn', 'span.append'];
@@ -57,7 +61,7 @@ const initialState: PanelState = {
   members: [], staleMembers: new Set(), degraded: false, snapshot: null,
   dag: null, trace: null, traceWindow: 30, matrix: [], policies: [], scopeRequests: [], messages: [],
   errors: {}, timeline: [], paused: false, speed: 1,
-  tab: 'board', filters: { member: '', phase: '' }, conn: 'connecting',
+  tab: 'home', filters: { member: '', phase: '' }, conn: 'connecting',
 };
 
 export interface PanelActions {
@@ -70,6 +74,8 @@ export interface PanelActions {
   selectTeam(teamId: string): Promise<void>;
   refreshTeams(): Promise<Team[]>;
   refreshAll(): Promise<void>;
+  /** 落盘一条越界申请决策，并刷新审批队列/权限矩阵。 */
+  decideScope(id: string, decision: 'approved' | 'denied'): Promise<void>;
   refreshPermissions(): Promise<void>;
   refreshMessages(): Promise<void>;
   refreshStatus(): Promise<void>;
@@ -94,7 +100,7 @@ export const usePanel = (): PanelActions => {
 };
 
 function loadUiState() {
-  const ui = { tab: 'board' as TabName, filters: { member: '', phase: '' }, paused: false, speed: 1 as 1 | 4 };
+  const ui = { tab: 'home' as TabName, filters: { member: '', phase: '' }, paused: false, speed: 1 as 1 | 4 };
   const raw = storeGet(STORE_UI);
   if (raw) {
     try {
@@ -315,6 +321,17 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     ]);
   }, [refreshStatus, refreshTrace, refreshDag, refreshPermissions, refreshApprovals, refreshMessages]);
 
+  /**
+   * 落盘一条越界申请的决策（home 右栏审批卡使用）。
+   * 与审批队列视图的差别：不收集 reason/TTL，使用默认的 300s 授权有效期。
+   */
+  const decideScope = useCallback(async (id: string, decision: 'approved' | 'denied') => {
+    const body: Record<string, unknown> = { decision, decidedBy: 'panel', singleUse: true };
+    if (decision === 'approved') body.ttlSeconds = 300;
+    await api('/api/scope-requests/' + enc(id) + '/decide', { method: 'POST', body, onUnauthorized });
+    await Promise.all([refreshAll(), refreshPermissions()]);
+  }, [refreshAll, refreshPermissions]);
+
   const scheduleRefresh = useCallback((key: 'status' | 'trace' | 'dag' | 'permissions' | 'approvals' | 'messages', delay = 200) => {
     if (refreshTimers.current[key]) return;
     refreshTimers.current[key] = setTimeout(async () => {
@@ -413,6 +430,8 @@ export function PanelProvider({ children }: { children: ReactNode }) {
             if (payload.action || payload.target) patch.last = [payload.action, payload.target].filter(Boolean).join(' ');
             patchMember(memberId, patch);
           }
+          // Worker 步骤也是瀑布里的条：步骤事件到达时同样去抖刷新 trace
+          scheduleRefresh('trace', 200);
           break;
         }
         case 'task.state': scheduleRefresh('dag', 150); break;
@@ -421,15 +440,23 @@ export function PanelProvider({ children }: { children: ReactNode }) {
           // 工具调用 / 步骤跨度变化：去抖刷新瀑布树，保留正在增长中的条
           scheduleRefresh('trace', 120);
           break;
-        case 'scope.request':
-          toast('新的越界申请：' + memberName(memberId) + ' ' + String(payload.domain || '') + ' ' + String(payload.target || ''), 'warn', 6000);
+        case 'scope.request': {
+          // 合成帧（scope.request / decision / lease.warn）的字段在 frame 顶层，其余事件在 payload 内。
+          const domain = String(frame.domain ?? payload.domain ?? '');
+          const target = String(frame.target ?? payload.target ?? '');
+          toast('新的越界申请：' + memberName(memberId) + ' ' + domain + ' ' + target, 'warn', 6000);
           scheduleRefresh('approvals', 150);
           break;
-        case 'decision':
-          toast('决策落盘：' + String(payload.decision || '?') + ' request=' + String(payload.requestId || '?') + (payload.decidedBy ? `（${payload.decidedBy}）` : ''), payload.decision === 'approved' ? 'ok' : 'warn');
+        }
+        case 'decision': {
+          const raw = String(frame.decision ?? payload.decision ?? '');
+          const decision = raw.toLowerCase();
+          const verdict = decision === 'approved' ? '已批准' : decision === 'denied' ? '已驳回' : raw || '已落盘';
+          toast('决策落盘：' + memberName(memberId) + ' 的申请' + verdict, decision === 'denied' ? 'warn' : 'ok');
           scheduleRefresh('approvals', 150);
           scheduleRefresh('permissions', 250);
           break;
+        }
         case 'lease.warn':
           toast('租约告警：' + memberName((payload.memberId as string) || memberId) + '（leaseUntil=' + fmtClock(payload.leaseUntil as string) + '，missed=' + String(payload.missed ?? '?') + '）', 'error', 8000);
           scheduleRefresh('status', 200);
@@ -610,10 +637,10 @@ export function PanelProvider({ children }: { children: ReactNode }) {
 
   const actions = useMemo<PanelActions>(() => ({
     state, toasts, authOverlay, bootError, memberName, toast,
-    selectTeam, refreshTeams, refreshAll, refreshPermissions, refreshMessages, refreshStatus, refreshTrace, setTraceWindow,
+    selectTeam, refreshTeams, refreshAll, decideScope, refreshPermissions, refreshMessages, refreshStatus, refreshTrace, setTraceWindow,
     setTab, setPaused, setSpeed, setFilterMember, setFilterPhase, exportReport,
     retryBoot, submitToken,
-  }), [state, toasts, authOverlay, bootError, memberName, toast, selectTeam, refreshTeams, refreshAll, refreshPermissions, refreshMessages, refreshStatus, refreshTrace, setTraceWindow, setTab, setPaused, setSpeed, setFilterMember, setFilterPhase, exportReport, retryBoot, submitToken]);
+  }), [state, toasts, authOverlay, bootError, memberName, toast, selectTeam, refreshTeams, refreshAll, decideScope, refreshPermissions, refreshMessages, refreshStatus, refreshTrace, setTraceWindow, setTab, setPaused, setSpeed, setFilterMember, setFilterPhase, exportReport, retryBoot, submitToken]);
 
   return <PanelContext.Provider value={actions}>{children}</PanelContext.Provider>;
 }

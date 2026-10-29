@@ -27,6 +27,16 @@ try {
 
   await hit('health', 'GET', '/api/health');
 
+  // 模型路由目录（Host 插件推送 → 面板勾选）
+  await hit('GET llm catalog (empty)', 'GET', '/api/llm/catalog');
+  await hit('GET llm models (empty)', 'GET', '/api/llm/models');
+  await hit('POST llm catalog', 'POST', '/api/llm/catalog', {
+    providers: [{ id: 'p', name: 'P' }],
+    models: [{ provider: 'p', model: 'm', name: 'M' }],
+  });
+  await hit('PATCH llm route', 'PATCH', '/api/llm/routes', { provider: 'p', model: 'm', enabled: false, note: 'smoke' });
+  await hit('GET llm models?all=1', 'GET', '/api/llm/models?all=1');
+
   const team = (await hit('POST /api/teams', 'POST', '/api/teams', { name: 'routes', workspace: tmp.ws, maxMembers: 4, maxConcurrency: 2 })).json;
   await hit('GET /api/teams', 'GET', '/api/teams');
   await hit('GET /api/teams/{id}', 'GET', `/api/teams/${team.id}`);

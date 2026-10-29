@@ -203,6 +203,10 @@ export class Scheduler {
         }
       }
 
+      // agent 团队：成员是 DSH sub-agent，没有可拉起的 worker 进程。
+      // 依赖推进（上面一步）照常发生，但派发交给 Host 插件（POST /api/agents/dispatch → sendMessage）。
+      if ((team.runtime || 'worker') === 'agent') return { started, ready, blocked };
+
       // 2) 并发控制 + 派发
       const running = this.get("SELECT COUNT(*) AS c FROM task WHERE team_id=? AND status='running'").get(teamId);
       const maxConc = Number(team.max_concurrency) || 8;

@@ -74,6 +74,16 @@ export function createRoutes(core) {
     ['POST', /^\/api\/members\/([^/]+)\/resume$/, async (ctx) => C.resumeMember(ctx.p[0])],
     ['POST', /^\/api\/members\/([^/]+)\/assign$/, async (ctx) => C.assign(ctx.p[0], need(ctx.body.taskId, 'taskId'))],
 
+    // agent 运行时：成员 = 真 DSH sub-agent（Host 插件派发，sidecar 只记状态）
+    ['POST', /^\/api\/agents\/register$/, async (ctx) => C.registerAgent(ctx.body)],
+    ['GET', /^\/api\/agents\/ready$/, async (ctx) => C.agentReady(need(qs(ctx.url).get('team'), 'team'))],
+    ['POST', /^\/api\/agents\/dispatch$/, async (ctx) => C.dispatchAgentTask(need(ctx.body.teamId, 'teamId'))],
+    ['POST', /^\/api\/agents\/status$/, async (ctx) => C.agentStatusBySession(need(ctx.body.sessionId, 'sessionId'), ctx.body)],
+    ['POST', /^\/api\/agents\/report$/, async (ctx) => C.agentReportBySession(need(ctx.body.sessionId, 'sessionId'), ctx.body)],
+    ['GET', /^\/api\/agents\/by-session\/([^/]+)$/, async (ctx) => C.memberBySession(decodeURIComponent(ctx.p[0])) || { ok: false, reason: 'unknown_session' }],
+    ['POST', /^\/api\/members\/([^/]+)\/agent-status$/, async (ctx) => C.agentStatus(ctx.p[0], ctx.body)],
+    ['POST', /^\/api\/members\/([^/]+)\/agent-report$/, async (ctx) => C.agentReport(ctx.p[0], ctx.body)],
+
     // tasks / deps / dag
     ['POST', /^\/api\/tasks$/, async (ctx) => C.scheduler.createTask(ctx.body)],
     ['GET', /^\/api\/tasks$/, async (ctx) => {
@@ -135,6 +145,20 @@ export function createRoutes(core) {
     ['GET', /^\/api\/todos$/, async (ctx) => C.listTodos({ teamId: need(qs(ctx.url).get('team'), 'team'), memberId: qs(ctx.url).get('member') })],
     ['POST', /^\/api\/todos$/, async (ctx) => C.createTodo(ctx.body)],
     ['PATCH', /^\/api\/todos\/([^/]+)$/, async (ctx) => C.patchTodo(ctx.p[0], ctx.body)],
+
+    // 模型路由目录：Host 插件把 DSH ctx.llm 的 provider/model 映射同步进来。
+    // sidecar 只存「启用子集 + 注释」，不代理任何 LLM 请求、不持有凭据。
+    ['POST', /^\/api\/llm\/catalog$/, async (ctx) => C.llm.sync(ctx.body)],
+    ['GET', /^\/api\/llm\/catalog$/, async () => C.llm.catalog()],
+    ['GET', /^\/api\/llm\/models$/, async (ctx) => {
+      const all = qs(ctx.url).get('all') === '1';
+      const items = all ? C.llm.catalog().providers.flatMap((p) => p.models) : C.llm.enabledModels();
+      return { asOf: nowIso(), total: items.length, items };
+    }],
+    ['PATCH', /^\/api\/llm\/routes$/, async (ctx) => C.llm.setRoute(
+      need(ctx.body.provider, 'provider'), need(ctx.body.model, 'model'),
+      { enabled: ctx.body.enabled, note: ctx.body.note },
+    )],
 
     // audit / report
     ['GET', /^\/api\/audit$/, async (ctx) => ({ asOf: nowIso(), items: C.auditList(need(qs(ctx.url).get('team'), 'team'), qs(ctx.url).get('limit') || 200) })],
