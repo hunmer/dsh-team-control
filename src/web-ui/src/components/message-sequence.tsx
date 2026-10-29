@@ -70,6 +70,17 @@ const RECEIPT_LABEL = (message: TeamMessage): string => {
 
 const statusLabel = (message: TeamMessage) => message.status || (message.ackedAt ? 'acked' : 'queued');
 
+/** 消息正文：优先取 payload.text，其次常见别名，最后退回整段 payload JSON */
+const messageText = (message: TeamMessage): string => {
+  const payload = (message.payload ?? {}) as Record<string, unknown>;
+  for (const key of ['text', 'message', 'body', 'content']) {
+    const value = payload[key];
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return Object.keys(payload).length ? JSON.stringify(payload, null, 2) : '';
+};
+
+
 export function MessageSequence({ messages, members, memberName, className }: MessageSequenceProps) {
   const { participants, rows } = useMemo(() => {
     const ids: string[] = [];
@@ -82,8 +93,14 @@ export function MessageSequence({ messages, members, memberName, className }: Me
       }
     };
 
-    // 成员按看板顺序先占列，再补消息里出现过的未知端点。
-    for (const member of members) add(member.id);
+    // Lead 固定最左一列，成员按创建时间（后端已按 created_at 升序，这里再兜底排序），最后补消息里的未知端点。
+    add('lead');
+    // 后端 listMembers 已按 created_at 升序；只有双方都有 createdAt 时才重排，避免把原顺序打乱
+    const ordered = members.slice().sort((a, b) => {
+      if (a.createdAt && b.createdAt) return String(a.createdAt).localeCompare(String(b.createdAt));
+      return 0;
+    });
+    for (const member of ordered) add(member.id);
     for (const message of messages) {
       add(message.from);
       add(message.to);
@@ -94,7 +111,7 @@ export function MessageSequence({ messages, members, memberName, className }: Me
       const member = known.get(id);
       return {
         id,
-        label: id === ENDPOINT ? '未知' : memberName(id) || id,
+        label: id === ENDPOINT ? '未知' : id === 'lead' ? memberName(id) || 'Lead' : memberName(id) || id,
         role: member?.role,
         model: member?.model,
       };
@@ -217,7 +234,7 @@ export function MessageSequence({ messages, members, memberName, className }: Me
                           {statusLabel(message)}
                         </Badge>
                       </PreviewCardTrigger>
-                      <PreviewCardPopup side="right" sideOffset={10}>
+                      <PreviewCardPopup className="w-80" side="right" sideOffset={10}>
                         <div className="space-y-2">
                           <div className="flex items-center gap-1.5 font-medium">
                             <span className="truncate">{fromName}</span>
@@ -238,6 +255,14 @@ export function MessageSequence({ messages, members, memberName, className }: Me
                             <dt className="text-muted-foreground">消息 ID</dt>
                             <dd className="truncate font-mono">{message.id}</dd>
                           </dl>
+                          {messageText(message) && (
+                            <div className="space-y-1">
+                              <div className="text-xs text-muted-foreground">消息内容</div>
+                              <p className="max-h-48 overflow-auto rounded-md bg-muted/40 p-2 text-xs whitespace-pre-wrap break-words">
+                                {messageText(message)}
+                              </p>
+                            </div>
+                          )}
                         </div>
                       </PreviewCardPopup>
                     </PreviewCard>

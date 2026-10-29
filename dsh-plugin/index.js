@@ -734,26 +734,41 @@ function buildTools(s, ctx) {
     },
     output: jsonOutput('{ message, messages?, delivered? }'),
     async execute(args, exec) {
-      if (exec?.agent) leadByTeam.set(args.teamId, exec.agent);
+      // 调用者可能是 Lead，也可能是某个成员（成员用 send_message 工具调用本工具时 exec.agent 就是成员会话）。
+      const callerSessionId = exec?.agent?.sessionId ?? exec?.agent?.id ?? null;
+      const callerMember = callerSessionId ? sessionMember.get(String(callerSessionId)) : null;
+      // 只有 Lead 才更新 Lead 句柄：成员调用不能覆盖它，否则后续派发/转发会拿错会话。
+      if (exec?.agent && !callerMember) leadByTeam.set(args.teamId, exec.agent);
+      const from = callerMember ? callerMember.memberId : 'lead';
+      const toLead = String(args.to).trim().toLowerCase() === 'lead';
+      const runtime = await runtimeOfTeam(s, args.teamId);
+      // sidecar 的收件人只能是成员 id、'*' 或虚拟收件人 'lead'，所以先把 name / id 统一解析成成员行。
+      const st = runtime === 'agent' ? await request(s, `/api/status${qs({ team: args.teamId })}`) : null;
+      const members = st?.members || [];
+      const resolve = (v) => members.find((m) => m.name === v || m.id === v) || null;
+      if (!toLead && args.to !== '*' && (members.length ? !resolve(args.to) : false)) {
+        throw new Error(`team_send: 找不到成员 ${args.to}（可用成员 name 或 memberId；广播用 '*'；给 Lead 留言用 to:"lead"）`);
+      }
       const recorded = await request(s, '/api/messages', {
         method: 'POST',
         body: {
           teamId: args.teamId,
-          from: 'lead',
-          to: args.to,
+          from,
+          to: toLead ? 'lead' : (args.to === '*' ? '*' : (resolve(args.to)?.id || args.to)),
           payload: { text: args.message },
           ...(args.correlationId !== undefined ? { correlationId: args.correlationId } : {}),
         },
       });
-      if ((await runtimeOfTeam(s, args.teamId)) !== 'agent') return recorded;
+      // 成员→Lead 只落信箱（面板可见），不打扰 Lead 会话；worker 团队也没有可唤醒的 sub-agent。
+      if (runtime !== 'agent' || toLead) return recorded;
 
       const subs = subagentsOf(ctx);
-      const caller = exec?.agent;
+      // 成员之间互通必须借 Lead 的 agent 句柄：成员会话都挂在 Lead 下，成员直发会「belongs to another parent session」。
+      const caller = leadByTeam.get(args.teamId) || exec?.agent;
       if (!subs || typeof subs.sendMessage !== 'function' || !caller) return { ...recorded, delivered: false };
       const content = [{ type: 'text', text: String(args.message) }];
-      const st = await request(s, `/api/status${qs({ team: args.teamId })}`);
-      const live = (st.members || []).filter((m) => m.agentSessionId);
-      const targets = args.to === '*' ? live : live.filter((m) => m.name === args.to);
+      const candidates = args.to === '*' ? members : [resolve(args.to)].filter(Boolean);
+      const targets = candidates.filter((m) => m.agentSessionId);
       const delivered = [];
       const failed = [];
       if (!targets.length) failed.push({ target: args.to, error: '该成员没有绑定 sub-agent 会话（可能还没 spawn 或已回收）' });

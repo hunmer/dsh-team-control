@@ -9,7 +9,22 @@ import { Input } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/spinner';
 import { Switch } from '@/components/ui/switch';
 import { EmptyState, SectionHead } from '@/components/Bits';
-import { ModelAvatar } from '@/components/ModelAvatar';
+import { ModelAvatar, ProviderAvatar } from '@/components/ModelAvatar';
+import { brandOfProvider } from '@/lib/model-brand';
+
+/** 供应商图标：能认出品牌用官方 logo；聚合商（aicode / comfly 等）没有自家 logo 时退回首字母方块 */
+function ProviderIcon({ id, name }: { id: string; name?: string | null }) {
+  if (brandOfProvider(id)) return <ProviderAvatar provider={id} size={16} />;
+  return (
+    <span
+      aria-hidden="true"
+      title={name || id}
+      className="grid size-4 shrink-0 place-items-center rounded-[4px] border bg-muted text-[9px] font-semibold uppercase leading-none text-muted-foreground"
+    >
+      {(name || id).replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '').slice(0, 1)}
+    </span>
+  );
+}
 
 /**
  * 模型路由页：目录来自 Host 的 DSH ctx.llm（Host 同步给 sidecar），
@@ -192,6 +207,7 @@ export function ModelsView() {
         <Card key={p.id}>
           <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 py-3">
             <div className="flex flex-wrap items-center gap-2">
+              <ProviderIcon id={p.id} name={p.name} />
               <CardTitle className="text-sm">{p.name}</CardTitle>
               <code className="text-[11px] text-muted-foreground">{p.id}</code>
             </div>

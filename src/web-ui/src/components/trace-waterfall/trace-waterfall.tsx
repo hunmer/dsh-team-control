@@ -186,6 +186,18 @@ const tokensOf = (s: TraceSpan): [number, number] =>
     [s.tokensIn ?? 0, s.tokensOut ?? 0],
   );
 
+/** hidden LLM rows folded into the member heading: "55.0k in · 1.2k out · ¥0.006" */
+const usageOf = (s: TraceSpan): string | null => {
+  const [tin, tout] = tokensOf(s);
+  const cost = costOf(s);
+  const calls = flatten(s).filter((x) => x.kind === `llm`).length;
+  if (!calls && !tin && !tout && !(cost > 0)) return null;
+  const parts: string[] = [];
+  if (tin || tout) parts.push(`${fmtTokens(tin)} in · ${fmtTokens(tout)} out`);
+  if (cost > 0) parts.push(formatMoney(cost, currencyOf(s)));
+  return parts.length ? parts.join(` · `) : null;
+};
+
 const prefersReduced = () =>
   typeof window !== `undefined` &&
   window.matchMedia(`(prefers-reduced-motion: reduce)`).matches;
@@ -360,6 +372,10 @@ const Row = memo(function Row({
   on,
 }: RowProps) {
   const children = span.children ?? [];
+  // LLM calls are folded into this row's summary instead of rendered as rows of their own
+  const shownKids = children.filter((c) => c.kind !== `llm`).length;
+  const usage =
+    depth > 0 && (span.kind === `agent` || span.kind === `subagent`) ? usageOf(span) : null;
   const isLeaving = leaving !== void 0;
   const endOf = (s: TraceSpan) =>
     s.end ?? (s.status === `running` ? Math.max(now ?? s.start, s.start) : s.start);
@@ -380,7 +396,7 @@ const Row = memo(function Row({
           ? (`before` as const)
           : (`inside` as const);
 
-  const hiddenCount = folded ? flatten(span).length - 1 : 0;
+  const hiddenCount = folded ? flatten(span).slice(1).filter((s) => s.kind !== `llm`).length : 0;
   // folded calls shown as small marks on the parent's bar
   const marks =
     folded || children.length
@@ -395,14 +411,14 @@ const Row = memo(function Row({
       className="ui-twc__row"
       role="treeitem"
       aria-level={depth + 1}
-      aria-expanded={children.length ? !folded : void 0}
+      aria-expanded={shownKids ? !folded : void 0}
       aria-selected={open}
       aria-hidden={hidden || isLeaving || void 0}
       aria-label={`${span.name}, ${KIND_LABEL[span.kind]}, ${STATUS_LABEL[span.status]}, ${label}`}
       tabIndex={focusable ? 0 : -1}
       data-kind={span.kind}
       data-status={span.status}
-      data-parent={children.length ? `` : void 0}
+      data-parent={shownKids ? `` : void 0}
       data-hidden={hidden ? `` : void 0}
       data-folded={folded ? `` : void 0}
       data-leaving={isLeaving ? `` : void 0}
@@ -422,16 +438,16 @@ const Row = memo(function Row({
         )}
         <span
           className="ui-twc__chev"
-          data-leaf={children.length ? void 0 : ``}
+          data-leaf={shownKids ? void 0 : ``}
           aria-hidden="true"
           onClick={(e) => {
-            if (children.length && !isLeaving) {
+            if (shownKids && !isLeaving) {
               e.stopPropagation();
               on.fold(span.id);
             }
           }}
         >
-          {children.length > 0 && <ChevronDown />}
+          {shownKids > 0 && <ChevronDown />}
         </span>
         <span className="ui-twc__icon" data-kind={span.kind}>
           {spanMark(span)}
@@ -446,10 +462,28 @@ const Row = memo(function Row({
             </span>
           )}
         </span>
+        {usage && (
+          <span
+            className="ui-twc__detail"
+            style={{
+              flex: `none`,
+              minWidth: 0,
+              maxWidth: `62%`,
+              marginInlineStart: 6,
+              overflow: `hidden`,
+              textOverflow: `ellipsis`,
+              whiteSpace: `nowrap`,
+              fontVariantNumeric: `tabular-nums`,
+            }}
+            title="该分组内全部 LLM 调用的合计消耗"
+          >
+            {usage}
+          </span>
+        )}
         {hiddenCount > 0 && (
           <Badge size="sm" variant="secondary">{`+`}{intFmt(hiddenCount)}</Badge>
         )}
-        {span.status === `running` && !children.length && (
+        {span.status === `running` && !shownKids && (
           <span className="ui-twc__state" data-status="running">
             <SpinIcon />
           </span>
@@ -647,6 +681,11 @@ export function TraceWaterfall({
   const keepRow = (span: TraceSpan) =>
     toolFilter.length === 0 || span.kind !== `tool` || toolFilter.includes(toolNameOf(span));
   const collect = (span: TraceSpan, depth: number, parentId: string | undefined, hidden: boolean) => {
+    // LLM calls stay in the tree (their cost/tokens roll up into the member row) but never get a row
+    if (span.kind === `llm`) {
+      for (const c of span.children ?? []) collect(c, depth, parentId, hidden);
+      return;
+    }
     if (!keepRow(span)) return;
     visible.push({ span, depth, parentId, hidden });
     const nowHidden = hidden || collapsedList.includes(span.id);
@@ -803,7 +842,10 @@ export function TraceWaterfall({
   const calls = flat.filter((s) => s.kind === `llm` || s.kind === `tool`);
   const [rootTokensIn, rootTokensOut] = tokensOf(root);
   const errorCount = flat.filter((s) => s.status === `failed`).length;
-  const finishedCalls = calls.filter((s) => s.status !== `running` && s.end !== void 0);
+  const visibleIds2 = new Set(visible.map((r) => r.span.id));
+  const finishedCalls = calls.filter(
+    (s) => s.status !== `running` && s.end !== void 0 && visibleIds2.has(s.id),
+  );
   const slowest =
     markSlowest && finishedCalls.length > 1
       ? finishedCalls.reduce((a, b) => (durOf(b) > durOf(a) ? b : a))

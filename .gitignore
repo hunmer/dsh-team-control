@@ -17,3 +17,4 @@ src/web-ui/.vite/
 .tmp-chrome/
 src/web-ui/.tmp-build/
 .tmp-token
+src/web/assets/
