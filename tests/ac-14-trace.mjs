@@ -86,7 +86,7 @@ runAc(AC, async () => {
     assertEqual(memberNode.kind, 'subagent', 'member kind=subagent');
     const steps = memberNode.children;
     assertEqual(steps.length, 3, '3 个 Worker 步骤 span');
-    assertEqual(steps[0].id, `step:${m1.id}:0`, 'step span 以 stepIndex 命名');
+    assertEqual(steps[0].id, `step:${m1.id}:${task.id}:0`, 'step span id 含 member/task/stepIndex');
     assert(steps.every((s) => s.status !== 'running'), '步骤全部结束');
     assert(steps.every((s) => s.start >= 0 && s.end >= s.start), '步骤相对时间合法');
 

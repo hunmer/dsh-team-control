@@ -54,7 +54,7 @@ export function BoardView() {
 
   const metaParts: string[] = [];
   if (trace) {
-    metaParts.push(`${trace.stats.members} 成员`, `${trace.stats.steps} 步骤`, `${trace.stats.spans} 工具调用`);
+    metaParts.push(`${trace.stats.members} 成员`, `${trace.stats.steps} 步骤`, `${trace.stats.spans} 工具跨度`);
     metaParts.push(`用时 ${durText(trace.stats.durationMs)}`);
     if (trace.stats.running) metaParts.push(`运行中 ${trace.stats.running}`);
     if (trace.stats.failed) metaParts.push(`失败 ${trace.stats.failed}`);

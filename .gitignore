@@ -6,6 +6,7 @@ node_modules/
 run/
 tests/.tmp/
 demo/.tmp/
+.tmp/
 *.log
 .DS_Store
 

@@ -10,9 +10,13 @@ const only = (() => {
 })();
 
 const files = fs.readdirSync(here)
-  .filter((f) => /^ac-\d+.*\.mjs$/.test(f))
+  .filter((f) => f.endsWith('.mjs') && f !== 'run-all.mjs')
   .filter((f) => !only || f.startsWith(only))
-  .sort();
+  .sort((a, b) => {
+    // AC 脚本先跑，其余（plugin-/panel-/routes-/cli-）随后
+    const rank = (f) => (/^ac-\d+/.test(f) ? 0 : 1);
+    return rank(a) - rank(b) || a.localeCompare(b);
+  });
 
 if (!files.length) { console.error('没有找到测试脚本'); process.exit(1); }
 

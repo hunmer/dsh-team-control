@@ -1,82 +1,28 @@
-import { useMemo } from 'react';
-import { TAB_NAMES, usePanel, type TabName } from '@/store';
-import { fmtDateTime } from '@/lib/format';
+import { useMemo, type ComponentType } from 'react';
+import { usePanel, type TabName } from '@/store';
 import { isUnacked } from '@/views/Messages';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Spinner } from '@/components/ui/spinner';
-import { Tabs, TabsList, TabsPanel, TabsTab } from '@/components/ui/tabs';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Toaster } from '@/components/Toaster';
 import { AuthOverlayDialog, BootErrorOverlay } from '@/components/Overlays';
+import { TopBar } from '@/components/TopBar';
+import { TeamSelect } from '@/components/TeamSelect';
+import { AgentRun, type AgentRunApprovalRequest, type AgentRunProps } from '@/affectui/agent-run';
+import { AppShell } from '@/affectui/app-shell';
+import { buildNav, TAB_LABELS, tabFromLabel, type ShellChrome } from '@/shell';
 import { BoardView } from '@/views/Board';
 import { DagView } from '@/views/Dag';
 import { TimelineView } from '@/views/Timeline';
 import { PermissionsView } from '@/views/Permissions';
+import { ModelsView } from '@/views/Models';
 import { ApprovalsView } from '@/views/Approvals';
 import { MessagesView } from '@/views/Messages';
 
-const TAB_LABELS: Record<TabName, string> = {
-  board: '成员看板', dag: '依赖 DAG', timeline: '时间线',
-  permissions: '权限矩阵', approvals: '审批队列', messages: '消息',
-};
-
-const CONN_LABELS = { connecting: '连接中…', live: '实时', reconnecting: '重连中…', offline: '离线' } as const;
-const CONN_CLASS = {
-  connecting: 'border-border text-muted-foreground', live: 'border-emerald-500/50 text-emerald-600 dark:text-emerald-400',
-  reconnecting: 'border-amber-500/50 text-amber-600 dark:text-amber-400', offline: 'border-red-500/50 text-red-600 dark:text-red-400',
-} as const;
-
-function TopBar() {
-  const { state, selectTeam, refreshTeams, refreshAll, exportReport, toast } = usePanel();
-  const { teams, teamId, conn, snapshot } = state;
-  const [busy] = [false as const];
-  return (
-    <header className="sticky top-0 z-30 flex flex-wrap items-center gap-3 border-b bg-background/90 px-4 py-2.5 backdrop-blur">
-      <div className="flex select-none items-center gap-1.5">
-        <span className="rounded bg-primary px-1.5 py-0.5 font-mono text-xs font-bold text-primary-foreground">dsh</span>
-        <span className="font-mono text-sm font-semibold tracking-tight">team</span>
-        <span className="hidden text-xs text-muted-foreground sm:inline">control plane</span>
-      </div>
-      <div className="flex items-center gap-1.5 text-xs">
-        <span className="text-muted-foreground">team</span>
-        <Select
-          value={teamId ?? ''}
-          onValueChange={(value) => { if (value && value !== teamId) void selectTeam(value).catch((err) => toast('切换团队失败：' + (err instanceof Error ? err.message : String(err)), 'error')); }}        >
-          <SelectTrigger size="sm" className="w-52" disabled={!teams.length}>
-            <SelectValue>
-              {(() => {
-                const team = teams.find((t) => t.id === teamId);
-                if (team) return (team.name || team.id) + ' · ' + team.id;
-                return teams.length ? '选择团队' : state.noTeams ? '暂无团队' : '加载中…';
-              })()}
-            </SelectValue>
-          </SelectTrigger>
-          <SelectContent>
-            {teams.map((team) => (
-              <SelectItem key={team.id} value={team.id}>{(team.name || team.id) + ' · ' + team.id}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-      <div className={`flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs ${CONN_CLASS[conn]}`} role="status" title="SSE 实时连接状态">
-        {conn === 'connecting' || conn === 'reconnecting' ? <Spinner className="size-3" /> : <span className="size-1.5 rounded-full bg-current" />}
-        {CONN_LABELS[conn]}
-      </div>
-      <div className="hidden text-xs text-muted-foreground md:block" title={snapshot?.asOf ? 'asOf=' + snapshot.asOf : ''}>
-        {snapshot ? [snapshot.asOf ? '快照 ' + fmtDateTime(snapshot.asOf) : '', snapshot.version != null ? 'v' + snapshot.version : ''].filter(Boolean).join(' · ') || '—' : '—'}
-      </div>
-      <div className="ms-auto flex items-center gap-2">
-        <Button size="sm" variant="outline" disabled={busy} onClick={() => {
-          if (!teamId) return;
-          void refreshTeams().then(() => refreshAll()).then(() => { toast('快照已刷新', 'ok', 2000); }).catch((err) => toast('刷新失败：' + (err instanceof Error ? err.message : String(err)), 'error'));
-        }}>刷新快照</Button>
-        <Button size="sm" disabled={!teamId} onClick={() => void exportReport()}>导出报告</Button>
-      </div>
-    </header>
-  );
-}
+/**
+ * AgentRun 内部 `<AppShell active={"Runs"} nav={NAV_ITEMS} groups={NAV_GROUPS} {...rest}>`，
+ * 未解构的 props 会覆盖 demo 导航；但它的 TS 类型没有暴露 nav/groups/active/header。
+ * 这里做一次显式类型收窄，把同一套外壳参数同时交给主页与业务视图。
+ */
+const AgentRunShell = AgentRun as unknown as ComponentType<AgentRunProps & ShellChrome>;
 
 function Banner() {
   const { state, memberName } = usePanel();
@@ -97,48 +43,97 @@ function Banner() {
   );
 }
 
+function ActiveView({ tab }: { tab: TabName }) {
+  switch (tab) {
+    case 'board': return <BoardView />;
+    case 'dag': return <DagView />;
+    case 'timeline': return <TimelineView />;
+    case 'models': return <ModelsView />;
+    case 'permissions': return <PermissionsView />;
+    case 'approvals': return <ApprovalsView />;
+    case 'messages': return <MessagesView />;
+    case 'home': return <BoardView />;
+  }
+}
+
+/** 越界请求风险 → AffectUI ApprovalCard 的风险等级。 */
+function approvalRisk(risk?: string): AgentRunApprovalRequest['risk'] {
+  const text = String(risk ?? '').toLowerCase();
+  if (['high', 'critical', '3'].includes(text)) return 'high';
+  if (['medium', '2'].includes(text)) return 'medium';
+  return 'low';
+}
+
 export default function App() {
-  const { state, setTab } = usePanel();
+  const { state, setTab, decideScope, memberName, toast } = usePanel();
   const { tab, members, scopeRequests, messages } = state;
 
+  // FR-5：徽标数据源保持不变，只是渲染位置从横向 Tabs 换到左侧导航。
   const badges = useMemo<Partial<Record<TabName, number | null>>>(() => ({
     board: members.length || null,
     approvals: scopeRequests.length || null,
     messages: messages.filter(isUnacked).length || null,
   }), [members.length, scopeRequests.length, messages]);
 
+  // home 右栏审批卡：把 store 里真实的 pending scope requests 映射成 AffectUI 的卡片模型。
+  const approvals = useMemo<AgentRunApprovalRequest[]>(() => scopeRequests.map((request) => ({
+    id: request.id,
+    title: `${request.domain || 'scope'} · ${request.target || '未指定目标'}`,
+    description: request.reason || (request.fallback ? `若拒绝将走 fallback：${request.fallback}` : '成员请求越界操作，等待你的决策。'),
+    risk: approvalRisk(request.risk),
+    label: `成员 ${memberName(request.memberId)}`,
+    details: [
+      { label: 'member', value: request.memberId },
+      { label: 'domain', value: request.domain || '—' },
+      { label: 'target', value: request.target || '—' },
+      ...(request.blockedStep ? [{ label: 'blockedStep', value: request.blockedStep }] : []),
+      ...(request.fallback ? [{ label: 'fallback', value: request.fallback }] : []),
+    ],
+  })), [scopeRequests, memberName]);
+
+  const decideRequest = (id: string, decision: 'approved' | 'denied') => {
+    const request = scopeRequests.find((item) => item.id === id);
+    if (!request) return;
+    const verdict = decision === 'approved' ? '批准' : '驳回';
+    if (!window.confirm(`确认${verdict} ${memberName(request.memberId)} 的 ${request.domain || '?'} 申请「${request.target || '?'}」？决策将事务落盘为 decision。`)) return;
+    // 成功反馈由 store 的 SSE `decision` 事件统一 toast（其他面板决策时同样可见），这里只提示失败。
+    void decideScope(id, decision)
+      .catch((err) => toast(verdict + '失败：' + (err instanceof Error ? err.message : String(err)), 'error'));
+  };
+
+  const chrome: AgentRunProps & ShellChrome = {
+    nav: buildNav(badges),
+    groups: [],
+    active: TAB_LABELS[tab],
+    onNavigate: (label) => {
+      const next = tabFromLabel(label);
+      if (next) setTab(next);
+    },
+    header: { title: TAB_LABELS[tab], actions: <TopBar /> },
+    sidebarTop: <TeamSelect />,
+    approvals,
+    onApproveRequest: (id) => decideRequest(id, 'approved'),
+    onDenyRequest: (id) => decideRequest(id, 'denied'),
+  };
+
   return (
-    <div className="flex min-h-full flex-col">
-      <TopBar />
-      <Banner />
-      <BootErrorOverlay />
-      <Tabs
-        value={tab}
-        onValueChange={(value) => setTab(value as TabName)}
-        className="flex flex-1 flex-col gap-0"
-      >
-        <div className="overflow-x-auto border-b px-4">
-          <TabsList className="h-11 bg-transparent">
-            {TAB_NAMES.map((name) => (
-              <TabsTab key={name} value={name} className="gap-1.5">
-                {TAB_LABELS[name]}
-                {badges[name] ? <Badge variant={name === 'approvals' ? 'destructive' : 'secondary'} className="px-1 text-[10px]">{badges[name]}</Badge> : null}
-              </TabsTab>
-            ))}
-          </TabsList>
-        </div>
-        <main className="flex-1 space-y-4 p-4">
-          <TabsPanel value="board"><BoardView /></TabsPanel>
-          <TabsPanel value="dag"><DagView /></TabsPanel>
-          <TabsPanel value="timeline"><TimelineView /></TabsPanel>
-          <TabsPanel value="permissions"><PermissionsView /></TabsPanel>
-          <TabsPanel value="approvals"><ApprovalsView /></TabsPanel>
-          <TabsPanel value="messages"><MessagesView /></TabsPanel>
-        </main>
-      </Tabs>
+    <>
+      <div className="fixed inset-x-0 top-0 z-50"><BootErrorOverlay /></div>
+      {tab === 'home' ? (
+        <AgentRunShell {...chrome} />
+      ) : (
+        <AppShell {...chrome}>
+          <div className="panel-coss flex min-h-full flex-col">
+            <Banner />
+            <main className="flex-1 space-y-4 p-4">
+              <ActiveView tab={tab} />
+            </main>
+          </div>
+        </AppShell>
+      )}
       <AuthOverlayDialog />
       <Toaster />
       <noscript><p className="p-4 text-sm">本面板需要启用 JavaScript 才能显示实时数据。</p></noscript>
-    </div>
+    </>
   );
 }

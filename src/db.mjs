@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 4;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS team (
   max_attempts INTEGER NOT NULL DEFAULT 3,
   auto_approve_json TEXT,
   auto_takeover INTEGER NOT NULL DEFAULT 0,
+  runtime TEXT NOT NULL DEFAULT 'worker',
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 
@@ -25,10 +26,12 @@ CREATE TABLE IF NOT EXISTS member (
   id TEXT PRIMARY KEY, team_id TEXT NOT NULL, name TEXT NOT NULL,
   role TEXT, model TEXT, context_mode TEXT,
   default_plan_json TEXT, quota_json TEXT,
+  agent_session_id TEXT,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
   UNIQUE(team_id, name)
 );
 CREATE INDEX IF NOT EXISTS idx_member_team ON member(team_id);
+-- idx_member_session 建在迁移之后（老库此时还没有 agent_session_id 列，见 openDb）
 
 -- 由 event 完全可重建的投影（C2）。只放事件可推导的字段。
 CREATE TABLE IF NOT EXISTS member_state (
@@ -157,6 +160,23 @@ CREATE TABLE IF NOT EXISTS file_state (
   path TEXT PRIMARY KEY, version INTEGER NOT NULL DEFAULT 0,
   hash TEXT, size INTEGER, updated_at TEXT NOT NULL
 );
+
+-- DSH 模型路由目录：Host 插件把 ctx.llm 的 provider/model 映射同步进来，
+-- 面板据此勾选可用项；sidecar 不持有任何 LLM 客户端或凭据。
+CREATE TABLE IF NOT EXISTS llm_provider (
+  provider TEXT PRIMARY KEY, name TEXT,
+  source TEXT NOT NULL DEFAULT 'live', error TEXT, synced_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS llm_route (
+  provider TEXT NOT NULL, model TEXT NOT NULL,
+  name TEXT, description TEXT, modalities_json TEXT, context_window INTEGER,
+  source TEXT NOT NULL DEFAULT 'live',
+  enabled INTEGER NOT NULL DEFAULT 1, note TEXT,
+  synced_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  PRIMARY KEY (provider, model)
+);
+CREATE INDEX IF NOT EXISTS idx_llm_route_enabled ON llm_route(enabled);
 `;
 
 const stmtCache = new WeakMap();
@@ -183,9 +203,15 @@ export function openDb(file) {
   db.exec(DDL);
   // 轻量迁移：老库补列（不重建表）
   ensureColumn(db, 'team', 'auto_takeover', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'team', 'runtime', "TEXT NOT NULL DEFAULT 'worker'");
+  ensureColumn(db, 'member', 'agent_session_id', 'TEXT');
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_member_session ON member(agent_session_id)'); } catch { /* ignore */ }
   const get = q(db);
   const cur = get('SELECT value FROM meta WHERE key=?').get('schema_version');
   if (!cur) get('INSERT INTO meta (key,value) VALUES (?,?)').run('schema_version', String(SCHEMA_VERSION));
+  else if (Number(cur.value) < SCHEMA_VERSION) {
+    get('UPDATE meta SET value=? WHERE key=?').run(String(SCHEMA_VERSION), 'schema_version');
+  }
   return db;
 }
 

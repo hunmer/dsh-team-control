@@ -5,6 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="dark light" />
   <title>dsh-team · 控制台</title>
+  <script>
+    // 首帧前应用已保存的外观，避免深色用户看到浅色闪屏（与 src/theme.ts 的 key 保持一致）。
+    try {
+      var theme = localStorage.getItem('dsh-team.panel.theme.v1') === 'dark' ? 'dark' : 'light';
+      document.documentElement.classList.toggle('dark', theme === 'dark');
+      document.documentElement.dataset.theme = theme;
+      document.documentElement.style.colorScheme = theme;
+    } catch (error) { /* 隐私模式忽略 */ }
+  </script>
 </head>
 <body>
   <div id="root"></div>

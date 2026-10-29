@@ -25,6 +25,12 @@ PRD D-9 写的是「独立端口，可选 iframe 嵌入 DSH GUI」。实现时�
   - 这两个服务由 `@deepseek-ai/dsh-client-ui-sidebar-right` 通过 `ctx.reflect.provide` 提供
     （`sidebarRight` / `sidebarRightTabs`），不在 inspect 的 Service 目录里；服务不可用时
     自动回退到中央面板（`main` + `sidebar.panellist`）。
+  - **2026-10-29 更新（入口迁移）**：用户要求把入口改注册到 `dsh-better-sidebar`。现在
+    **首选** `ctx.betterSidebar.registerTab({ id:'dsh-team:panel', title, description, icon,
+    order:30, single:true, component })`，入口出现在它的页签列表与 DSH 原生右侧栏的 guide 胶囊里，
+    不再占用 `sidebar.footer.action`；它未安装时才回退到「左下角按钮 + 右侧栏 Tab」。
+    better-sidebar 晚于本插件加载时用 `ctx.inject(['betterSidebar'], …)` 等它就绪再切过去，
+    注册成功后撤掉自己的回退入口。
   - **Tab 内默认「网页版」**：iframe 直接加载 sidecar 自带面板 `/panel`，内容与
     `:4317/panel` **完全一致**（7 视图 + SSE + 消息 + 报告导出），单一实现、零漂移。
     2026-10-29 更新：用户要求移除 DSH 原生渲染的「精简版」，该分支与 5 个视图已从
@@ -61,6 +67,8 @@ PRD D-9 写的是「独立端口，可选 iframe 嵌入 DSH GUI」。实现时�
 ## 后果
 
 - ✅ 面板在**右侧栏 Tab** 内停靠，与文件/终端等内置 Tab 同机制；浏览器永远看不到 sidecar token。
+- ✅ 装了 `dsh-better-sidebar` 时，页签与入口统一归它管理（原生右侧栏 guide 胶囊 + 底部工作台 + 菜单），
+  不再占用 `sidebar.footer.action`；未装时行为与旧版一致（左下角入口 + 右侧栏 Tab）。
 - ⚠️ iframe 不继承 DSH 主题（沿用面板配色）；这是单实现换来的已知代价（「精简版」已移除）。
 - ✅ 工具与界面分成两个可用独立安装/卸载的 bundle，互不影响。
 - ⚠️ 视觉渲染未能在本环境用浏览器验证（无浏览器控制）：已验证 JS 语法、Slot 注册
