@@ -27,6 +27,7 @@ plugin_manager(action: "install_bundle", target: "C:\\...\\agent-team-plugin\\ds
       config:
         baseUrl: http://127.0.0.1:4317
         autoStart: true
+        reportToolCalls: true
 ```
 
 | 字段 | 默认 | 说明 |
@@ -37,6 +38,11 @@ plugin_manager(action: "install_bundle", target: "C:\\...\\agent-team-plugin\\ds
 | `sidecarEntry` | `../bin/dsh-team.mjs` | sidecar 入口；默认按包位置推导，无需配置 |
 | `startTimeoutMs` | `20000` | 自动拉起的等待上限 |
 | `requestTimeoutMs` | `60000` | 单次 API 调用超时 |
+| `reportToolCalls` | `true` | 监听 Host 的 `tools/execute`，把每次工具调用上报为 `POST /api/spans` 的 span（先 `running` 后 `done/failed`），面板 Trace 瀑布实时展示 |
+| `traceInputMax` | `1200` | 上报参数/结果预览的截断长度（字符）；只截断，不脱敏其他字段 |
+
+> 上报采用「会话 → 团队」绑定：任意一次带 `teamId` 的 `team_*` 调用、或 `team_create` 成功后，该会话后续的
+> 工具调用都会挂到对应团队；未绑定团队的工具调用直接丢弃（不阻塞、不等待，1.2s 超时静默失败）。
 
 > 本插件**不导出 `Config` schema**，因此 `Config.listConfigs` 对它的 `status` 是 `absent` ——
 > 这是「无 schema」而不是「配置未生效」；`dsh --profile <p> --dump-config` 可看到 row 的

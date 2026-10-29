@@ -34,8 +34,11 @@ try {
   sse = sseOpen(s.url, s.token, { team: team.id });
   await sse.waitFor(() => sse.frames.length > 0, { timeout: 5000 });
 
-  // ---------- 静态资源 ----------
-  for (const p of ['/panel', '/panel/app.js', '/panel/app.css']) {
+  // ---------- 静态资源（Vite 构建产物：/panel/assets/app-*.js + panel-*.css） ----------
+  const htmlRes = await s.api.raw('/panel');
+  const html = htmlRes.text;
+  const assets = [...html.matchAll(/(?:src|href)="(\/panel\/assets\/[^"]+)"/g)].map((m) => m[1]);
+  for (const p of ['/panel', ...assets]) {
     const r = await s.api.raw(p);
     check(`static ${p}`, () => { assert(r.status === 200, `HTTP ${r.status}`); assert(r.text.length > 100, 'empty body'); return `${r.text.length}B`; });
   }
@@ -134,11 +137,10 @@ try {
   });
 
   // 面板从不引用 dev-mock
-  const html = (await s.api.raw('/panel')).text;
   check('panel 不依赖 dev-mock/外链', () => {
     assert(!html.includes('dev-mock'), 'dev-mock leaked');
     assert(!/src="https?:\/\//.test(html), 'external script');
-    assert(html.includes('app.js') && html.includes('app.css'), 'assets linked');
+    assert(assets.some((p) => p.endsWith('.js')) && assets.some((p) => p.endsWith('.css')), 'assets linked');
     return 'ok';
   });
 

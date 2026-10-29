@@ -17,18 +17,13 @@
 > （`sidebarRight` / `sidebarRightTabs`），**不在** `cordis_inspect_query` 的 Service 目录里；
 > 契约见该包 `lib/types/client/service.d.ts` 与 `tab-registry.d.ts`。
 
-5 个视图：成员看板 / DAG / 事件时间线 / 权限矩阵 / 越界审批。数据每 2s 刷新，可手动刷新。
+右侧栏 Tab 内嵌 sidecar 自带 Web 面板（iframe），**不再提供** DSH 原生渲染的「精简版」。
+面板内容与 `http://127.0.0.1:4317/panel` 完全一致：成员看板（Trace 瀑布）/ 依赖 DAG / 时间线 /
+权限矩阵 / 审批队列 / 消息 / 报告导出，SSE 实时。
 
-### 两种渲染模式（页面头部切换）
-
-| 模式 | 内容 | 来源 | 取舍 |
-|---|---|---|---|
-| **网页版**（默认） | **与 `:4317/panel` 完全一致**：7 个视图、SSE 实时、消息、报告导出 | iframe 直接加载 sidecar 自带面板 | 单一实现、零漂移；但 iframe 继承不到 DSH 主题，沿用面板自有配色 |
-| **精简版** | 5 个视图、2s 轮询 | 本插件用 React 重写 | 跟随主题/locale；功能少于网页版 |
-
-网页版走同源代理：iframe 指向 `/dsh-team-api/panel?api=/dsh-team-api&embed=1`，
+iframe 走同源代理：`/dsh-team-api/panel?api=/dsh-team-api&embed=1`，
 面板据此把所有请求前缀到 `/dsh-team-api/api/**`、SSE 到 `/dsh-team-api/api/events`，
-`panel.html` 里的绝对资源 `/panel/app.js|css` 由 Host 的另一条 `/panel` 前缀路由转发。
+`panel.html` 里的绝对资源 `/panel/assets/*` 由 Host 的另一条 `/panel` 前缀路由转发。
 
 ## 数据路径（为什么需要 Host 代理）
 
@@ -63,6 +58,6 @@ node dsh-plugin-ui/test-host.mjs   # 路由注册 + 同源代理 + SSE 透传 + 
 
 ## 已知限制
 
-- 时间线用 2s 轮询（不是 SSE 订阅）：Host 代理已支持 SSE，下一版可切换为 `EventSource`。
-- 视觉渲染无法在本环境用浏览器验证；已验证 JS 语法、Slot 注册、同源代理与数据契约。
+- 面板是 iframe，不继承 DSH 主题（沿用面板自带的深浅色与配色）。
+- 视觉渲染需在浏览器里人工确认；已验证 JS 语法、Slot 注册、同源代理与数据契约。
 - 权限矩阵为只读展示；编辑规则仍走 `team_scope` 工具或独立面板。

@@ -1,0 +1,32 @@
+{
+  "name": "@local/dsh-team-panel-ui",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "dsh-team panel rebuilt with coss ui (https://coss.com/ui) — React + Tailwind v4 + Vite. Build output goes to ../web and is served by the sidecar at /panel.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "sync:coss": "node scripts/sync-coss.mjs"
+  },
+  "dependencies": {
+    "@base-ui/react": "^1.0.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.63.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "tailwind-merge": "^3.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.11",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^4.5.2",
+    "tailwindcss": "^4.1.11",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  }
+}

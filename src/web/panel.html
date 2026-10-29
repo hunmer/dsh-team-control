@@ -1,134 +1,14 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark">
-<title>dsh-team · 控制台</title>
-<link rel="stylesheet" href="/panel/app.css">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark light" />
+  <title>dsh-team · 控制台</title>
+  <script type="module" crossorigin src="/panel/assets/app-C2cNdw5Y.js"></script>
+  <link rel="stylesheet" crossorigin href="/panel/assets/panel-5jNUH9EJ.css">
 </head>
 <body>
-<header class="topbar">
-  <div class="brand"><span class="brand-mark">dsh</span><span class="brand-name">team</span><span class="brand-sub">control plane</span></div>
-  <label class="field inline"><span class="field-label">team</span><select id="team-select" aria-label="选择团队"><option value="">加载中…</option></select></label>
-  <div id="conn" class="conn conn-connecting" role="status" title="SSE 实时连接状态"><span class="conn-dot"></span><span id="conn-text">连接中…</span></div>
-  <div id="snapshot" class="snapshot" title="状态快照标记（asOf / version）">—</div>
-  <div class="top-actions">
-    <button id="btn-refresh" class="btn" type="button">刷新快照</button>
-    <button id="btn-report" class="btn btn-primary" type="button" disabled>导出报告</button>
-  </div>
-</header>
-
-<nav id="tabs" class="tabs" role="tablist" aria-label="面板视图">
-  <button class="tab active" data-tab="board" role="tab" aria-selected="true" type="button">成员看板 <span id="badge-board" class="tab-badge"></span></button>
-  <button class="tab" data-tab="dag" role="tab" aria-selected="false" type="button">依赖 DAG</button>
-  <button class="tab" data-tab="timeline" role="tab" aria-selected="false" type="button">时间线</button>
-  <button class="tab" data-tab="permissions" role="tab" aria-selected="false" type="button">权限矩阵</button>
-  <button class="tab" data-tab="approvals" role="tab" aria-selected="false" type="button">审批队列 <span id="badge-approvals" class="tab-badge"></span></button>
-  <button class="tab" data-tab="messages" role="tab" aria-selected="false" type="button">消息 <span id="badge-messages" class="tab-badge"></span></button>
-</nav>
-
-<div id="banner" class="banner hidden" role="alert"></div>
-
-<main class="main">
-  <section id="view-board" class="view" data-view="board">
-    <div class="view-head">
-      <h2>成员看板</h2>
-      <div class="meta" id="board-meta">—</div>
-    </div>
-    <div id="board" class="board-grid"></div>
-  </section>
-
-  <section id="view-dag" class="view hidden" data-view="dag">
-    <div class="view-head">
-      <h2>依赖 DAG</h2>
-      <div class="meta" id="dag-meta">—</div>
-      <div id="dag-legend" class="legend"></div>
-    </div>
-    <div id="dag-wrap" class="dag-wrap">
-      <svg id="dag-svg" xmlns="http://www.w3.org/2000/svg" width="480" height="140" role="img" aria-label="任务依赖图"></svg>
-    </div>
-  </section>
-
-  <section id="view-timeline" class="view hidden" data-view="timeline">
-    <div class="view-head">
-      <h2>时间线</h2>
-      <div class="controls">
-        <label class="field inline"><span class="field-label">成员</span><select id="tl-member"><option value="">全部成员</option></select></label>
-        <label class="field inline"><span class="field-label">phase</span><select id="tl-phase"><option value="">全部 phase</option></select></label>
-        <button id="tl-pause" class="btn" type="button">暂停</button>
-        <label class="field inline"><span class="field-label">回放速度</span><select id="tl-speed"><option value="1">1x</option><option value="4">4x</option></select></label>
-        <span id="tl-stats" class="meta">0 条</span>
-      </div>
-    </div>
-    <div id="timeline" class="timeline" aria-live="polite"></div>
-  </section>
-
-  <section id="view-permissions" class="view hidden" data-view="permissions">
-    <div class="view-head">
-      <h2>权限矩阵</h2>
-      <div class="meta" id="perm-meta">—</div>
-      <div id="perm-error" class="inline-error hidden" role="alert"></div>
-    </div>
-    <div id="perm-matrix" class="table-wrap"></div>
-    <div class="split">
-      <div class="panel">
-        <h3>新增规则 <span class="hint">默认拒绝 · deny 优先 · 多规则取最严</span></h3>
-        <form id="policy-form" class="form-grid" autocomplete="off">
-          <label>subject type
-            <select name="subjectType"><option value="member">member</option><option value="role">role</option><option value="task">task</option></select>
-          </label>
-          <label>subject id <input name="subjectId" list="member-ids" required placeholder="lab-alpha / builder / task_3"></label>
-          <datalist id="member-ids"></datalist>
-          <label>domain
-            <select name="domain"><option value="fs">fs</option><option value="exec">exec</option><option value="net">net</option><option value="env">env</option></select>
-          </label>
-          <label>mode
-            <select name="mode"><option value="allow">allow</option><option value="deny">deny</option></select>
-          </label>
-          <label class="wide">matcher <input name="matcher" required placeholder="path glob / argv 前缀 / host:port / env glob"></label>
-          <label class="wide">ops（逗号分隔） <input name="ops" required placeholder="fs: read,write / exec: spawn / net: connect / env: read"></label>
-          <label class="wide">constraints（JSON，可选） <textarea name="constraints" rows="2" placeholder='{"maxRuntimeMs":5000,"readOnly":true}'></textarea></label>
-          <label class="wide">expiresAt（本地时间，可选） <input name="expiresAt" type="datetime-local"></label>
-          <div class="form-actions"><button type="submit" class="btn btn-primary">新增规则</button></div>
-        </form>
-        <div id="policy-confirm" class="inline-confirm hidden" role="alertdialog"></div>
-        <div id="policy-error" class="inline-error hidden" role="alert"></div>
-      </div>
-      <div class="panel">
-        <h3>策略列表</h3>
-        <div id="policy-list" class="table-wrap"></div>
-      </div>
-    </div>
-  </section>
-
-  <section id="view-approvals" class="view hidden" data-view="approvals">
-    <div class="view-head">
-      <h2>审批队列</h2>
-      <div class="meta" id="approvals-meta">—</div>
-    </div>
-    <div id="approval-list" class="approval-list"></div>
-  </section>
-
-  <section id="view-messages" class="view hidden" data-view="messages">
-    <div class="view-head">
-      <h2>消息与回执</h2>
-      <div class="meta" id="messages-meta">—</div>
-      <div class="controls"><button id="btn-msg-refresh" class="btn" type="button">刷新</button></div>
-    </div>
-    <div id="message-list" class="message-list"></div>
-  </section>
-</main>
-
-<div id="overlay" class="overlay hidden" hidden>
-  <div class="overlay-box" role="alertdialog" aria-modal="true">
-    <h2 id="overlay-title">加载失败</h2>
-    <p id="overlay-detail"></p>
-    <div id="overlay-actions" class="overlay-actions"></div>
-  </div>
-</div>
-<div id="toasts" class="toasts" aria-live="polite"></div>
-<noscript><p class="banner">本面板需要启用 JavaScript 才能显示实时数据。</p></noscript>
-<script type="module" src="/panel/app.js"></script>
+  <div id="root"></div>
 </body>
 </html>

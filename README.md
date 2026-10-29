@@ -10,7 +10,7 @@ Lead Agent ──REST/CLI/SSE──▶ dsh-team sidecar
                              ├ PermBroker  四域唯一 IO 出口
                              ├ MessageBus  持久信箱 + 三态回执
                              ├ SSE Hub     lastEventId 断线续传
-                             └ Web UI      成员看板 / DAG / 时间线 / 审批
+                             └ Web UI      Trace 瀑布（成员看板）/ DAG / 时间线 / 审批
 Worker × N ◀──stdio NDJSON RPC（只有代理工具）──┘
 ```
 
@@ -21,7 +21,7 @@ Worker × N ◀──stdio NDJSON RPC（只有代理工具）──┘
 ```bash
 node --version            # 应 ≥ v22.15
 node demo/run-demo.mjs    # 3 成员 + DAG + 一次越界审批 + 一次 interrupt/resume
-node tests/run-all.mjs    # 13 条 AC 全量验收
+node tests/run-all.mjs    # 14 条 AC 全量验收
 ```
 
 Demo 会打印每一步时间线，最后校验 4 个产物文件与事件流一致性。
@@ -39,7 +39,7 @@ node tests/cli-smoke.mjs       # status/dag/logs/approve/report/up/down
 ```bash
 node bin/dsh-team.mjs up --port 4317 --data ~/.dsh/team
 # stdout 第一行是 {event:'ready', url, port, token, panel}
-open "http://127.0.0.1:4317/panel#token=<token>"   # 面板（token 在 hash 里，页面自取后抹除）
+open "http://127.0.0.1:4317/panel"                    # 面板（API 免 token，仅监听回环）
 node bin/dsh-team.mjs status <team>                # 全员当前步
 node bin/dsh-team.mjs down
 ```
@@ -104,12 +104,17 @@ plugin_manager(action: "install_bundle", target: "C:\\...\\agent-team-plugin\\ds
   插件卸载时只回收自己拉起的进程。配置见 [`dsh-plugin/README.md`](dsh-plugin/README.md)。
 - UI bundle：左侧边栏底部「编排 / Team」按钮（`sidebar.footer.action`）→ 点击
   `ctx.sidebarRight.openTab('dsh-team')` 在**右侧栏**打开 Tab（与文件/终端同机制），
-  Tab 内默认「网页版」：iframe 直接加载 sidecar 自带的 `/panel`（内容与 `:4317/panel`
-  完全一致：7 视图 + SSE + 消息 + 报告导出），可切「精简版」（DSH 原生渲染、跟随主题）。
+  Tab 内是 iframe 直接加载 sidecar 自带的 `/panel`（内容与 `:4317/panel` 完全一致：
+  7 视图 + SSE + 消息 + 报告导出）；DSH 原生渲染的「精简版」已移除。
   浏览器只访问同源 `/dsh-team-api/**` 与 `/panel/**`，
   由 Host 侧代理注入 sidecar token（token 不出 Host）；两条前缀路由**仅接受回环地址**。
   配置见 [`dsh-plugin-ui/README.md`](dsh-plugin-ui/README.md)。
 - 独立面板 `{baseUrl}/panel` 仍然保留（单文件、零依赖、SSE 实时），适合不打开 DSH 时使用。
+- **成员看板已换成 Trace 瀑布**（`src/web-ui/src/components/trace-waterfall/`，源自 affectui-trace-waterfall）：
+  Worker 步骤由 event 流聚合，Agent 工具调用由 `dsh-plugin/` 在 Host 侧监听 `tools/execute` 上报
+  `POST /api/spans`（`reportToolCalls` 默认开启，可配 `traceInputMax`），写入即广播 SSE `span.append`，
+  面板去抖刷新。默认只看**近 30 分钟**（标题栏可切 5 分钟 ~ 全部历史），避免长期闲置团队的横轴被拉爆。
+  **宿主插件改动需重启一次 DSH 才生效**（运行中的进程缓存了旧模块）。
 - **迁移已完成**：`@deepseek-ai/dsh-experimental-agent-team-profile` 已从本 profile 的 bundles 移除，
   工具面里不再有 `spawn_teammate / wait_agent / team_task_*`（`send_message / list_agents / interrupt_agent`
   仍存在，属 subagent 体系，与 Agent Teams 无关）。
@@ -119,13 +124,13 @@ plugin_manager(action: "install_bundle", target: "C:\\...\\agent-team-plugin\\ds
 | 交付物 | 位置 |
 |---|---|
 | sidecar 可执行体 | `bin/dsh-team.mjs`（`dsh-team up`，默认 `127.0.0.1:4317`） |
-| Web 面板 | `src/web/`（`/panel`；成员看板/DAG/时间线/权限矩阵/审批/消息/报告） |
+| Web 面板 | `src/web/`（`/panel`；**成员看板 = Trace 瀑布**/DAG/时间线/权限矩阵/审批/消息/报告） |
 | CLI | `bin/dsh-team.mjs`（六个子命令） |
-| 测试套件 | `tests/ac-*.mjs` + `tests/run-all.mjs`（覆盖 AC-1 ~ AC-13） |
+| 测试套件 | `tests/ac-*.mjs` + `tests/run-all.mjs`（覆盖 AC-1 ~ AC-14，含 Trace 上报链路 `tests/plugin-trace.mjs`） |
 | 文档 | 本文件 + [`docs/CONTRACT.md`](docs/CONTRACT.md) + [`docs/adr/`](docs/adr/) |
 | Demo | `demo/run-demo.mjs`、`demo/seed.mjs`（给运行中实例灌可交互演示数据） |
 | DSH 插件（工具） | `dsh-plugin/`（Host bundle：8 个 `team_*` 工具 + sidecar 生命周期） |
-| DSH 插件（界面） | `dsh-plugin-ui/`（侧边栏「编排」入口 + 抽屉；默认嵌入 sidecar 自带 Web 面板，可切精简版） |
+| DSH 插件（界面） | `dsh-plugin-ui/`（侧边栏「编排」入口 + 右侧栏 Tab；iframe 嵌入 sidecar 自带 Web 面板） |
 
 ## 验收矩阵
 
@@ -144,6 +149,7 @@ plugin_manager(action: "install_bundle", target: "C:\\...\\agent-team-plugin\\ds
 | AC-11 | 权限矩阵热更新 | `tests/ac-11-hotpolicy.mjs` |
 | AC-12 | 审计还原 hash 前后值 | `tests/ac-12-audit.mjs` |
 | AC-13 | 敏感 env 一律 `<redacted>` | `tests/ac-13-redact.mjs` |
+| AC-14 | Trace 瀑布：span 幂等上报 + SSE `span.append` + 步骤/工具聚合成树 + 时间窗 | `tests/ac-14-trace.mjs` |
 
 ## 目录
 
@@ -158,10 +164,10 @@ src/scheduler.mjs     DAG 求值 / 派发 / 并发 / 失败策略 / 环检测
 src/runner.mjs        子进程 / 租约 / 同步中断（C5）/ 恢复
 src/bus.mjs           持久信箱 / 回执 / request-response
 src/sse.mjs           SSE hub / lastEventId 续传
-src/server.mjs        REST + SSE + 静态面板 + token 鉴权
+src/server.mjs        REST + SSE + 静态面板（免 token，仅回环监听）
 src/worker/worker.mjs 受限 Worker（单文件，仅 import node:module）
 src/util.mjs          ID/时间/哈希/glob/脱敏/错误
-src/web/              面板（panel.html / app.js / app.css）
+src/web/              面板构建产物（panel.html + assets/，源码在 src/web-ui/，coss ui / React）
 docs/CONTRACT.md      实现契约（API/SSE/RPC/不变量）
 docs/adr/             每条偏离一份 ADR
 tests/                AC 脚本 + harness
@@ -171,7 +177,7 @@ demo/run-demo.mjs     可复现演示
 ## 运维
 
 - 数据目录默认 `~/.dsh/team`（`--data` / `DSH_TEAM_HOME` 覆盖）：`team.db`（WAL）、`token`、`run/sidecar.json`、`workers/<member>/`。
-- 鉴权：所有 `/api/**` 需 `Authorization: Bearer <token>`；SSE 允许 `?token=`（EventSource 不能带 header）。`/panel` 静态资源公开。
+- 鉴权：已移除——`/api/**` 与 `/panel` 均**免 token** 直接访问；sidecar 仅监听 `127.0.0.1`，如需暴露远端请在外层自行加访问控制。`<home>/token` 仍会生成（兼容旧工具），但服务端不再校验。
 - 端口默认 `4317`，仅监听 `127.0.0.1`；`--port 0` 取随机端口（测试用）。
 - 崩溃安全：`SIGKILL` 后重启自动 `recover()` —— `running` 任务回 `ready`、成员置 `interrupted`、写 `recover` 事件，不静默丢。
 

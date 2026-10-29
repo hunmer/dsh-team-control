@@ -64,16 +64,18 @@ try {
   check('代理 GET /panel（iframe 复用同一份页面）', () => {
     assert(panel.status === 200, `HTTP ${panel.status}`);
     assert(String(panel.ctype).includes('text/html'), `ctype=${panel.ctype}`);
-    assert(panel.text.includes('/panel/app.js'), 'panel.html 资源引用');
+    assert(panel.text.includes('/panel/assets/'), 'panel.html 资源引用');
+    assert(panel.text.includes('id="root"'), 'panel.html 挂载点');
     return `${panel.text.length}B html`;
   });
 
-  const panelJs = await get('/panel/app.js');
-  check('根路径 /panel/app.js（iframe 内绝对引用）', () => {
-    assert(panelJs.status === 200, `HTTP ${panelJs.status}`);
+  const assetMatch = panel.text.match(/src="(\/panel\/assets\/[^"]+\.js)"/);
+  const panelJs = assetMatch ? await get(assetMatch[1]) : { status: 0, ctype: '', text: '' };
+  check('根路径 /panel/assets/*.js（iframe 内绝对引用）', () => {
+    assert(assetMatch, 'panel.html 未引用打包脚本');
+    assert(panelJs.status === 200, `HTTP ${panelJs.status} ${assetMatch[1]}`);
     assert(String(panelJs.ctype).includes('javascript'), `ctype=${panelJs.ctype}`);
-    assert(panelJs.text.includes('API_BASE') && panelJs.text.includes('EMBEDDED'), '缺少同源嵌入模式');
-    return `${panelJs.text.length}B`;
+    return `${panelJs.text.length}B js`;
   });
 
   const blocked = await get('/dsh-team-api/teams');

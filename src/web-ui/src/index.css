@@ -1,0 +1,109 @@
+@import 'tailwindcss';
+@import './coss-theme.css';
+
+/* dsh-team 面板补充样式：DAG SVG 与时间线等区域性的视觉（coss ui 组件之外的部分） */
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+}
+
+/* DAG */
+.dag-node rect {
+  @apply fill-card stroke-border;
+}
+.dag-node.status-done rect {
+  @apply stroke-emerald-500/60;
+}
+.dag-node.status-running rect {
+  @apply stroke-sky-500/70;
+}
+.dag-node.status-ready rect,
+.dag-node.is-ready rect {
+  @apply stroke-sky-400/50;
+}
+.dag-node.is-blocked rect {
+  @apply stroke-amber-500/60;
+}
+.dag-node.status-failed rect {
+  @apply stroke-red-500/70;
+}
+.dag-node.is-critical rect {
+  @apply stroke-primary/80 stroke-2;
+}
+.dag-edge {
+  fill: none;
+  stroke: color-mix(in oklab, var(--color-foreground) 30%, transparent);
+  stroke-width: 1.5;
+}
+.dag-edge.is-critical {
+  stroke: var(--color-primary);
+  stroke-width: 2;
+}
+.dag-edge.is-ready {
+  stroke: color-mix(in oklab, var(--color-sky-500) 55%, transparent);
+}
+.dag-arrow path {
+  fill: color-mix(in oklab, var(--color-foreground) 35%, transparent);
+}
+.dag-arrow.critical path {
+  fill: var(--color-primary);
+}
+
+/* 时间线新事件闪一下 */
+@keyframes tl-new {
+  from {
+    background-color: color-mix(in oklab, var(--color-primary) 18%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+.tl-row.is-new {
+  animation: tl-new 1.6s ease-out;
+}
+
+/* agent-tree（DAG 视图）：卡片用固定宽度并整体居中，
+ * 覆盖组件窄屏模式把卡片拉伸到容器 100cqw 的规则 —— 保持示例中的留白效果 */
+.ui-agtc {
+  max-width: min(100%, 1080px);
+  margin-inline: auto;
+}
+/* Queued/Stopped 卡片保持正常不透明度（组件默认降为 0.6） */
+.ui-agtc .ui-agtc__node[data-status="queued"],
+.ui-agtc .ui-agtc__node[data-status="stopped"] {
+  opacity: 1;
+}
+/* agent-lanes（时间线视图）：泳道卡片填满可用宽度（组件默认 760px） */
+.ui-alc {
+  max-width: 100%;
+}
+.ui-agtc .ui-agtc__tree {
+  justify-items: center;
+}
+.ui-agtc:not([data-wide]) .ui-agtc__tree {
+  container-type: normal;
+}
+.ui-agtc:not([data-wide]) .ui-agtc__node {
+  width: var(--ui-agtc-card-w);
+}
+.ui-agtc:not([data-wide]) .ui-agtc__below {
+  padding-left: var(--ui-agtc-indent);
+}
+.ui-agtc:not([data-wide]) .ui-agtc__level {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 40px;
+  padding-left: 0;
+}
+.ui-agtc:not([data-wide]) .ui-agtc__level > .ui-agtc__hang {
+  width: auto;
+}

@@ -24,7 +24,7 @@
 - 单进程 sidecar，默认监听 `127.0.0.1`，端口默认 `4317`（`--port 0` 取随机端口）。要求 Node ≥ 22.15（`node:sqlite` + 同步 `module.registerHooks`）。
 - 数据目录（默认 `~/.dsh/team`，可用 `DSH_TEAM_HOME` 覆盖）：
   ```
-  <home>/token              # 鉴权 token（首次启动生成，64 hex）
+  <home>/token              # 兼容保留（首次启动生成，服务端已不校验）
   <home>/team.db            # SQLite（WAL）+ team.db-wal/shm
   <home>/run/sidecar.json   # {pid,port,url,startedAt}
   <home>/workers/<member>/  # 该成员 worker bundle 副本 + cwd
@@ -36,7 +36,7 @@
   ```
   之后 stdout 只输出结构化日志行（`{"ts","level","msg",...}`）。
 - 环境变量：`DSH_TEAM_HOME`、`DSH_TEAM_PORT`、`DSH_TEAM_TOKEN`、`DSH_TEAM_WORKSPACE`。
-- 鉴权：所有 `/api/**` 需 `Authorization: Bearer <token>`（或 `?token=`）。`/panel` 与 `/panel/**` 静态资源公开；面板从 URL `#token=` 自取。无 token → `401 {"error":{"code":"E_UNAUTHORIZED"}}`。
+- 鉴权：已移除——`/api/**`（含 SSE）与 `/panel` 均**免 token** 直接访问；sidecar 仅监听 `127.0.0.1`，暴露远端需外层访问控制。`token` 文件与启动横幅字段保留（兼容旧工具），带 `Authorization: Bearer` / `?token=` 的请求也照常接受。
 
 **CLI**（`bin/dsh-team.mjs`，`package.json` 的 `bin.dsh-team`）：
 
@@ -120,6 +120,9 @@ CLI 通过 `<home>/run/sidecar.json` 发现端口，读 `<home>/token` 鉴权；
 | `GET /api/blockers?team=` | `{items:[{memberId,kind,id,detail}]}` |
 | `GET /api/events?team=&member=&lastEventId=` | **SSE**（§4） |
 | `GET /api/events/history?team=&since=` | REST 兜底，同 SSE 载荷 |
+| `POST /api/spans` | `{teamId, sessionId?, memberId?, spans:[span]}` → `{ok, items:[span]}`；同 `spanId` 幂等 upsert，提交后广播 `span.append` |
+| `GET /api/spans?team=&member=&session=&since=&limit=` | `{items:[span]}`，按 `start_ms` 升序 |
+| `GET /api/trace?team=&window=&limit=` | 成员看板聚合树，见 §3.4.1 |
 | `GET /api/metrics?team=` | `{eventCount,messageCount,deliveryP50,deliveryP95,conflicts,denials,grants,conflictRate}` |
 | `GET /api/verify?team=` | `{ok, asOf, mismatches}`：C2 对账（event 重放 vs `member_state`） |
 | `GET /api/reconcile?team=` | `{ok, checked, diffs}`：事件/审计 vs 磁盘实际差异（FR-6.2） |
@@ -128,6 +131,24 @@ CLI 通过 `<home>/run/sidecar.json` 发现端口，读 `<home>/token` 鉴权；
 
 `status` = `{asOf, version, members:[member], staleMembers:[memberId], degraded:bool}`
 `event` = `{id,seq,memberId,taskId,teamId,ts,phase,action,target,result,next,status,meta}`
+
+### 3.4.1 Trace 瀑布（成员看板数据源）
+
+`GET /api/trace?team=<id>&window=<分钟>&limit=<行数>` 返回一棵相对时间轴的树，面板直接用 `originMs` 作 `startedAt`、`now` 作当前时钟：
+
+```
+root(run:team)                         ← 团队整体
+├─ member:<memberId>  kind=subagent    ← 子 Agent（来自 /api/status 的成员视图）
+│  └─ step:<memberId>:<stepIndex>      ← Worker 计划步骤（由 event 流聚合：首条 RUNNING 起，末条终态收）
+└─ session:<sessionId> kind=agent      ← 无成员归属的 Host 工具调用（dsh-team 插件上报）
+   └─ span:<spanId>    kind=tool|llm|agent|subagent
+```
+
+- `window`（分钟，`0`/省略 = 全量）：只保留 `cutoff = now - window` 之后的事件与 span；`originMs` 取 `max(cutoff, 最早节点起点)`，旧数据不会把横轴拉爆。响应带回 `windowMs` 与 `cutoffMs` 便于面板回显。
+- `root` / 各节点：`{id,name,kind,status,start,end?,detail?,model?,tokensIn?,tokensOut?,cost?,input?,output?,error?,children}`；`start`/`end` 均为**相对 `originMs` 的毫秒数**，运行中的节点省略 `end`。
+- `stats` = `{members,steps,spans,nodes,running,failed,durationMs}`；`durationMs` 在运行中随 `asOf` 增长。
+- 成员/步骤/工具调用三个来源互不依赖：只跑 Demo Worker 也有步骤瀑布；只接 Host 插件也有工具瀑布。
+
 
 ### 3.5 消息
 | 方法 路径 | 请求/说明 |
@@ -177,7 +198,7 @@ data: {"id":42,"type":"step.append","teamId":"t_1","memberId":"m_1","taskId":"ta
 
 - `id` 取自 `event.id`（自增，全局单调）。断线重连：浏览器 `Last-Event-ID` 请求头或 `?lastEventId=`，服务端从 `event.id > lastEventId` 回放，**不丢事件**。
 - 心跳：每 15s 发 `: ping` 注释行。
-- 载荷全集：`member.status{status,step,seq,next}`、`step.append{seq,phase,action,target,result,next}`、`task.state{taskId,status,attempts}`、`message.delivered{messageId,to,status}`、`scope.request{requestId,domain,target,memberId}`、`decision{requestId,decision,decidedBy,grantId}`、`lease.warn{memberId,leaseUntil,missed}`。
+- 载荷全集：`member.status{status,step,seq,next}`、`step.append{seq,phase,action,target,result,next}`、`task.state{taskId,status,attempts}`、`message.delivered{messageId,to,status}`、`scope.request{requestId,domain,target,memberId}`、`decision{requestId,decision,decidedBy,grantId}`、`lease.warn{memberId,leaseUntil,missed}`、`span.append{span}`（Host 工具调用上报后推送，面板据此实时刷新瀑布）。
 
 ---
 

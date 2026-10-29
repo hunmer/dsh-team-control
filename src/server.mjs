@@ -96,6 +96,20 @@ export function createRoutes(core) {
     ['GET', /^\/api\/blockers$/, async (ctx) => C.blockers(need(qs(ctx.url).get('team'), 'team'))],
     ['GET', /^\/api\/metrics$/, async (ctx) => C.metrics(need(qs(ctx.url).get('team'), 'team'))],
     ['GET', /^\/api\/events\/history$/, async (ctx) => C.history(need(qs(ctx.url).get('team'), 'team'), { since: qs(ctx.url).get('since') || 0, member: qs(ctx.url).get('member'), limit: qs(ctx.url).get('limit') || 500 })],
+
+    // trace 瀑布：显式 span 上报 + 聚合树（成员看板）
+    ['POST', /^\/api\/spans$/, async (ctx) => C.appendSpans(ctx.body)],
+    ['GET', /^\/api\/spans$/, async (ctx) => C.listSpans({
+      teamId: need(qs(ctx.url).get('team'), 'team'),
+      memberId: qs(ctx.url).get('member') || null,
+      sessionId: qs(ctx.url).get('session') || null,
+      since: qs(ctx.url).get('since') || 0,
+      limit: qs(ctx.url).get('limit') || 2000,
+    })],
+    ['GET', /^\/api\/trace$/, async (ctx) => C.trace(need(qs(ctx.url).get('team'), 'team'), {
+      limit: qs(ctx.url).get('limit') || 4000,
+      windowMs: (Number(qs(ctx.url).get('window')) || 0) * 60000,
+    })],
     ['GET', /^\/api\/verify$/, async (ctx) => C.verify(qs(ctx.url).get('team'))],
     ['GET', /^\/api\/reconcile$/, async (ctx) => C.reconcile(need(qs(ctx.url).get('team'), 'team'))],
 
@@ -160,11 +174,8 @@ export async function startServer({ home, port = 4317, host = '127.0.0.1', lease
       return;
     }
 
-    // SSE（token 可走 query，EventSource 不能带 header）
+    // SSE（无鉴权：面板与 API 均改为免 token，sidecar 只监听本机回环）
     if (pathname === '/api/events' && req.method === 'GET') {
-      const auth = req.headers.authorization || '';
-      const qt = url.searchParams.get('token');
-      if (auth !== `Bearer ${token}` && qt !== token) return sendJson(res, 401, ERR.unauthorized().toJSON());
       const last = Number(url.searchParams.get('lastEventId') || req.headers['last-event-id'] || 0) || 0;
       try {
         core.sse.subscribe(req, res, { teamId: url.searchParams.get('team'), member: url.searchParams.get('member'), lastEventId: last });
@@ -172,13 +183,7 @@ export async function startServer({ home, port = 4317, host = '127.0.0.1', lease
       return;
     }
 
-    // 鉴权（/api/health 公开，供探活/编排系统探针使用）
-    const auth = req.headers.authorization || '';
-    const qt = url.searchParams.get('token');
-    const isPublic = pathname === '/api/health';
-    if (!isPublic && pathname.startsWith('/api/') && auth !== `Bearer ${token}` && qt !== token) {
-      return sendJson(res, 401, ERR.unauthorized().toJSON());
-    }
+    // 鉴权已按需求移除：API 免 token 直接访问（仅限回环监听；如需暴露远端请自行加访问控制）
 
     const matched = routes.find(([m, re]) => m === req.method && re.test(pathname));
     if (!matched) {
