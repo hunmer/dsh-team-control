@@ -18,15 +18,17 @@ import { usePanel } from '@/store';
 import { api } from '@/lib/api';
 import { fmtClockSec } from '@/lib/format';
 import type { ScopeRequest, Task, TimelineEntry, Todo } from '@/types';
+import { Button } from '@/components/ui/button';
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import {
   AgentInbox,
   type AgentTask,
   type AgentTaskStatus,
   type AgentTaskStep,
-} from '@/affectui/agent-inbox';
-import { PlanSteps, type PlanStep, type PlanStepStatus } from '@/affectui/plan-steps';
-import { ToolCall } from '@/affectui/tool-calls';
+} from '@/components/agent-inbox';
+import { PlanSteps, type PlanStep, type PlanStepStatus } from '@/components/plan-steps';
+import { ToolCall } from '@/components/tool-call';
+import { modelAvatar } from '@/components/ModelAvatar';
 
 const SCOPE_PREFIX = 'scope:';
 
@@ -120,6 +122,13 @@ export function HomeView() {
 
   const taskById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
 
+  /** 成员 id → 模型（决定卡片头像用哪个厂商图标）。 */
+  const modelByMember = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const member of members) if (member.model) map.set(member.id, member.model);
+    return map;
+  }, [members]);
+
   /** 默认跟随：最新一个运行中的任务；否则最近的任务行。 */
   const fallbackId = useMemo(() => {
     const running = [...(dag?.nodes ?? [])].reverse().find((node) =>
@@ -168,6 +177,10 @@ export function HomeView() {
   const visibleActivity = activity.slice(-activityLimit);
 
   const board = useMemo<AgentTask[]>(() => {
+    const logoOf = (memberId?: string) =>
+      memberId
+        ? modelAvatar(modelByMember.get(memberId), memberName(memberId), undefined, 16)
+        : undefined;
     const approvals = scopeRequests.map((request: ScopeRequest): AgentTask => {
       const steps: AgentTaskStep[] = [];
       if (request.blockedStep) steps.push({ label: `blocked step：${request.blockedStep}` });
@@ -182,6 +195,7 @@ export function HomeView() {
             ? `若拒绝将走 fallback：${request.fallback}`
             : '成员请求越界操作，等待你的决策。'),
         agent: memberName(request.memberId),
+        logo: logoOf(request.memberId),
         status: 'waiting',
         startedAt: ms(request.createdAt),
         steps,
@@ -208,6 +222,7 @@ export function HomeView() {
           title: node.subject || node.taskId,
           description,
           agent: memberName(assignee),
+          logo: logoOf(assignee),
           status,
           startedAt,
           elapsed: status === 'done' ? elapsedOf(row) : undefined,
@@ -224,7 +239,7 @@ export function HomeView() {
       const at = (task: AgentTask) => (typeof task.startedAt === 'number' ? task.startedAt : 0);
       return at(b) - at(a);
     });
-  }, [scopeRequests, dag, taskById, stepsByTask, memberName]);
+  }, [scopeRequests, dag, taskById, stepsByTask, memberName, modelByMember]);
 
   const queued = (dag?.nodes ?? []).filter((node) => !laneStatus(node.status ?? '')).length;
   const staleMembers = members.filter((member) => member.stale).length;
@@ -331,13 +346,9 @@ export function HomeView() {
               <span className="text-xs text-muted-foreground">
                 {activity.length ? `当前任务 ${activity.length} 条事件` : '暂无事件'}
               </span>
-              <button
-                type="button"
-                className="ml-auto text-xs underline underline-offset-2 hover:text-foreground"
-                onClick={jumpToTimeline}
-              >
+              <Button className="ml-auto" onClick={jumpToTimeline} size="xs" type="button" variant="link">
                 在时间线视图查看
-              </button>
+              </Button>
             </header>
             <div className="max-h-[420px] space-y-1 overflow-y-auto p-3">
               {visibleActivity.length ? (
@@ -376,13 +387,15 @@ export function HomeView() {
                 </Empty>
               )}
               {activity.length > visibleActivity.length && (
-                <button
-                  type="button"
-                  className="mt-2 w-full rounded-md border py-1.5 text-xs text-muted-foreground hover:text-foreground"
+                <Button
+                  className="mt-2 w-full"
                   onClick={() => setActivityLimit((limit) => limit + 40)}
+                  size="sm"
+                  type="button"
+                  variant="outline"
                 >
                   显示更早的 {activity.length - visibleActivity.length} 条
-                </button>
+                </Button>
               )}
             </div>
           </div>
@@ -407,13 +420,9 @@ export function HomeView() {
 
       <footer className="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 py-1 text-xs text-muted-foreground">
         {queued > 0 && (
-          <button
-            type="button"
-            className="text-left underline underline-offset-2 hover:text-foreground"
-            onClick={() => setTab('dag')}
-          >
+          <Button onClick={() => setTab('dag')} size="xs" type="button" variant="link">
             另有 {queued} 个待派发 / 阻塞任务 · 查看依赖 DAG
-          </button>
+          </Button>
         )}
         {staleMembers > 0 && (
           <span className="text-amber-600">stale 成员 {staleMembers} 个（seq 与事件流不一致）</span>

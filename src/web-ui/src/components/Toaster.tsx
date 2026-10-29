@@ -1,22 +1,48 @@
+/**
+ * store 的 toasts → coss ui Toast 的桥接。
+ *
+ * 渲染由 `<ToastProvider>`（components/ui/toast）负责，这里只把新出现的
+ * store toast 推给全局 toastManager；store 仍保留自己的 TTL 逻辑。
+ */
+import { useEffect, useRef } from 'react';
+import { toastManager } from '@/components/ui/toast';
 import { usePanel } from '@/store';
 
-const KIND_CLASS: Record<string, string> = {
-  ok: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
-  warn: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300',
-  error: 'border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-300',
-  info: 'border-border bg-card text-foreground',
+type ToastKind = 'ok' | 'warn' | 'error' | 'info';
+
+const KIND_TYPE: Record<ToastKind, 'success' | 'warning' | 'error' | 'info'> = {
+  ok: 'success',
+  warn: 'warning',
+  error: 'error',
+  info: 'info',
+};
+
+const KIND_TIMEOUT: Record<ToastKind, number> = {
+  ok: 4200,
+  warn: 4200,
+  error: 8000,
+  info: 4200,
 };
 
 export function Toaster() {
   const { toasts } = usePanel();
-  if (!toasts.length) return null;
-  return (
-    <div className="pointer-events-none fixed right-4 bottom-4 z-50 flex w-80 flex-col gap-2" aria-live="polite">
-      {toasts.map((toast) => (
-        <div key={toast.id} className={`pointer-events-auto rounded-md border px-3 py-2 text-xs shadow-lg ${KIND_CLASS[toast.kind] ?? KIND_CLASS.info}`}>
-          {toast.message}
-        </div>
-      ))}
-    </div>
-  );
+  const seen = useRef<Set<number>>(new Set());
+
+  useEffect(() => {
+    for (const item of toasts) {
+      if (seen.current.has(item.id)) continue;
+      seen.current.add(item.id);
+      toastManager.add({
+        title: item.message,
+        timeout: KIND_TIMEOUT[item.kind] ?? KIND_TIMEOUT.info,
+        type: KIND_TYPE[item.kind] ?? KIND_TYPE.info,
+      });
+    }
+    // store 丢弃过期 toast 后同步清理，避免 seen 无限增长。
+    if (seen.current.size > toasts.length) {
+      seen.current = new Set(toasts.map((item) => item.id));
+    }
+  }, [toasts]);
+
+  return null;
 }

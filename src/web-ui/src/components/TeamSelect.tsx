@@ -1,7 +1,7 @@
 /**
  * 团队切换（用户要求：从顶栏移到左侧栏顶部）。
  *
- * 渲染在 affectui AppShell 的 `sidebarTop` 插槽里，宽度跟随侧栏；
+ * 渲染在 AppShell 的 `sidebarTop` 插槽里，宽度跟随侧栏；
  * 数据与行为完全复用 store 的 teams / teamId / selectTeam。
  */
 import { usePanel } from '@/store';
@@ -21,7 +21,7 @@ export function TeamSelect() {
         : '加载中…';
 
   return (
-    <div className="panel-coss ui-side-team">
+    <div className="ui-side-team">
       <Select
         value={teamId ?? ''}
         onValueChange={(value) => {

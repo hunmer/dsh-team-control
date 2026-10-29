@@ -13,35 +13,12 @@
   }
 }
 
-/* affectui AppShell 自带的工作区切换器 / 新闻卡 / 新手引导 / demo 用户菜单属于素材演示内容，
-   面板里没有对应功能；只保留 nav 与折叠按钮，避免出现「Acme」「Alex Morgan」这类假数据。 */
-.ui-as-side__head,
-.ui-as-side__foot {
-  display: none;
-}
-/* 用户要求：团队切换放在侧栏顶部（替代被隐藏的 workspace 切换器，高度与其对齐）。 */
+/* 团队切换放在侧栏顶部。 */
 .ui-side-team {
   display: flex;
   align-items: center;
   height: 28px;
   min-width: 0;
-}
-.ui-as-bar--side button[aria-label='Search'] {
-  display: none;
-}
-
-/* affectui 的 .ui-as 重新定义了与 coss 主题同名的 --muted / --accent / --card，
-   会把业务视图里的 coss 组件染色（例如 bg-muted 变成 #737373、hover:bg-accent 变蓝）。
-   在承载 coss 组件（视图内容与顶栏）的容器上恢复 coss 的取值。 */
-.panel-coss {
-  --card: var(--color-white);
-  --muted: --alpha(var(--color-black) / 4%);
-  --accent: --alpha(var(--color-black) / 4%);
-}
-.dark .panel-coss {
-  --card: color-mix(in srgb, var(--background) 98%, var(--color-white));
-  --muted: --alpha(var(--color-white) / 4%);
-  --accent: --alpha(var(--color-white) / 4%);
 }
 
 /* DAG */

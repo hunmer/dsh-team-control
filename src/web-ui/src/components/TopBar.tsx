@@ -31,7 +31,7 @@ export function TopBar() {
   );
 
   return (
-    <div className="panel-coss flex min-w-0 flex-1 items-center gap-2">
+    <div className="flex min-w-0 flex-1 items-center gap-2">
       <div className={`flex flex-none items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs ${CONN_CLASS[conn]}`} role="status" title="SSE 实时连接状态">
         {conn === 'connecting' || conn === 'reconnecting' ? <Spinner className="size-3" /> : <span className="size-1.5 rounded-full bg-current" />}
         {CONN_LABELS[conn]}
