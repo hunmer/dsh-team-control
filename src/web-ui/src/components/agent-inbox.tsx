@@ -5,11 +5,10 @@
  * 卡片由 Card + Badge + Button + Collapsible 组成，动作由 Home 传入。
  */
 import { useEffect, useState, type ReactNode } from 'react';
-import { ChevronDown, CircleCheck, CircleX, LoaderCircle, Sparkles, TriangleAlert } from 'lucide-react';
+import { CircleCheck, CircleX, FileText, LoaderCircle, Sparkles, TriangleAlert } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
 
 export type AgentTaskStatus = 'running' | 'waiting' | 'done' | 'failed';
@@ -17,6 +16,16 @@ export type AgentTaskStatus = 'running' | 'waiting' | 'done' | 'failed';
 export interface AgentTaskStep {
   label: string;
   time?: string;
+}
+
+/** 成员产物：成员会话里 declared/改动过的文件。 */
+export interface AgentTaskArtifact {
+  path: string;
+  label?: string;
+  source?: string;
+  /** 新增/删除行数；未知为 null（回退显示 label） */
+  added?: number | null;
+  deleted?: number | null;
 }
 
 export interface AgentTask {
@@ -32,6 +41,8 @@ export interface AgentTask {
   tools?: number;
   sources?: number;
   steps?: AgentTaskStep[];
+  /** 产物文件（折叠步骤已改为展示产物）。 */
+  artifacts?: AgentTaskArtifact[];
 }
 
 export interface AgentInboxProps {
@@ -82,6 +93,12 @@ function formatDuration(ms: number): string {
 
 const toTime = (value: number | Date): number => (typeof value === 'number' ? value : value.getTime());
 
+/** 产物路径只显示文件名，完整路径放 title。 */
+function fileName(path: string): string {
+  const parts = String(path).split(/[\\/]/);
+  return parts[parts.length - 1] || String(path);
+}
+
 /** 运行中卡片每秒刷新时长。 */
 function useNow(active: boolean): number {
   const [now, setNow] = useState(() => Date.now());
@@ -99,6 +116,7 @@ function TaskCard({ task, onApprove, onReject, onRetry, onOpen }: { task: AgentT
   const live = task.status === 'running' || task.status === 'waiting';
   const now = useNow(live);
   const steps = task.steps ?? [];
+  const artifacts = task.artifacts ?? [];
   const elapsed = task.elapsed ?? (task.startedAt !== undefined ? Math.max(0, now - toTime(task.startedAt)) : undefined);
 
   return (
@@ -123,28 +141,39 @@ function TaskCard({ task, onApprove, onReject, onRetry, onOpen }: { task: AgentT
             <p className="mt-1 line-clamp-3 break-words text-muted-foreground text-xs">{task.description}</p>
           )}
 
-          {steps.length > 0 && (
-            <Collapsible className="mt-1.5">
-              <CollapsibleTrigger
-                className="inline-flex items-center gap-1 rounded text-muted-foreground text-xs outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-                type="button"
-              >
-                <ChevronDown className="size-3" />
-                {steps.length} 个步骤
-              </CollapsibleTrigger>
-              <CollapsibleContent>
-                <ol className="mt-1 space-y-0.5 border-l pl-2">
-                  {steps.map((step, index) => (
-                    <li className="flex items-baseline gap-1.5 text-xs" key={`${step.label}-${index}`}>
-                      <span className="text-muted-foreground">{index + 1}.</span>
-                      <span className="min-w-0 flex-1 truncate">{step.label}</span>
-                      {step.time && <span className="shrink-0 text-muted-foreground tabular-nums">{step.time}</span>}
-                    </li>
-                  ))}
-                </ol>
-              </CollapsibleContent>
-            </Collapsible>
-          )}
+          {artifacts.length > 0 ? (
+            <ul className="mt-1.5 space-y-0.5 border-l pl-2">
+              {artifacts.map((file) => (
+                <li className="flex items-baseline gap-1.5 text-xs" key={file.path}>
+                  <FileText className="size-3 shrink-0 self-center text-muted-foreground" />
+                  <span className="min-w-0 flex-1 truncate" title={file.path}>
+                    {fileName(file.path)}
+                  </span>
+                  {file.added != null || file.deleted != null ? (
+                    <span className="shrink-0 tabular-nums">
+                      <span className="text-emerald-600 dark:text-emerald-400">+{file.added ?? 0}</span>
+                      <span className="ms-1 text-rose-600 dark:text-rose-400">-{file.deleted ?? 0}</span>
+                    </span>
+                  ) : file.label ? (
+                    <span className="max-w-[45%] shrink-0 truncate text-muted-foreground" title={file.label}>
+                      {file.label}
+                    </span>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          ) : steps.length > 0 ? (
+            <ul className="mt-1.5 space-y-0.5 border-l pl-2">
+              {steps.map((step, index) => (
+                <li className="flex items-baseline gap-1.5 text-xs" key={`${step.label}-${index}`}>
+                  <span className="min-w-0 flex-1 truncate" title={step.label}>
+                    {step.label}
+                  </span>
+                  {step.time && <span className="shrink-0 text-muted-foreground tabular-nums">{step.time}</span>}
+                </li>
+              ))}
+            </ul>
+          ) : null}
 
           <div className="mt-2 flex items-center gap-1.5">
             {task.status === 'waiting' && (

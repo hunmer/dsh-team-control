@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 7;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -156,6 +156,19 @@ CREATE TABLE IF NOT EXISTS span (
 CREATE INDEX IF NOT EXISTS idx_span_team ON span(team_id, start_ms);
 CREATE INDEX IF NOT EXISTS idx_span_parent ON span(team_id, parent_id);
 
+-- 成员产物：Host 插件从成员会话里采集（present 声明的交付文件 / workspace 变更文件），
+-- 面板「实时收件箱」按任务展示。同一团队同一路径只留最新一条。
+CREATE TABLE IF NOT EXISTS artifact (
+  id TEXT PRIMARY KEY, team_id TEXT NOT NULL,
+  task_id TEXT, member_id TEXT,
+  path TEXT NOT NULL, label TEXT,
+  source TEXT NOT NULL DEFAULT 'present',
+  added INTEGER, deleted INTEGER,
+  created_at TEXT NOT NULL,
+  UNIQUE(team_id, path)
+);
+CREATE INDEX IF NOT EXISTS idx_artifact_team ON artifact(team_id, created_at);
+
 -- fs.write 的版本基线（C3/FR-3.6 乐观并发）
 CREATE TABLE IF NOT EXISTS file_state (
   path TEXT PRIMARY KEY, version INTEGER NOT NULL DEFAULT 0,
@@ -208,6 +221,8 @@ export function openDb(file) {
   ensureColumn(db, 'team', 'archived_at', 'TEXT');
   ensureColumn(db, 'member', 'agent_session_id', 'TEXT');
   ensureColumn(db, 'todo', 'task_id', 'TEXT');
+  ensureColumn(db, 'artifact', 'added', 'INTEGER');
+  ensureColumn(db, 'artifact', 'deleted', 'INTEGER');
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_todo_task ON todo(task_id, order_no)'); } catch { /* ignore */ }
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_member_session ON member(agent_session_id)'); } catch { /* ignore */ }
   const get = q(db);

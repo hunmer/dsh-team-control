@@ -217,3 +217,19 @@ export interface Todo {
   createdAt?: string;
   updatedAt?: string;
 }
+
+/** 成员产物：Host 插件从成员会话里采集的交付文件（present 声明 / workspace 改动）。 */
+export interface TaskArtifact {
+  id: string;
+  teamId: string;
+  taskId?: string | null;
+  memberId?: string | null;
+  path: string;
+  label?: string;
+  /** present = 成员显式声明的交付文件；workspace = 会话里改动过的文件 */
+  source: 'present' | 'workspace' | string;
+  /** 新增行数 / 删除行数（来自 workspace 变更摘要；未知为 null） */
+  added?: number | null;
+  deleted?: number | null;
+  createdAt?: string;
+}

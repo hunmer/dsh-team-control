@@ -156,6 +156,8 @@ const leadByTeam = new Map();
 const runtimeByTeam = new Map();
 /** DSH sessionId → { teamId, memberId }：把成员的工具 span 归到成员节点下。 */
 const sessionMember = new Map();
+/** DSH sessionId → 上次采集产物时的会话 seq：成员复用同一会话时只上报新产生的文件。 */
+const lastArtifactSeq = new Map();
 /** teamId → 正在派发（防定时器与工具调用重入）。 */
 const dispatching = new Set();
 
@@ -165,6 +167,74 @@ const dispatching = new Set();
  */
 const subagentsOf = (ctx) => { try { return ctx.get('subagents'); } catch { return undefined; } };
 const subagentNames = (ctx) => { const svc = subagentsOf(ctx); return svc && typeof svc.list === 'function' ? svc.list() : []; };
+
+/** `sessions` / `workspaceChanges`：读成员自己会话里的交付文件（都是可选依赖）。 */
+const sessionsOf = (ctx) => { try { return ctx.get('sessions'); } catch { return undefined; } };
+const workspaceChangesOf = (ctx) => { try { return ctx.get('workspaceChanges'); } catch { return undefined; } };
+
+/**
+ * 从成员会话采集产物：
+ * 1) `present` 工具声明过的交付文件（带 description，最接近用户在 DSH 里看到的文件卡片）；
+ * 2) 会话里 `workspace/changes` 事件记录的改动文件（Host 保存 summary，按 seq 取）。
+ * 采集失败一律返回空数组——产物只是锦上添花，不能影响任务汇报。
+ */
+function collectArtifacts(ctx, sessionId) {
+  const sessions = sessionsOf(ctx);
+  const session = sessions && typeof sessions.get === 'function' && sessionId ? sessions.get(String(sessionId)) : undefined;
+  if (!session) return [];
+  let events = [];
+  try { events = session.snapshotEvents(); } catch { return []; }
+  // 成员复用同一会话跑多个任务：只看上次上报之后的事件，避免把旧产物重复挂到新任务上。
+  const key = String(sessionId);
+  const since = lastArtifactSeq.get(key) ?? 0;
+  const files = new Map();
+  const counts = new Map();
+  const changes = workspaceChangesOf(ctx);
+  for (const ev of events) {
+    if (!ev || !ev.type) continue;
+    if (Number(ev.seq) <= since) continue;
+    if (ev.type === 'tool/call') {
+      if (!ev.data || ev.data.name !== 'present') continue;
+      let parsed;
+      try { parsed = JSON.parse(ev.data.arguments || '{}'); } catch { continue; }
+      for (const f of Array.isArray(parsed?.files) ? parsed.files : []) {
+        if (!f || typeof f.path !== 'string' || !f.path.trim()) continue;
+        const p = f.path.trim();
+        files.set(p, { path: p, label: typeof f.description === 'string' ? f.description : '', source: 'present' });
+      }
+    } else if (ev.type === 'workspace/changes') {
+      let summary;
+      try { summary = changes && typeof changes.summary === 'function' ? changes.summary(session.id, ev.seq) : undefined; } catch { summary = undefined; }
+      for (const f of Array.isArray(summary?.files) ? summary.files : []) {
+        if (!f || typeof f.path !== 'string' || !f.path) continue;
+        // 同一文件出现在多轮 summary 里：行数累加，展示整段任务的新增/删除。
+        const prev = counts.get(f.path) || { added: 0, deleted: 0 };
+        counts.set(f.path, {
+          added: prev.added + (Number(f.added) || 0),
+          deleted: prev.deleted + (Number(f.deleted) || 0),
+          display: typeof f.display === 'string' ? f.display : '',
+        });
+        if (files.has(f.path)) continue;
+        files.set(f.path, { path: f.path, label: '', source: 'workspace' });
+      }
+    }
+  }
+  try { lastArtifactSeq.set(key, Number(session.seq) || 0); } catch { /* ignore */ }
+  const out = [];
+  for (const item of files.values()) {
+    const c = counts.get(item.path);
+    out.push({
+      ...item,
+      label: item.label || (c && c.display) || '',
+      ...(c ? { added: c.added, deleted: c.deleted } : {}),
+    });
+  }
+  for (const [p, c] of counts) {
+    if (files.has(p)) continue;
+    out.push({ path: p, label: c.display || '', source: 'workspace', added: c.added, deleted: c.deleted });
+  }
+  return out.slice(-12);
+}
 
 /** 子会话 label：`name: description`，上限 200 字符。 */
 const memberLabel = (name, description) => `${name}: ${description}`.slice(0, 200);
@@ -848,6 +918,13 @@ function buildTools(s, ctx) {
       };
       const res = await request(s, '/api/agents/report', { method: 'POST', body });
       if (exec?.agent) leadByTeam.set(args.teamId, exec.agent);
+      try {
+        const items = collectArtifacts(ctx, sessionId);
+        if (items.length) {
+          const binding = sessionId ? sessionMember.get(sessionId) : null;
+          await request(s, '/api/artifacts', { method: 'POST', body: { teamId: args.teamId, taskId: args.taskId, memberId: binding?.memberId ?? null, items } });
+        }
+      } catch { /* 产物采集失败不影响任务汇报 */ }
       const dispatched = await dispatchLoop(s, ctx, args.teamId).catch(() => null);
       return { ...res, ...(dispatched ? { dispatched } : {}) };
     },

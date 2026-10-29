@@ -8,7 +8,7 @@ import {
 } from 'react';
 import { API_BASE, api, ApiError, EMBEDDED, enc, getToken, initUrlToken, pickItems, setToken } from './lib/api';
 import { fmtClock, storeGet, storeSet } from './lib/format';
-import type { DagData, MatrixRow, Member, Policy, ScopeRequest, Task, Team, TeamMessage, TimelineEntry, Todo, TraceData } from './types';
+import type { DagData, MatrixRow, Member, Policy, ScopeRequest, Task, TaskArtifact, Team, TeamMessage, TimelineEntry, Todo, TraceData } from './types';
 
 export const TAB_NAMES = ['board', 'dag', 'timeline', 'models', 'permissions', 'approvals', 'messages'] as const;
 /**
@@ -18,7 +18,7 @@ export const TAB_NAMES = ['board', 'dag', 'timeline', 'models', 'permissions', '
 export type TabName = (typeof TAB_NAMES)[number] | 'home';
 
 export const PHASES = ['init', 'read', 'write', 'exec', 'net', 'env', 'msg', 'wait', 'verify', 'interrupt', 'resume', 'done', 'fail', 'decision', 'recover'];
-const SSE_TYPES = ['member.status', 'step.append', 'task.state', 'message.delivered', 'scope.request', 'decision', 'lease.warn', 'span.append'];
+const SSE_TYPES = ['member.status', 'step.append', 'task.state', 'message.delivered', 'scope.request', 'decision', 'lease.warn', 'span.append', 'artifact.added'];
 const TIMELINE_CAP = 2000;
 const STORE_UI = 'dsh-team.panel.ui.v1';
 const STORE_LAST = 'dsh-team.panel.lastEventId.v1';
@@ -28,7 +28,7 @@ export const pendingTimelineRef: { current: TimelineEntry[] } = { current: [] };
 
 export type ConnKind = 'connecting' | 'live' | 'reconnecting' | 'offline';
 export interface ToastItem { id: number; message: string; kind: 'ok' | 'warn' | 'error' | 'info'; }
-export type Errors = Partial<Record<'status' | 'dag' | 'permissions' | 'policies' | 'approvals' | 'messages' | 'timeline' | 'trace' | 'tasks' | 'todos', string | null>>;
+export type Errors = Partial<Record<'status' | 'dag' | 'permissions' | 'policies' | 'approvals' | 'messages' | 'timeline' | 'trace' | 'tasks' | 'todos' | 'artifacts', string | null>>;
 
 interface PanelState {
   teamId: string | null;
@@ -44,6 +44,8 @@ interface PanelState {
   tasks: Task[];
   /** 任务计划清单（/api/todos）：主页 Plan 区域的数据源 */
   todos: Todo[];
+  /** 成员产物（/api/artifacts）：成员会话里 present / 改动过的文件，按任务展示 */
+  artifacts: TaskArtifact[];
   trace: TraceData | null;
   /** Trace 时间窗（分钟，0 = 全部历史）；默认只看最近 30 分钟，避免长期闲置团队的横轴被拉爆 */
   traceWindow: number;
@@ -63,7 +65,7 @@ interface PanelState {
 const initialState: PanelState = {
   teamId: null, team: null, teams: [], noTeams: false,
   members: [], staleMembers: new Set(), degraded: false, snapshot: null,
-  dag: null, tasks: [], todos: [], trace: null, traceWindow: 0, matrix: [], policies: [], scopeRequests: [], messages: [],
+  dag: null, tasks: [], todos: [], artifacts: [], trace: null, traceWindow: 0, matrix: [], policies: [], scopeRequests: [], messages: [],
   errors: {}, timeline: [], paused: false, speed: 1,
   tab: 'home', filters: { member: '', phase: '' }, conn: 'connecting',
 };
@@ -294,6 +296,14 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, todos: items, errors: { ...prev.errors, todos: null } }));
   }, [onUnauthorized]);
 
+  const refreshArtifacts = useCallback(async () => {
+    const teamId = stateRef.current.teamId;
+    if (!teamId) return;
+    const items = pickItems<TaskArtifact>(await api('/api/artifacts?team=' + enc(teamId), { onUnauthorized }));
+    if (stateRef.current.teamId !== teamId) return; // 团队已切换：丢弃过期响应
+    setState((prev) => ({ ...prev, artifacts: items, errors: { ...prev.errors, artifacts: null } }));
+  }, [onUnauthorized]);
+
   const refreshPermissions = useCallback(async () => {
     const teamId = stateRef.current.teamId;
     const [policiesResponse, matrixResponse] = await Promise.all([
@@ -353,11 +363,12 @@ export function PanelProvider({ children }: { children: ReactNode }) {
       safe('dag', refreshDag),
       safe('tasks', refreshTasks),
       safe('todos', refreshTodos),
+      safe('artifacts', refreshArtifacts),
       safe('permissions', refreshPermissions),
       safe('approvals', refreshApprovals),
       safe('messages', refreshMessages),
     ]);
-  }, [refreshStatus, refreshTrace, refreshDag, refreshTasks, refreshTodos, refreshPermissions, refreshApprovals, refreshMessages]);
+  }, [refreshStatus, refreshTrace, refreshDag, refreshTasks, refreshTodos, refreshArtifacts, refreshPermissions, refreshApprovals, refreshMessages]);
 
   /**
    * 落盘一条越界申请的决策（home 右栏审批卡使用）。
@@ -370,16 +381,16 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     await Promise.all([refreshAll(), refreshPermissions()]);
   }, [refreshAll, refreshPermissions]);
 
-  const scheduleRefresh = useCallback((key: 'status' | 'trace' | 'dag' | 'tasks' | 'todos' | 'permissions' | 'approvals' | 'messages', delay = 200) => {
+  const scheduleRefresh = useCallback((key: 'status' | 'trace' | 'dag' | 'tasks' | 'todos' | 'artifacts' | 'permissions' | 'approvals' | 'messages', delay = 200) => {
     if (refreshTimers.current[key]) return;
     refreshTimers.current[key] = setTimeout(async () => {
       delete refreshTimers.current[key];
       const map: Record<string, () => Promise<void>> = {
-        status: refreshStatus, trace: refreshTrace, dag: refreshDag, tasks: refreshTasks, todos: refreshTodos, permissions: refreshPermissions, approvals: refreshApprovals, messages: refreshMessages,
+        status: refreshStatus, trace: refreshTrace, dag: refreshDag, tasks: refreshTasks, todos: refreshTodos, artifacts: refreshArtifacts, permissions: refreshPermissions, approvals: refreshApprovals, messages: refreshMessages,
       };
       try { await map[key](); } catch { return; }
     }, delay);
-  }, [refreshStatus, refreshTrace, refreshDag, refreshTasks, refreshTodos, refreshPermissions, refreshApprovals, refreshMessages]);
+  }, [refreshStatus, refreshTrace, refreshDag, refreshTasks, refreshTodos, refreshArtifacts, refreshPermissions, refreshApprovals, refreshMessages]);
 
   /* ---------- SSE ---------- */
   const memberName = useCallback((id?: string | null): string => {
@@ -477,7 +488,8 @@ export function PanelProvider({ children }: { children: ReactNode }) {
           if (payload.action === 'task.todo') scheduleRefresh('todos', 120);
           break;
         }
-        case 'task.state': scheduleRefresh('dag', 150); scheduleRefresh('tasks', 150); break;
+        case 'task.state': scheduleRefresh('dag', 150); scheduleRefresh('tasks', 150); scheduleRefresh('artifacts', 200); break;
+        case 'artifact.added': scheduleRefresh('artifacts', 150); break;
         case 'message.delivered': scheduleRefresh('messages', 250); break;
         case 'span.append':
           // 工具调用 / 步骤跨度变化：去抖刷新瀑布树，保留正在增长中的条
@@ -541,7 +553,7 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({
       ...prev, teamId, team,
       members: [], staleMembers: new Set(), degraded: false, snapshot: null,
-      dag: null, tasks: [], todos: [], trace: null, matrix: [], policies: [], scopeRequests: [], messages: [], timeline: [],
+      dag: null, tasks: [], todos: [], artifacts: [], trace: null, matrix: [], policies: [], scopeRequests: [], messages: [], timeline: [],
       errors: {},
     }));
     // setState 异步生效；先同步 stateRef，保证随后的 refreshAll 读到新 teamId
@@ -587,7 +599,7 @@ export function PanelProvider({ children }: { children: ReactNode }) {
           timelineIdsRef.current = new Set();
           const cleared: Partial<PanelState> = {
             teamId: null, team: null, members: [], staleMembers: new Set(), degraded: false, snapshot: null,
-            dag: null, tasks: [], todos: [], trace: null, matrix: [], policies: [], scopeRequests: [], messages: [],
+            dag: null, tasks: [], todos: [], artifacts: [], trace: null, matrix: [], policies: [], scopeRequests: [], messages: [],
             timeline: [], errors: {},
           };
           stateRef.current = { ...stateRef.current, ...cleared };
@@ -622,7 +634,7 @@ export function PanelProvider({ children }: { children: ReactNode }) {
           timelineIdsRef.current = new Set();
           const cleared: Partial<PanelState> = {
             teamId: null, team: null, members: [], staleMembers: new Set(), degraded: false, snapshot: null,
-            dag: null, tasks: [], todos: [], trace: null, matrix: [], policies: [], scopeRequests: [], messages: [],
+            dag: null, tasks: [], todos: [], artifacts: [], trace: null, matrix: [], policies: [], scopeRequests: [], messages: [],
             timeline: [], errors: {},
           };
           stateRef.current = { ...stateRef.current, ...cleared };
