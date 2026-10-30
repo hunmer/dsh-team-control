@@ -42,39 +42,42 @@ dsh plugin --profile web add dsh-team-control-ui   # 可选：GUI 看板
 装完**重启 DSH**（或到 设置 → 插件 里禁用/启用一次），`team_*` 工具与「编排」面板才会出现。卸载：
 `dsh plugin --profile web remove dsh-team-control`（UI 包同理）。
 
-### 2. sidecar（**不用手动做**）
-
-装完插件即可用：`autoStart` 默认开启，**首次调用 `team_*` 工具时插件自己拉起 sidecar**（本地安装走同级 `bin/`，npm 安装走依赖 `dsh-team-control-cli`），随后自动读 `~/.dsh/team/token` 鉴权。下面这些只在你想脱离插件、单独开面板时才需要：
-
-```bash
-
-
-```bash
-npx -y dsh-team-control-cli up --port 4317
-# 或本地克隆：node ~/dsh-team-control/bin/dsh-team.mjs up --port 4317
-# stdout 首行：{event:'ready', url, port, token, panel}
-```
-
-- 面板：<http://127.0.0.1:4317/panel>
-- 数据目录默认 `~/.dsh/team`（`--data` / `DSH_TEAM_HOME` 覆盖）
-- 停止：`npx -y dsh-team-control-cli down`
-
-### 3. 技能（**随插件自动注册**）
-
-插件启动时把仓库 `skills/` 注册成 skills provider（npm 安装读 `dsh-team-control-cli` 里的同一份文件），会话技能目录里直接出现 `dsh-agent-team`，**不用重启、也不用 cp**。
-只有在不装插件、又想让别的会话读这份用法时，才需要手动装：
-
-```bash
-mkdir -p ~/.dsh/skills && cp -r ~/dsh-team-control/skills/dsh-agent-team ~/.dsh/skills/
-```
-
-### 4. 验证
+### 2. 验证
 
 ```bash
 cd ~/dsh-team-control
 node demo/run-demo.mjs     # 3 成员 + DAG + 一次越界审批 + 一次 interrupt/resume
 node tests/run-all.mjs     # AC-1 ~ AC-15 与插件/面板/路由/CLI 全量验收
 ```
+
+## 示例用法
+
+装好后直接用自然语言下任务，模型会自己调用这些工具（sidecar 首次调用时由插件自动拉起）：
+
+```text
+你：用 dsh-team 起个 3 人团队，写一篇 800 字的短文并互审。
+
+team_create  { name: "essay", workspace: "D:/work/essay", runtime: "agent", maxMembers: 3 }
+              → { team: { id: "team_x1" } }
+
+team_spawn   { teamId: "team_x1", name: "writer",   role: "writer" }
+team_spawn   { teamId: "team_x1", name: "reviewer", role: "reviewer" }
+
+team_task    { teamId: "team_x1", subject: "01 写初稿", assignee: "<writer 的 id>",
+               acceptance: "draft.md 存在且 ≥800 字" }
+team_task    { teamId: "team_x1", subject: "02 审稿", assignee: "<reviewer 的 id>",
+               deps: [{ from: "<01 的 task id>", condition: "all_success" }],
+               acceptance: "review.md 含 3 条以上具体意见，引用 draft.md 原句" }
+
+成员干完各自 team_report_task({ teamId, taskId, status, summary })，
+调度器按 DAG 自动派下一波；越界动作会变成 blocked → scope 请求 → 你 approve 后单次 grant。
+
+team_status  { teamId: "team_x1", detail: "dag" }   // 看成员状态与 DAG 关键路径
+team_report  { teamId: "team_x1" }                  // 导出 Markdown 运行报告与审计表
+```
+
+面板：<http://127.0.0.1:4317/panel>（插件拉起 sidecar 后即可访问）。CLI 等价入口：
+`npx -y dsh-team-control-cli status | dag | logs | report`。
 
 ## 架构
 
