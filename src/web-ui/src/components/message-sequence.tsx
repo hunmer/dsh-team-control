@@ -9,7 +9,7 @@
  *  3. 收件成员在这条消息之后完成了一个任务（任务完成即视为对该消息的回复）。
  * 已回复的消息画成双向绿色箭头，回执文案改成「已回复」，悬停时同时展示这条消息与其回复。
  */
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Bot } from 'lucide-react';
 import { fmtClock } from '@/lib/format';
 import type { Member, Task, TeamMessage } from '@/types';
@@ -84,13 +84,41 @@ const ARROW_CLASS: Record<Tone, string> = {
   reply: 'text-emerald-500',
 };
 
+/** 把毫秒差转成「1m04s」这类等待时长文案 */
+const fmtWait = (ms: number): string => {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  if (total < 60) return `${total}s`;
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  if (minutes < 60) return `${minutes}m${String(seconds).padStart(2, '0')}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h${String(minutes % 60).padStart(2, '0')}m`;
+};
+
+/** 消息已等待多久（从发送到现在）；已有终态回执时返回 null */
+const waitingMs = (message: TeamMessage, now: number): number | null => {
+  if (message.ackedAt || message.readAt || message.status === 'acked' || message.status === 'expired') return null;
+  const sent = sentTime(message.sentAt);
+  return sent ? Math.max(0, now - sent) : null;
+};
+
 /** replyAt：已回复时用于展示回执时间（回复消息的发送时间或任务完成时间） */
-const RECEIPT_LABEL = (message: TeamMessage, replyAt?: string | null, viaTask = false): string => {
+const RECEIPT_LABEL = (message: TeamMessage, replyAt?: string | null, viaTask = false, now = Date.now()): string => {
   if (replyAt) return viaTask ? `已回复 · 任务完成 ${fmtClock(replyAt)}` : `已回复 ${fmtClock(replyAt)}`;
   if (message.ackedAt) return `acked ${fmtClock(message.ackedAt)}`;
   if (message.readAt) return `read ${fmtClock(message.readAt)}`;
+  const waited = waitingMs(message, now);
+  if (waited != null) return `已等 ${fmtWait(waited)}`;
   if (message.deliveredAt) return `delivered ${fmtClock(message.deliveredAt)}`;
   return '等待回执';
+};
+
+/** 箭头中点的胶囊：未回复时显示已等待时长，已回复显示「已回复」 */
+const middleLabel = (message: TeamMessage, paired: boolean, now: number): string => {
+  if (paired) return '已回复';
+  const waited = waitingMs(message, now);
+  if (waited != null) return `等 ${fmtWait(waited)}`;
+  return statusLabel(message, false);
 };
 
 const statusLabel = (message: TeamMessage, paired = false) => {
@@ -165,6 +193,12 @@ export function pairMessages(input: TeamMessage[], tasks: Task[] = []) {
 }
 
 export function MessageSequence({ messages, members, tasks = [], memberName, className }: MessageSequenceProps) {
+  // 未回复的消息要显示「已经等了多久」，每秒走一次
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
   const { participants, rows } = useMemo(() => {
     const ids: string[] = [];
     const seen = new Set<string>();
@@ -258,11 +292,19 @@ export function MessageSequence({ messages, members, tasks = [], memberName, cla
               // 一问一答：绿色双向箭头（这条消息自己可能既是提问也是回复）
               const paired = Boolean(reply || request || taskReply);
               const tone: Tone = paired ? 'reply' : statusTone(message);
+              // 弹窗里按「先提问、后回复」的时间顺序排，回复在前会让人误以为顺序乱了
+              const pairList = request && reply
+                ? [request, reply]
+                : request
+                  ? [request, message]
+                  : reply
+                    ? [message, reply]
+                    : [message];
+              const requestId = pairList[0].id;
               const counterpart = reply || request;
               const replyAt = reply?.sentAt ?? taskReply?.at ?? null;
               const fromName = memberName(message.from);
               const toName = memberName(message.to);
-              const pairList = request && reply ? [request, reply] : counterpart ? [message, counterpart] : [message];
 
               return (
                 <div className="flex border-b last:border-b-0" key={message.id} style={{ height: ROW }}>
@@ -333,13 +375,12 @@ export function MessageSequence({ messages, members, tasks = [], memberName, cla
                           className="pointer-events-none absolute top-1/2 left-1/2 h-5 -translate-x-1/2 -translate-y-1/2 px-1.5 text-[10px] shadow-sm"
                           variant={badgeVariant(message, paired)}
                         >
-                          {statusLabel(message, paired)}
+                          {middleLabel(message, paired, now)}
                         </Badge>
                       </PreviewCardTrigger>
-                      <PreviewCardPopup className="w-96" side="right" sideOffset={10}>
-                        <div className="space-y-3">
+                      <PreviewCardPopup className="w-96" side="right" sideOffset={10}>                        <div className="space-y-3">
                           {pairList.map((item, position) => {
-                            const isReplyItem = request ? item.id !== request.id : position === 1;
+                            const isReplyItem = item.id !== requestId;
                             // 弹窗里每条消息的回执：提问展示它的回复时间，回复自己看自己的 ack
                             const itemReplyAt = request && reply && item.id === request.id
                               ? reply.sentAt
@@ -352,9 +393,9 @@ export function MessageSequence({ messages, members, tasks = [], memberName, cla
                                   <span className="text-[10px]">· {fmtClock(item.sentAt)}</span>
                                 </div>
                                 <div className="flex items-center gap-1.5 font-medium">
-                                  <span className="truncate">{memberName(item.from)}</span>
+                                  <span className="truncate"><span className="mr-1 text-[10px] font-normal text-muted-foreground">发送</span>{memberName(item.from)}</span>
                                   <span className={cn('text-muted-foreground', paired && 'text-emerald-500')}>{paired ? '↔' : '→'}</span>
-                                  <span className="truncate">{memberName(item.to)}</span>
+                                  <span className="truncate"><span className="mr-1 text-[10px] font-normal text-muted-foreground">接收</span>{memberName(item.to)}</span>
                                 </div>
                                 <div className="flex flex-wrap items-center gap-1.5">
                                   <Badge size="sm" variant="outline">{item.kind || 'message'}</Badge>
@@ -362,7 +403,7 @@ export function MessageSequence({ messages, members, tasks = [], memberName, cla
                                 </div>
                                 <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
                                   <dt className="text-muted-foreground">回执</dt>
-                                  <dd>{RECEIPT_LABEL(item, itemReplyAt, itemViaTask)}</dd>
+                                  <dd>{RECEIPT_LABEL(item, itemReplyAt, itemViaTask, now)}</dd>
                                   <dt className="text-muted-foreground">关联</dt>
                                   <dd className="truncate font-mono">{item.correlationId || '—'}</dd>
                                   <dt className="text-muted-foreground">消息 ID</dt>
@@ -386,9 +427,9 @@ export function MessageSequence({ messages, members, tasks = [], memberName, cla
                                 <span className="text-[10px]">· 任务完成 · {fmtClock(taskReply.at)}</span>
                               </div>
                               <div className="flex items-center gap-1.5 font-medium">
-                                <span className="truncate">{memberName(taskReply.task.assignee)}</span>
+                                <span className="truncate"><span className="mr-1 text-[10px] font-normal text-muted-foreground">发送</span>{memberName(taskReply.task.assignee)}</span>
                                 <span className="text-emerald-500">↔</span>
-                                <span className="truncate">{memberName(message.from)}</span>
+                                <span className="truncate"><span className="mr-1 text-[10px] font-normal text-muted-foreground">接收</span>{memberName(message.from)}</span>
                               </div>
                               <div className="flex flex-wrap items-center gap-1.5">
                                 <Badge size="sm" variant="success">{taskReply.task.status}</Badge>
@@ -406,6 +447,24 @@ export function MessageSequence({ messages, members, tasks = [], memberName, cla
                       </PreviewCardPopup>
                     </PreviewCard>
 
+                    {/* 箭头两端标注收发方向，中间胶囊显示等待时长 */}
+                    {!self ? (
+                      <>
+                        <span
+                          className="pointer-events-none absolute z-10 -translate-x-1/2 rounded bg-card px-1 text-[9px] text-muted-foreground"
+                          style={{ left: c1, top: y + 4 }}
+                        >
+                          发送
+                        </span>
+                        <span
+                          className="pointer-events-none absolute z-10 -translate-x-1/2 rounded bg-card px-1 text-[9px] text-muted-foreground"
+                          style={{ left: c2, top: y + 4 }}
+                        >
+                          接收
+                        </span>
+                      </>
+                    ) : null}
+
                     {/* 箭头中点上方的消息摘要 */}
                     <div
                       className="pointer-events-none absolute -translate-x-1/2 text-center text-[10px] text-muted-foreground"
@@ -418,7 +477,7 @@ export function MessageSequence({ messages, members, tasks = [], memberName, cla
                           <span className="font-mono">{message.correlationId.slice(0, 8)}</span>
                         ) : null}
                       </div>
-                      <div className={cn('text-[9px]', paired && 'text-emerald-600')}>{RECEIPT_LABEL(message, replyAt, Boolean(taskReply && !reply))}</div>
+                      <div className={cn('text-[9px]', paired && 'text-emerald-600')}>{RECEIPT_LABEL(message, replyAt, Boolean(taskReply && !reply), now)}</div>
                     </div>
 
                     <span className="sr-only">

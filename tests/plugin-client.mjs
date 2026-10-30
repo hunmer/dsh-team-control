@@ -1,7 +1,7 @@
 // tests/plugin-client.mjs — 客户端插件入口自测（不启动 DSH）：
-// ① 装了 dsh-better-sidebar：只向 ctx.betterSidebar.registerTab 注册，不再注册 sidebar.footer.action
-// ② 没装：保留右侧栏 Tab + 左下角入口；better-sidebar 晚到时自动切过去并撤掉自己的入口
-// ③ 连 sidebarRight 都没有：中央停靠面板兜底
+// ① 装了 dsh-better-sidebar：额外注册一个页签；DSH 原生右侧栏入口仍始终注册
+// ② 没装：右侧栏 Tab + 左下角入口照旧；better-sidebar 晚到时只补注册，不撤原生入口
+// ③ 连 sidebarRight 服务都没有：中央停靠面板兜底
 // 用法：node tests/plugin-client.mjs
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -134,16 +134,15 @@ const check = (name, fn) => {
 };
 
 // ---------- ① 装了 better-sidebar ----------
-check('better-sidebar 已装：只注册它的页签，不注册自己的左下角入口', () => {
+check('better-sidebar 已装：额外注册页签，原生右侧栏入口仍在', () => {
   const better = makeBetter();
   const app = makeCtx({ betterSidebar: better });
   plugin.apply(app.ctx);
   assert.equal(better.tabs.length, 1, `registerTab 次数=${better.tabs.length}`);
-  // 右上角团队卡片（pill + 浮层）与侧栏入口无关，始终注册
   assert.deepEqual(
     app.entries.map((e) => e.spec.name).sort(),
-    ['conversation.session.header.utilities', 'shell.overlay'],
-    `只保留团队卡片的两条槽注册：${app.entries.map((e) => e.spec.name).join(',')}`,
+    ['conversation.session.header.utilities', 'shell.overlay', 'sidebar.footer.action', 'sidebar.right.pane.tab'],
+    `原生入口 + 团队卡片都要在：${app.entries.map((e) => e.spec.name).join(',')}`,
   );
   assert.equal(app.injectCbs.length, 0, '服务已就绪时不应再走 ctx.inject');
   assert.equal(app.effects.length, 2, '入口 + 右上角团队卡片各挂一个 ctx.effect');
@@ -200,19 +199,19 @@ check('未装 better-sidebar：右侧栏 Tab + 左下角入口回退，按钮打
   return 'fallback ok';
 });
 
-check('better-sidebar 晚到：自动注册页签并撤掉自己的左下角入口', () => {
+check('better-sidebar 晚到：补注册页签，原生右侧栏入口保留', () => {
   const opened = [];
   const app = makeCtx({
     sidebarRight: { openTab: (id) => opened.push(id) },
     sidebarRightTabs: { register: () => () => {} },
   });
   plugin.apply(app.ctx);
-  assert.ok(app.entries.some((e) => e.spec.name === 'sidebar.footer.action'), '先有回退入口');
+  assert.ok(app.entries.some((e) => e.spec.name === 'sidebar.footer.action'), '先有原生入口');
   const better = makeBetter();
   app.injectCbs[0].cb({ betterSidebar: better });
   assert.equal(better.tabs.length, 1, '晚到后注册 better-sidebar 页签');
-  assert.ok(!app.entries.some((e) => e.spec.name === 'sidebar.footer.action'), '回退入口已撤');
-  assert.ok(!app.entries.some((e) => e.spec.name === 'sidebar.right.pane.tab'), '右侧栏 Tab 已撤');
+  assert.ok(app.entries.some((e) => e.spec.name === 'sidebar.footer.action'), '原生左下角入口保留');
+  assert.ok(app.entries.some((e) => e.spec.name === 'sidebar.right.pane.tab'), '原生右侧栏 Tab 保留');
   const better2 = makeBetter();
   app.injectCbs[0].cb({ betterSidebar: better2 });
   assert.equal(better2.tabs.length, 1, '服务实例变化后在新实例上重新注册');
@@ -226,17 +225,13 @@ check('都没有：中央停靠面板兜底，且 better-sidebar 晚到时可接
   const names = app.entries.map((e) => e.spec.name).sort();
   assert.deepEqual(
     names,
-    ['conversation.session.header.utilities', 'main', 'shell.overlay', 'sidebar.panellist'],
+    ['conversation.session.header.utilities', 'main', 'shell.overlay', 'sidebar.footer.action', 'sidebar.panellist', 'sidebar.right.pane.tab'],
     names.join(','),
   );
   const better = makeBetter();
   app.injectCbs[0].cb({ betterSidebar: better });
   assert.equal(better.tabs.length, 1);
-  assert.deepEqual(
-    app.entries.map((e) => e.spec.name).sort(),
-    ['conversation.session.header.utilities', 'shell.overlay'],
-    '接管后只撤掉中央面板注册，右上角团队卡片保留',
-  );
+  assert.ok(app.entries.some((e) => e.spec.name === 'main'), '中央面板与原生入口都保留');
   return 'central fallback ok';
 });
 
