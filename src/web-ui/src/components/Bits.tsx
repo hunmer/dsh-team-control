@@ -1,17 +1,23 @@
 import { Inbox } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import type { MemberStatus } from '@/types';
 import { safeToken } from '@/lib/format';
 
-const STATUS_TONE: Record<string, 'default' | 'secondary' | 'destructive' | 'outline'> = {
-  running: 'default', idle: 'secondary', queued: 'outline', spawning: 'outline',
-  blocked: 'outline', interrupted: 'outline', inactive: 'outline',
-  failed: 'destructive', done: 'secondary',
+const STATUS_DOT: Record<string, string> = {
+  running: 'bg-success animate-pulse',
+  failed: 'bg-destructive',
+  blocked: 'bg-warning',
+  interrupted: 'bg-warning',
 };
 
 export function StatusPill({ status }: { status: MemberStatus }) {
-  return <Badge variant={STATUS_TONE[safeToken(status)] ?? 'outline'}>{status || '?'}</Badge>;
+  return (
+    <span
+      className={`inline-block size-2 shrink-0 rounded-full ${STATUS_DOT[safeToken(status)] ?? 'bg-muted-foreground/40'}`}
+      title={status || '未知状态'}
+      aria-label={status || '未知状态'}
+    />
+  );
 }
 
 /** 空态统一用 coss Empty：图标 + 一句标题，必要时补一行说明。 */

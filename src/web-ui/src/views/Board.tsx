@@ -8,21 +8,11 @@
 import { useState } from 'react';
 import { usePanel } from '@/store';
 import type { Member } from '@/types';
-import { fmtClock } from '@/lib/format';
 import { TraceWaterfall, type TraceSpan } from '@/components/trace-waterfall/trace-waterfall';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { EmptyState, MetaLine, SectionHead, StatusPill } from '@/components/Bits';
 import { ModelAvatar } from '@/components/ModelAvatar';
-
-function durText(ms: number): string {
-  if (!Number.isFinite(ms) || ms <= 0) return '0ms';
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  const s = ms / 1000;
-  if (s < 60) return `${s.toFixed(s < 10 ? 1 : 0)}s`;
-  const m = Math.floor(s / 60);
-  return `${m}m${Math.round(s - m * 60)}s`;
-}
 
 function MemberPill({ member }: { member: Member }) {
   return (
@@ -58,16 +48,6 @@ export function BoardView() {
     void refreshTrace().catch(() => undefined).finally(() => setBusy(false));
   };
 
-  const metaParts: string[] = [];
-  if (trace) {
-    metaParts.push(`${trace.stats.members} 成员`, `${trace.stats.steps} 步骤`, `${trace.stats.spans} 工具跨度`);
-    metaParts.push(`用时 ${durText(trace.stats.durationMs)}`);
-    if (trace.stats.running) metaParts.push(`运行中 ${trace.stats.running}`);
-    if (trace.stats.failed) metaParts.push(`失败 ${trace.stats.failed}`);
-    metaParts.push(trace.windowMs ? `窗口 ${WINDOWS.find(([v]) => v * 60000 === trace.windowMs)?.[1] ?? durText(trace.windowMs)}` : '全量历史');
-    metaParts.push(`asOf ${fmtClock(trace.asOf)}`);
-  }
-
   let body: React.ReactNode;
   if (!teamId) {
     body = <EmptyState title="未选择团队" />;
@@ -100,8 +80,7 @@ export function BoardView() {
   return (
     <section className="space-y-3">
       <SectionHead
-        title="成员看板 · Trace 瀑布"
-        meta={<MetaLine>{metaParts.length ? metaParts.join(' · ') : '实时工具调用与步骤时间线'}</MetaLine>}
+        title="瀑布"
         controls={
           <div className="flex items-center gap-2">
             <Select

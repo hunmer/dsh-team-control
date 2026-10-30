@@ -56,7 +56,7 @@ export interface AgentInboxProps {
 }
 
 const LANES = [
-  { id: 'needs', label: '需要你', tone: 'warning' as const },
+  { id: 'needs', label: '等待中', tone: 'warning' as const },
   { id: 'running', label: '进行中', tone: 'info' as const },
   { id: 'done', label: '已完成', tone: 'success' as const },
 ] as const;

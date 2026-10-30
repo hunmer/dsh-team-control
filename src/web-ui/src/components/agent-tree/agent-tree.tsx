@@ -616,6 +616,7 @@ export function AgentTree({
         }
         data-clickable={onSelect ? `` : void 0}
       >
+        {agent.status === `running` && <span className="ui-agtc__beam" aria-hidden="true" />}
         <div className="ui-agtc__top">
           <span className="ui-agtc__avatar" data-logo={agent.avatar ? `` : void 0}>
             {agent.avatar ?? initials(agent.name)}

@@ -69,7 +69,7 @@ export function dagToTree(
       tools: tags.map((tag) => <span key={tag} title={tag === 'CP' ? '关键路径' : tag === 'BLK' ? '被阻塞' : tag.startsWith('↑') ? `另有 ${tag.slice(1)} 个上游依赖` : '依赖就绪'}>{tag === 'CP' ? '★' : tag === 'BLK' ? '⏸' : tag.startsWith('↑') ? tag : '●'}</span>),
       status,
       // waiting 只留给「成员被策略/审批挡住」；依赖未就绪算 Queued，用 ask 文案说明原因。
-      ask: status === 'waiting' ? '需要你处理（策略 / 审批）' : node.blocked ? '等待上游依赖完成…' : undefined,
+      ask: status === 'waiting' ? '等待中（策略 / 审批）' : node.blocked ? '等待上游依赖完成…' : undefined,
       children: visited.has(taskId)
         ? []
         : (visited.add(taskId), (downstreamList.get(taskId) ?? []).map(toAgent)),
