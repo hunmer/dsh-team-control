@@ -586,9 +586,13 @@ async function assertRouteEnabled(s, ctx, provider, model) {
   throw new Error(`模型路由未启用：${[provider, model].filter(Boolean).join('/')}。可用（前 8 条）：${sample}。完整列表见 team_models，或在面板「模型路由」页启用。`);
 }
 
-function rememberMember(sessionId, teamId, memberId) {
+function rememberMember(sessionId, teamId, memberId, cwd) {
   if (sessionId == null) return;
-  sessionMember.set(String(sessionId), { teamId: String(teamId), memberId: String(memberId) });
+  const key = String(sessionId);
+  const prev = sessionMember.get(key);
+  // 会话 cwd 只有 spawn 时知道（= team.workspace）；派发路径会重复登记同一个会话，
+  // 这里不能把它冲成空，否则成员用相对路径写文件时 diff 找不到落盘位置。
+  sessionMember.set(key, { teamId: String(teamId), memberId: String(memberId), cwd: cwd || prev?.cwd || '' });
 }
 
 async function runtimeOfTeam(s, teamId) {
@@ -1024,7 +1028,7 @@ function buildTools(s, ctx) {
           contextMode: context,
         },
       });
-      rememberMember(sessionId, args.teamId, registered.member.id);
+      rememberMember(sessionId, args.teamId, registered.member.id, team?.workspace);
       leadByTeam.set(args.teamId, caller);
       return {
         member: registered.member,
@@ -1568,9 +1572,10 @@ async function reportFileChange(s, ctx, exec, next) {
   const args = exec?.arguments && typeof exec.arguments === 'object' ? exec.arguments : null;
   const raw = args ? targetFile(name, args) : '';
   if (!raw) return next();
-  // 成员会话的当前目录：Agent 上没有 cwd 字段，得问 workingDirectory 服务（子会话启动时被设成
-  // team.workspace）。拿不到才退回宿主进程 cwd，否则 diff 里的路径会变成相对宿主 cwd 的怪形式。
+  // 成员会话的当前目录：spawn 时设成 team.workspace，这里优先用登记值；Agent 上没有 cwd 字段，
+  // 再问 workingDirectory 服务；都拿不到才退回宿主进程 cwd（此时相对路径多半解析不到，diff 会被跳过）。
   let agentCwd = typeof exec?.agent?.cwd === 'string' ? exec.agent.cwd : '';
+  if (!agentCwd && binding.cwd) agentCwd = binding.cwd;
   if (!agentCwd && exec?.agent?.session && typeof ctx?.workingDirectory?.get === 'function') {
     try { agentCwd = ctx.workingDirectory.get(exec.agent.session) || ''; } catch { /* 忽略 */ }
   }

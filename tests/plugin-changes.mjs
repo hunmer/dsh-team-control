@@ -163,6 +163,25 @@ const main = async () => {
     assert.equal(viaWd.kind, 'add', '成员会话目录下的新文件是 add');
     assert(viaWd.diff.startsWith('--- a/notes/from-session.md'), '路径相对 workspace：' + viaWd.diff.split('\n')[0]);
 
+    // ⑧ spawn 时记下的团队工作目录兜底：workingDirectory 拿不到、Agent 上也没有 cwd 时，
+    //    相对路径仍按 team.workspace 解析；否则成员用相对路径写文件会静默丢改动（审阅页漏条）。
+    ctx.wsBySession.clear();
+    const bob = (await tool('team_spawn').execute({ teamId: team.id, name: 'bob', role: 'coder', prompt: '你是 bob' }, lead)).member;
+    await execChange()(
+      {
+        name: 'write',
+        arguments: { file_path: 'notes/rel.md', content: 'rel\n' },
+        agent: { id: bob.agentSessionId, session: { id: bob.agentSessionId } },
+      },
+      async () => { fs.writeFileSync(path.join(tmp.ws, 'notes', 'rel.md'), 'rel\n'); return { content: [] }; },
+    );
+    const viaSpawnCwd = await waitFor('spawn 记录的 cwd 兜底解析相对路径', async () => {
+      const list = await api.get(`/api/changes?team=${team.id}`);
+      return (list.items || []).find((c) => c.path === 'notes/rel.md') || null;
+    }, 5000);
+    assert.equal(viaSpawnCwd.kind, 'add', '没有 workingDirectory 时也能按团队工作目录解析');
+    assert.equal(viaSpawnCwd.memberId, bob.id, '归属到 bob');
+
     console.log('\nplugin-changes 全部通过');
   } finally {
     await sidecar.close();
