@@ -144,7 +144,8 @@ check('better-sidebar 已装：额外注册页签，原生右侧栏入口仍在'
     ['conversation.session.header.utilities', 'shell.overlay', 'sidebar.right.pane.tab'],
     `原生入口 + 团队卡片都要在：${app.entries.map((e) => e.spec.name).join(',')}`,
   );
-  assert.equal(app.injectCbs.length, 0, '服务已就绪时不应再走 ctx.inject');
+  assert.equal(app.injectCbs.length, 1, '只等 sidebarRightTabs（本用例没给这个服务）');
+  assert.deepEqual(app.injectCbs[0].deps, ['sidebarRightTabs']);
   assert.equal(app.effects.length, 2, '入口 + 右上角团队卡片各挂一个 ctx.effect');
   assert.ok(app.effects.every((dispose) => typeof dispose === 'function'), '每个 effect 都要返回可调用的清理函数');
   app.effects.forEach((dispose) => dispose());
@@ -220,21 +221,28 @@ check('better-sidebar 晚到：补注册页签，原生右侧栏入口保留', (
   return 'switch ok';
 });
 
-// ---------- ③ 连 sidebarRight 都没有 ----------
-check('都没有：中央停靠面板兜底，且 better-sidebar 晚到时可接管', () => {
+// ---------- ③ 两个服务都没就绪（冷启动） ----------
+check('服务晚到：sidebarRightTabs 由 ctx.inject 等待，就绪后补注册 guide 入口', () => {
   const app = makeCtx({});
   plugin.apply(app.ctx);
   const names = app.entries.map((e) => e.spec.name).sort();
   assert.deepEqual(
     names,
-    ['conversation.session.header.utilities', 'main', 'shell.overlay', 'sidebar.panellist', 'sidebar.right.pane.tab'],
+    ['conversation.session.header.utilities', 'shell.overlay', 'sidebar.right.pane.tab'],
     names.join(','),
   );
+  assert.ok(app.injectCbs.some((c) => c.deps.includes('sidebarRightTabs')), '等待 sidebarRightTabs');
+  // 服务晚到 → 注册 tab 类型与 guide 入口
+  const registered = [];
+  const wait = app.injectCbs.find((c) => c.deps.includes('sidebarRightTabs'));
+  wait.cb({ sidebarRightTabs: { register: (d) => { registered.push(d); return () => {}; } } });
+  assert.equal(registered.length, 1, '晚到后注册一次');
+  assert.equal(registered[0].guide.length, 1, 'guide 入口随服务就绪一起注册');
   const better = makeBetter();
-  app.injectCbs[0].cb({ betterSidebar: better });
-  assert.equal(better.tabs.length, 1);
-  assert.ok(app.entries.some((e) => e.spec.name === 'main'), '中央面板与原生入口都保留');
-  return 'central fallback ok';
+  const waitBetter = app.injectCbs.find((c) => c.deps.includes('betterSidebar'));
+  waitBetter.cb({ betterSidebar: better });
+  assert.equal(better.tabs.length, 1, 'better-sidebar 晚到时仍可接管');
+  return 'late services ok';
 });
 
 check('cleanup 幂等（重复调用不抛错）', () => {

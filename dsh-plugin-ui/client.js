@@ -1142,30 +1142,44 @@ window.__ModuleLoader__.load({
 
           const sidebarRight = getService('sidebarRight');
           const sidebarRightTabs = getService('sidebarRightTabs');
-          // 1) DSH 原生右侧栏入口：始终注入（不依赖 better-sidebar 是否安装）。
-          // guide 让它出现在右侧栏「开始」页的入口卡片里，不占左侧栏底部。
-          if (sidebarRightTabs && typeof sidebarRightTabs.register === 'function') {
-            disposers.push(sidebarRightTabs.register({
-              id: 'dsh-team',
-              kind: 'dsh-team',
-              priority: 'extension',
-              title: () => t('side_nav'),
-              guide: [{
+          // 1) DSH 原生右侧栏入口：guide 让它出现在右侧栏「开始」页，不占左侧栏底部。
+          //    sidebarRightTabs 可能晚于本插件挂载（冷启动时 apply 顺序不保证），
+          //    直接 getService 会拿到 undefined 而永久跳过注册 —— 用 ctx.inject 等它就绪。
+          const registerTabType = (tabs) => {
+            if (!tabs || typeof tabs.register !== 'function') return;
+            try {
+              disposers.push(tabs.register({
                 id: 'dsh-team',
-                order: 40,
+                kind: 'dsh-team',
+                priority: 'extension',
                 title: () => t('side_nav'),
-                description: () => t('guide_desc'),
-                icon: () => h(TeamIcon, { size: 22 }),
-              }],
-            }));
+                guide: [{
+                  id: 'dsh-team',
+                  order: 40,
+                  title: () => t('side_nav'),
+                  description: () => t('guide_desc'),
+                  icon: () => h(TeamIcon, { size: 22 }),
+                }],
+              }));
+            } catch (e) {
+              console.warn('[dsh-team] sidebarRightTabs.register failed', e);
+            }
+          };
+          if (sidebarRightTabs) registerTabType(sidebarRightTabs);
+          else if (typeof ctx.inject === 'function') {
+            ctx.inject(['sidebarRightTabs'], (child) => {
+              registerTabType(child.sidebarRightTabs);
+            });
           }
           disposers.push(ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
             name: 'sidebar.right.pane.tab',
             key: 'dsh-team',
           }, () => h(TeamView, { t, compact: true, getService }))));
 
-          // 2) 既没有右侧栏页签服务、也没有 better-sidebar：中央停靠面板兜底（与「插件」页同级）
-          if (!sidebarRightTabs && !getService('betterSidebar')) {
+          // 2) 老宿主（没有 ctx.inject，服务只能同步取）且既无右侧栏页签也无 better-sidebar：
+          //    中央停靠面板兜底（与「插件」页同级）。有 ctx.inject 时不再走这里 —— 冷启动
+          //    期服务常常还没挂上，提前判断会多注一份面板入口，等 inject 即可。
+          if (typeof ctx.inject !== 'function' && !sidebarRightTabs && !getService('betterSidebar')) {
             disposers.push(ctx.slots.inject('main', () => ctx.slots.register({
               name: 'main',
               key: 'dsh-team',
