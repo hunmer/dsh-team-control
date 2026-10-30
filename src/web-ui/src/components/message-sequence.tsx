@@ -17,6 +17,7 @@ import { Badge } from '@/components/ui/badge';
 import { modelAvatar } from '@/components/ModelAvatar';
 import { PreviewCard, PreviewCardPopup, PreviewCardTrigger } from '@/components/ui/preview-card';
 import { cn } from '@/lib/utils';
+import { Markdown } from '@/components/markdown';
 
 const LANE = 220;
 const GUTTER = 72;
@@ -103,8 +104,10 @@ const waitingMs = (message: TeamMessage, now: number): number | null => {
 };
 
 /** replyAt：已回复时用于展示回执时间（回复消息的发送时间或任务完成时间） */
-const RECEIPT_LABEL = (message: TeamMessage, replyAt?: string | null, viaTask = false, now = Date.now()): string => {
+const RECEIPT_LABEL = (message: TeamMessage, replyAt?: string | null, viaTask = false, now = Date.now(), paired = false): string => {
   if (replyAt) return viaTask ? `已回复 · 任务完成 ${fmtClock(replyAt)}` : `已回复 ${fmtClock(replyAt)}`;
+  // 一问一答已经闭环（这一行自己就是回复）时，不要再显示「已等 xx」
+  if (paired) return '已回复';
   if (message.ackedAt) return `acked ${fmtClock(message.ackedAt)}`;
   if (message.readAt) return `read ${fmtClock(message.readAt)}`;
   const waited = waitingMs(message, now);
@@ -142,6 +145,15 @@ const sentTime = (value?: string | null): number => {
   return Number.isNaN(t) ? 0 : t;
 };
 
+/** kind 本身就是「回应」语义的消息类型：这类消息不可能是提问 */
+const REPLY_KINDS = new Set([
+  'response', 'reply', 'answer', 'ack', 'acked', 'acknowledge', 'acknowledged',
+  'receipt', 'confirm', 'confirmed', 'confirmation', 'result', 'report',
+]);
+
+const isReplyKind = (message?: TeamMessage | null): boolean =>
+  Boolean(message && REPLY_KINDS.has(String(message.kind || '').trim().toLowerCase()));
+
 /**
  * 把消息两两配对：一条 A→B 的消息，与它之后最早的一条 B→A 消息视为一问一答。
  * 同 correlationId 优先（强关联）；一条消息只能属于一个消息对。
@@ -175,8 +187,15 @@ export function pairMessages(input: TeamMessage[], tasks: Task[] = []) {
       : undefined;
     const reply = exact || candidates[0];
     if (reply) {
-      replyOf.set(message.id, reply);
-      requestOf.set(reply.id, message);
+      // 角色不只看时间：kind 明确是「回应」的那条永远是回复。
+      // 否则「已就绪，等待派发」这类先发的通知会被当成提问，把真正的「任务派发」排到下面。
+      if (isReplyKind(message) && !isReplyKind(reply)) {
+        requestOf.set(message.id, reply);
+        replyOf.set(reply.id, message);
+      } else {
+        replyOf.set(message.id, reply);
+        requestOf.set(reply.id, message);
+      }
       used.add(message.id);
       used.add(reply.id);
       continue;
@@ -292,7 +311,7 @@ export function MessageSequence({ messages, members, tasks = [], memberName, cla
               // 一问一答：绿色双向箭头（这条消息自己可能既是提问也是回复）
               const paired = Boolean(reply || request || taskReply);
               const tone: Tone = paired ? 'reply' : statusTone(message);
-              // 弹窗里按「先提问、后回复」的时间顺序排，回复在前会让人误以为顺序乱了
+              // 弹窗里按「先提问、后回复」排：提问块固定在前，回复在后
               const pairList = request && reply
                 ? [request, reply]
                 : request
@@ -300,9 +319,13 @@ export function MessageSequence({ messages, members, tasks = [], memberName, cla
                   : reply
                     ? [message, reply]
                     : [message];
-              const requestId = pairList[0].id;
+              // 这一对里当作「提问」的那条：通常先到；kind 是回应语义时会被换位成后到的那条
+              const pairRequest = request ?? (reply ? message : null);
+              // 这一对的回复发生时间；本行自己就是回复时留空（不再显示比提问更早的「已回复 <时间>」）
+              const pairReplyAt = reply?.sentAt ?? null;
+              // 本行消息自己的回复时间（本行是回复时为空，回执就看它自己的 ack 状态）
+              const replyAt = reply?.sentAt ?? (request ? null : taskReply?.at ?? null);
               const counterpart = reply || request;
-              const replyAt = reply?.sentAt ?? taskReply?.at ?? null;
               const fromName = memberName(message.from);
               const toName = memberName(message.to);
 
@@ -378,13 +401,18 @@ export function MessageSequence({ messages, members, tasks = [], memberName, cla
                           {middleLabel(message, paired, now)}
                         </Badge>
                       </PreviewCardTrigger>
-                      <PreviewCardPopup className="w-96" side="right" sideOffset={10}>                        <div className="space-y-3">
+                      {/* 高度/宽度都夹在视口内并在卡片内部滚动，否则长消息会把悬浮层顶出页面 */}
+                      <PreviewCardPopup
+                        align="center"
+                        className="max-h-[calc(100vh-2rem)] w-96 max-w-[calc(100vw-2rem)] overflow-y-auto overscroll-contain"
+                        side="right"
+                        sideOffset={10}
+                      >
+                        <div className="space-y-3">
                           {pairList.map((item, position) => {
-                            const isReplyItem = item.id !== requestId;
                             // 弹窗里每条消息的回执：提问展示它的回复时间，回复自己看自己的 ack
-                            const itemReplyAt = request && reply && item.id === request.id
-                              ? reply.sentAt
-                              : item.id === message.id ? replyAt : null;
+                            const isReplyItem = Boolean(pairRequest) && item.id !== pairRequest!.id;
+                            const itemReplyAt = pairRequest?.id === item.id ? pairReplyAt : null;
                             const itemViaTask = item.id === message.id && Boolean(taskReply && !reply);
                             return (
                               <div className={cn('space-y-2', position > 0 && 'border-t pt-3')} key={item.id}>
@@ -403,7 +431,7 @@ export function MessageSequence({ messages, members, tasks = [], memberName, cla
                                 </div>
                                 <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
                                   <dt className="text-muted-foreground">回执</dt>
-                                  <dd>{RECEIPT_LABEL(item, itemReplyAt, itemViaTask, now)}</dd>
+                                  <dd>{RECEIPT_LABEL(item, itemReplyAt, itemViaTask, now, paired)}</dd>
                                   <dt className="text-muted-foreground">关联</dt>
                                   <dd className="truncate font-mono">{item.correlationId || '—'}</dd>
                                   <dt className="text-muted-foreground">消息 ID</dt>
@@ -412,9 +440,7 @@ export function MessageSequence({ messages, members, tasks = [], memberName, cla
                                 {messageText(item) && (
                                   <div className="space-y-1">
                                     <div className="text-xs text-muted-foreground">消息内容</div>
-                                    <p className="max-h-40 overflow-auto rounded-md bg-muted/40 p-2 text-xs whitespace-pre-wrap break-words">
-                                      {messageText(item)}
-                                    </p>
+                                    <Markdown className="max-h-40 overflow-auto rounded-md bg-muted/40 p-2" text={messageText(item)} />
                                   </div>
                                 )}
                               </div>
@@ -477,7 +503,7 @@ export function MessageSequence({ messages, members, tasks = [], memberName, cla
                           <span className="font-mono">{message.correlationId.slice(0, 8)}</span>
                         ) : null}
                       </div>
-                      <div className={cn('text-[9px]', paired && 'text-emerald-600')}>{RECEIPT_LABEL(message, replyAt, Boolean(taskReply && !reply), now)}</div>
+                      <div className={cn('text-[9px]', paired && 'text-emerald-600')}>{RECEIPT_LABEL(message, replyAt, Boolean(taskReply && !reply), now, paired)}</div>
                     </div>
 
                     <span className="sr-only">

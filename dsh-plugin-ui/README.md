@@ -33,18 +33,18 @@ iframe 走同源代理：`/dsh-team-api/panel?api=/dsh-team-api&embed=1`，
 面板据此把所有请求前缀到 `/dsh-team-api/api/**`、SSE 到 `/dsh-team-api/api/events`，
 `panel.html` 里的绝对资源 `/panel/assets/*` 由 Host 的另一条 `/panel` 前缀路由转发。
 
-## 会话右上角：团队卡片（affectui AgentFindings 移植）
+## 会话输入框：团队卡片（affectui AgentFindings 移植）
 
-除了左侧入口，本插件还会在对话页右上角挂一个**团队卡片入口**。它只认「本会话派出去的团队成员」
+除了左侧入口，本插件还会在会话输入框「权限控件右侧」挂一个**团队卡片入口**。它只认「本会话派出去的团队成员」
 （`sessions` 里 `parentId = 本会话` 且 `origin = 'subagent'` 的会话），普通子代理会话不会出现。
-没有团队时组件返回 `null`，不会在 header 留空白。
+没有团队时组件返回 `null`，不会在输入框工具行留空白。
 
 两个 slot 各管一半：
 
 | slot | id / order | 内容 |
 |---|---|---|
-| `conversation.session.header.utilities` | `dsh-team:members` / 5 | 胶囊按钮：团队名 + 「运行中 n/m」+ 严重/警告计数 |
-| `shell.overlay`（frame-wide 浮层） | `dsh-team:findings` / 30 | 展开后的 `AgentFindings` 卡片（成员进度 + 最新发现） |
+| `conversation.input.left`（输入框权限控件右侧） | `dsh-team:members` / 5 | 胶囊按钮：团队名 + 「运行中 n/m」+ 严重/警告计数 |
+| `shell.overlay`（frame-wide 浮层） | `dsh-team:findings` / 30 | 展开后的 `AgentFindings` 卡片（成员进度 + 最新发现，按钮下方放不下时翻到按钮上方） |
 
 - 有成员在跑时首次自动展开；用户点过胶囊或关闭按钮后不再自动改动（`pinned`），
   否则 4s 一次的轮询会把用户手动展开的卡片又收回去。
@@ -84,7 +84,7 @@ ctx.sidebarRight.openResource('dsh-resource://subagentchat/session/<childSession
 
 这与 `dsh-better-sidebar` 的「侧边对话」是同一套机制：better-sidebar 打开子代理对话时也是
 `openResource(subagentChatAddress(address), { kind: 'subagentchat' })`，只是它的入口在它自己的
-侧栏里；本插件把入口搬到了**当前对话的右上角**，并只筛团队成员。
+侧栏里；本插件把入口搬到了**当前对话输入框的权限控件右侧**，并只筛团队成员。
 
 ## 数据路径（为什么需要 Host 代理）
 
@@ -116,7 +116,7 @@ dsh plugin --profile web remove dsh-team-control-ui
 ```bash
 node dsh-plugin-ui/test-host.mjs    # Host half：路由注册 + 同源代理 + SSE 透传 + 503 错误路径
 node tests/plugin-client.mjs        # Client half：better-sidebar 页签 / 回退入口 / 晚到切换（假宿主）
-node tests/ui-member-strip.mjs      # 右上角团队卡片：子会话筛选 / 计数 / 浮层卡片 / 轮询乱序保护
+node tests/ui-member-strip.mjs      # 输入框团队卡片：子会话筛选 / 计数 / 浮层卡片 / 轮询乱序保护
 ```
 
 ## 已知限制

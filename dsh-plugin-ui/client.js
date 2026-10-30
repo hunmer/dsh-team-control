@@ -26,6 +26,8 @@ window.__ModuleLoader__.load({
         card_open: '展开团队卡片',
         card_close: '收起团队卡片',
         card_title: '团队校验',
+        sev_critical: '严重',
+        sev_warning: '警告',
         card_all_done: '全部检查完成',
         card_stopped: '已停止',
         card_plan_aria: '成员计划',
@@ -55,6 +57,8 @@ window.__ModuleLoader__.load({
         card_open: 'Show team card',
         card_close: 'Hide team card',
         card_title: 'Team verification',
+        sev_critical: 'critical',
+        sev_warning: 'warning',
         card_all_done: 'All checks done',
         card_stopped: 'Stopped',
         card_plan_aria: 'Member plan',
@@ -100,17 +104,15 @@ window.__ModuleLoader__.load({
 .dsht-chip.is-idle { color:var(--dsw-alias-label-secondary); }
 @keyframes dsht-pulse { 0%,100% { opacity:1 } 50% { opacity:.45 } }
 
-/* 会话右上角：团队卡片入口（affectui AgentFindings 移植） */
-.dsht-afc-pill { display:inline-flex; align-items:center; gap:8px; height:26px; padding:0 10px; border:1px solid var(--dsw-alias-border-l1); border-radius:999px; background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-primary); font-size:12px; line-height:16px; cursor:pointer; white-space:nowrap; }
+/* 输入框权限控件右侧：团队卡片入口（affectui AgentFindings 移植） */
+.dsht-afc-pill { display:inline-flex; align-items:center; gap:6px; height:24px; padding:0 8px; border:1px solid var(--dsw-alias-border-l1); border-radius:999px; background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-primary); font-size:12px; line-height:16px; font-variant-numeric:tabular-nums; cursor:pointer; white-space:nowrap; }
 .dsht-afc-pill:hover { border-color:var(--dsw-alias-brand-primary); }
 .dsht-afc-pill[aria-expanded="true"] { border-color:var(--dsw-alias-brand-primary); color:var(--dsw-alias-brand-primary); }
 .dsht-afc-pill-mark { display:inline-flex; flex:none; color:var(--dsw-alias-brand-primary); }
-.dsht-afc-pill-name { max-width:132px; overflow:hidden; text-overflow:ellipsis; font-weight:600; }
-.dsht-afc-pill-run { color:var(--dsw-alias-label-secondary); font-variant-numeric:tabular-nums; }
-.dsht-afc-pill-sev { display:inline-flex; align-items:center; gap:4px; font-variant-numeric:tabular-nums; }
+.dsht-afc-pill-run { color:var(--dsw-alias-label-secondary); }
+.dsht-afc-pill-sev { display:inline-flex; align-items:center; gap:3px; }
 .dsht-afc-pill-sev[data-severity="critical"] { color:var(--dsw-alias-state-error-primary); }
 .dsht-afc-pill-sev[data-severity="warning"] { color:var(--dsw-alias-state-warn-primary); }
-.dsht-afc-pill-sev[data-zero] { opacity:.4; }
 .dsht-afc-pill-dot { width:6px; height:6px; border-radius:50%; background:currentColor; }
 /* 快照这一轮没取到（sidecar 抖动）时仍保留入口，只做轻微降权，避免卡片闪一下就消失 */
 .dsht-afc-pill[data-dsh-team-stale] { border-style:dashed; }
@@ -859,7 +861,7 @@ window.__ModuleLoader__.load({
         }))));
     }
 
-    /** 会话右上角入口：本会话的子会话（团队成员）→ 团队卡片开关。 */
+    /** 输入框权限控件右侧入口：本会话的子会话（团队成员）→ 团队卡片开关。 */
     function memberStrip(t, getService) {
       return function TeamCardEntry(props) {
         const sessionId = (props && props.sessionId) || '';
@@ -943,41 +945,84 @@ window.__ModuleLoader__.load({
         const warning = card.findings.filter((finding) => finding.severity === 'warning').length;
         const open = !!card.open;
         const name = card.teamName || t('members_title');
+        const summary = t('running_of', { n: card.running, m: card.memberCount });
+        // 精简：图标 + n/m + 非零的严重/警告计数；团队名只进 tooltip，不占工具行宽度。
         return h('button', {
           type: 'button',
           className: 'dsht-afc-pill',
           'data-dsh-team-pill': card.teamId || 'pending',
           'data-dsh-team-stale': card.error ? '' : undefined,
           'aria-expanded': open ? 'true' : 'false',
-          title: card.error || t(open ? 'card_close' : 'card_open'),
+          title: card.error || (name + ' · ' + summary + ' · ' + t(open ? 'card_close' : 'card_open')),
+          'aria-label': name + ' · ' + summary,
           onClick: () => cardStore.toggle(sessionId),
         },
-        h('span', { className: 'dsht-afc-pill-mark' }, h(Spark, { size: 13 })),
-        h('span', { className: 'dsht-afc-pill-name' }, name),
-        h('span', { className: 'dsht-afc-pill-run' }, t('running_of', { n: card.running, m: card.memberCount })),
-        h('span', { className: 'dsht-afc-pill-sev', 'data-severity': 'critical', 'data-zero': critical ? undefined : '' },
-          h('span', { className: 'dsht-afc-pill-dot' }), critical),
-        h('span', { className: 'dsht-afc-pill-sev', 'data-severity': 'warning', 'data-zero': warning ? undefined : '' },
-          h('span', { className: 'dsht-afc-pill-dot' }), warning));
+        h('span', { className: 'dsht-afc-pill-mark' }, h(Spark, { size: 12 })),
+        h('span', { className: 'dsht-afc-pill-run' }, (card.running || 0) + '/' + (card.memberCount || 0)),
+        critical
+          ? h('span', { className: 'dsht-afc-pill-sev', 'data-severity': 'critical', title: t('sev_critical') },
+            h('span', { className: 'dsht-afc-pill-dot' }), critical)
+          : null,
+        warning
+          ? h('span', { className: 'dsht-afc-pill-sev', 'data-severity': 'warning', title: t('sev_warning') },
+            h('span', { className: 'dsht-afc-pill-dot' }), warning)
+          : null);
       };
     }
 
     /**
-     * 量一下胶囊按钮的位置：卡片要贴着按钮正下方弹出（而不是钉在窗口右上角）。
-     * 胶囊在 header 的 utilities 槽里，卡片在 shell.overlay 全局浮层里，两者不在同一棵
-     * DOM 子树，所以只能按 data 属性找按钮再取 rect；取不到时返回 null，退回 CSS 兜底位置。
+     * 量一下胶囊按钮的位置：卡片要贴着按钮弹出（而不是钉在窗口右上角）。
+     * 胶囊在输入框工具行、卡片在 shell.overlay 全局浮层，两者不在同一棵 DOM 子树，
+     * 所以只能按 data 属性找按钮再取 rect；取不到时返回 null，退回 CSS 兜底位置。
+     * 输入框在页面底部：下方放不下卡片时翻到按钮上方弹出。
      */
-    function measureDockAnchor(teamId) {
+    const DOCK_WIDTH = 368;
+
+    // 打开控制台调试开关可看测量过程：window.__DSH_TEAM_DEBUG = true
+    function debugOn() {
+      try { return typeof window !== 'undefined' && !!window && window.__DSH_TEAM_DEBUG === true; } catch { return false; }
+    }
+
+    /** 按 data 属性找胶囊：团队 id 可能带引号/反斜杠，选择器失败就退回全量扫描。 */
+    function findPillNode(teamId) {
       if (typeof document === 'undefined' || !document || typeof document.querySelector !== 'function') return null;
-      const node = document.querySelector('[data-dsh-team-pill="' + String(teamId || '') + '"]');
+      const id = String(teamId || '');
+      try {
+        const exact = document.querySelector('[data-dsh-team-pill="' + id.replace(/["\\]/g, '\\$&') + '"]');
+        if (exact) return exact;
+      } catch { /* 非法选择器：走下面扫描 */ }
+      if (typeof document.querySelectorAll !== 'function') return null;
+      try {
+        for (const node of document.querySelectorAll('[data-dsh-team-pill]')) {
+          if (node && typeof node.getAttribute === 'function' && node.getAttribute('data-dsh-team-pill') === id) return node;
+        }
+      } catch { /* ignore */ }
+      return null;
+    }
+
+    function measureDockAnchor(teamId) {
+      const node = findPillNode(teamId);
       if (!node || typeof node.getBoundingClientRect !== 'function') return null;
       const rect = node.getBoundingClientRect();
       if (!rect || !rect.width) return null;
       const viewportWidth = (typeof window !== 'undefined' && window && window.innerWidth) || 0;
       const viewportHeight = (typeof window !== 'undefined' && window && window.innerHeight) || 0;
+      // 横向：默认右对齐按钮；按钮离左边太近就改左对齐，避免卡片被推出屏幕左侧。
+      const horizontal = rect.right < DOCK_WIDTH + 24
+        ? { left: Math.max(12, Math.round(rect.left)) }
+        : { right: Math.max(12, Math.round(viewportWidth - rect.right)) };
+      if (viewportHeight && viewportHeight - rect.bottom < 300) {
+        return {
+          placement: 'above',
+          ...horizontal,
+          bottom: Math.max(12, Math.round(viewportHeight - rect.top + 8)),
+          maxHeight: Math.max(180, Math.round(rect.top - 24)),
+        };
+      }
       return {
+        placement: 'below',
+        ...horizontal,
         top: Math.round(rect.bottom + 8),
-        right: Math.max(12, Math.round(viewportWidth - rect.right)),
         maxHeight: viewportHeight ? Math.max(180, Math.round(viewportHeight - rect.bottom - 24)) : null,
       };
     }
@@ -988,24 +1033,27 @@ window.__ModuleLoader__.load({
         const active = useActiveCard();
         const card = active.card;
         const teamId = card && card.teamId ? card.teamId : '';
-        // position:fixed 贴着胶囊按钮：按钮在 header 槽、卡片在 overlay 槽，只能按按钮 rect 定位。
+        // position:fixed 贴着胶囊按钮：按钮在输入框槽、卡片在 overlay 槽，只能按按钮 rect 定位。
         const [anchor, setAnchor] = React.useState(() => (teamId ? measureDockAnchor(teamId) : null));
         React.useEffect(() => {
           if (!teamId) return () => {};
           // scroll 会高频触发：位置没变就复用旧对象，避免无意义重渲染
+          const key = (a) => (a ? [a.placement, a.top, a.bottom, a.left, a.right, a.maxHeight].join('|') : '');
           const sync = () => {
             const next = measureDockAnchor(teamId);
-            setAnchor((prev) => (
-              prev && next && prev.top === next.top && prev.right === next.right && prev.maxHeight === next.maxHeight
-                ? prev
-                : next
-            ));
+            if (debugOn()) console.debug('[dsh-team] dock anchor', teamId, next);
+            setAnchor((prev) => (key(prev) === key(next) ? prev : next));
           };
           sync();
-          if (typeof window === 'undefined' || !window || typeof window.addEventListener !== 'function') return () => {};
+          // 卡片和胶囊在不同槽位挂载，首帧可能还量不到胶囊：轮询兜底，量到就贴上去
+          const timer = typeof setInterval === 'function' ? setInterval(sync, 300) : null;
+          if (typeof window === 'undefined' || !window || typeof window.addEventListener !== 'function') {
+            return () => { if (timer) clearInterval(timer); };
+          }
           window.addEventListener('resize', sync);
           window.addEventListener('scroll', sync, true);
           return () => {
+            if (timer) clearInterval(timer);
             window.removeEventListener('resize', sync);
             window.removeEventListener('scroll', sync, true);
           };
@@ -1017,7 +1065,14 @@ window.__ModuleLoader__.load({
           }
         };
         const dockStyle = anchor
-          ? { top: anchor.top + 'px', right: anchor.right + 'px', '--dsht-dock-max': anchor.maxHeight ? anchor.maxHeight + 'px' : undefined }
+          ? {
+            // 只给一边，另一边显式 auto：否则 CSS 兜底的 top:56px / right:20px 会跟内联值打架
+            top: anchor.top === undefined ? 'auto' : anchor.top + 'px',
+            bottom: anchor.bottom === undefined ? 'auto' : anchor.bottom + 'px',
+            left: anchor.left === undefined ? 'auto' : anchor.left + 'px',
+            right: anchor.right === undefined ? 'auto' : anchor.right + 'px',
+            '--dsht-dock-max': anchor.maxHeight ? anchor.maxHeight + 'px' : undefined,
+          }
           : undefined;
         return h('div', { className: 'dsht-afc-dock', 'data-dsh-team-card': card.teamId, style: dockStyle },
           h('div', { className: 'dsht-afc-dock-bar' },
@@ -1199,14 +1254,16 @@ window.__ModuleLoader__.load({
           return cleanup;
         }, 'dsh-team-ui.entry()');
 
-        // 会话右上角：本会话团队卡片入口（pill）+ shell.overlay 浮层卡片。
+        // 会话输入框：本会话团队卡片入口（pill）+ shell.overlay 浮层卡片。
+        // 挂在 conversation.input.left —— 它渲染在 permission/plan 控件组的下一个位置，
+        // 也就是输入框权限控件右侧的同一工具行（permission 是 single 槽，不能再收第二个入口）。
         // 独立 effect：入口在 better-sidebar / 原生侧栏之间切换时，这条始终在位。
         ctx.effect(() => {
           const slots = ctx.slots;
           if (!slots || typeof slots.inject !== 'function') return () => {};
           const disposers = [];
-          disposers.push(slots.inject('conversation.session.header.utilities', () => slots.register({
-            name: 'conversation.session.header.utilities',
+          disposers.push(slots.inject('conversation.input.left', () => slots.register({
+            name: 'conversation.input.left',
             id: 'dsh-team:members',
             order: 5,
             label: () => T('card_open'),
