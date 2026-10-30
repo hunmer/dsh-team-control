@@ -1,4 +1,4 @@
-# @local/dsh-team-ui
+# dsh-team-control-ui
 
 在 **DSH Web UI** 里查看 dsh-team 编排现场的 Client UI 插件（Host half + Client half）。
 
@@ -105,7 +105,7 @@ ctx.sidebarRight.openResource('dsh-resource://subagentchat/session/<childSession
 
 ```text
 plugin_manager(action: "install_bundle", target: "C:\\...\\agent-team-plugin\\dsh-plugin-ui")
-plugin_manager(action: "remove_bundle", target: "@local/dsh-team-ui")
+dsh plugin --profile web remove dsh-team-control-ui
 ```
 
 配置（`cordis.patch.yml`）：`baseUrl`、`home`、`autoStart`、`startTimeoutMs`。
