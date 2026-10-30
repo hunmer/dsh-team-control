@@ -22,3 +22,9 @@ src/web/assets/
 # 端到端建团测试的产物目录（team_create 的 workspace，如 team-e2e-1030/）
 # 约定：测试产物一律落在 team-e2e-*/ 下，不进版本库
 team-e2e-*/
+# agent 团队测试留下的 workspace 与状态快照，一律不提交
+.team-*/
+team-*-test*/
+team-*-demo/
+team.json
+teams.json
