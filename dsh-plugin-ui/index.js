@@ -1,4 +1,4 @@
-// @local/dsh-team-ui — Host half：把本地 sidecar 的 REST/SSE 以**同源**路径代理给 Web UI。
+// dsh-team-control-ui — Host half：把本地 sidecar 的 REST/SSE 以**同源**路径代理给 Web UI。
 //
 // 为什么需要 Host 代理：
 // - 面板在 http://127.0.0.1:3080，sidecar 在 :4317，浏览器直连会撞 CORS；

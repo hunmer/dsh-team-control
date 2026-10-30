@@ -1,10 +1,14 @@
 {
-  "name": "@local/dsh-team-ui",
-  "version": "1.0.0",
-  "private": true,
+  "name": "dsh-team-control-ui",
+  "version": "0.1.0",
   "type": "module",
   "description": "dsh-team dashboard inside the DSH Web UI: live member board, DAG, event timeline, permission matrix and scope approvals, proxied same-origin to the local sidecar.",
   "icon": "./icon.svg",
+  "keywords": ["dsh", "deepseek-harness", "agent-team", "dashboard", "ui"],
+  "repository": { "type": "git", "url": "git+https://github.com/hunmer/dsh-team-control.git" },
+  "homepage": "https://github.com/hunmer/dsh-team-control#readme",
+  "bugs": { "url": "https://github.com/hunmer/dsh-team-control/issues" },
+  "license": "MIT",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",

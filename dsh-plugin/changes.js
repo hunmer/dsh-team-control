@@ -1,4 +1,4 @@
-// @local/dsh-team-plugin — 成员改动采集：把成员的 write/edit 落盘差异算成 unified diff。
+// dsh-team-control — 成员改动采集：把成员的 write/edit 落盘差异算成 unified diff。
 //
 // 只做三件事，不碰 sidecar 之外的东西：
 // 1. 读改前/改后文本（读不到/超过大小上限就放弃，宁缺毋滥）；

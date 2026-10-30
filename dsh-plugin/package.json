@@ -1,12 +1,20 @@
 {
-  "name": "@local/dsh-team-plugin",
-  "version": "1.0.0",
-  "private": true,
+  "name": "dsh-team-control",
+  "version": "0.1.0",
   "type": "module",
   "description": "Expose the local dsh-team sidecar as model-facing tools (team_create / team_spawn / team_status / team_task / team_send / team_report_task / team_dispatch / team_scope / team_control / team_report), spawn real DSH sub-agent members for runtime=agent teams, and manage the sidecar lifecycle.",
   "icon": "./icon.svg",
+  "keywords": ["dsh", "deepseek-harness", "agent-team", "orchestration", "tools"],
+  "repository": { "type": "git", "url": "git+https://github.com/hunmer/dsh-team-control.git" },
+  "homepage": "https://github.com/hunmer/dsh-team-control#readme",
+  "bugs": { "url": "https://github.com/hunmer/dsh-team-control/issues" },
+  "license": "MIT",
+  "dependencies": {
+    "dsh-team-control-cli": "^0.1.0"
+  },
   "exports": {
     ".": "./index.js",
+    "./changes.js": "./changes.js",
     "./pricing.js": "./pricing.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./locale/*.json": "./locale/*.json",
@@ -15,6 +23,7 @@
   },
   "files": [
     "index.js",
+    "changes.js",
     "pricing.js",
     "cordis.patch.yml",
     "locale/*.json",
