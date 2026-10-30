@@ -1692,6 +1692,103 @@ function traceLlmCall(s, options, next) {
   })();
 }
 
+// ---- 技能：把包内 `skills/` 注册成 skills provider ----
+// 装上插件就带 `dsh-agent-team` 技能，不需要用户手动 `cp -r skills/... ~/.dsh/skills/`。
+// 本地克隆读 `<repo>/skills`；npm 安装读依赖包 `dsh-team-control-cli` 里的 `skills/`（同一份文件）。
+const SKILL_RANK = 600; // 与官方 BUNDLED_SKILL_RANK 一致：打包来源的标准优先级
+
+function skillRoots() {
+  const roots = [path.resolve(PKG_DIR, '..', 'skills')];
+  try {
+    const cliPkg = createRequire(import.meta.url).resolve('dsh-team-control-cli/package.json');
+    roots.push(path.join(path.dirname(cliPkg), 'skills'));
+  } catch { /* 本地布局下可能没有该依赖 */ }
+  const seen = new Set();
+  return roots.filter((dir) => {
+    if (seen.has(dir) || !fs.existsSync(dir)) return false;
+    seen.add(dir);
+    return true;
+  });
+}
+
+/** 解析 SKILL.md 的 YAML frontmatter（只处理 `key: value` 这一层，够用且零依赖）。 */
+export function parseSkillFrontmatter(text) {
+  const meta = {};
+  if (!text.startsWith('---')) return meta;
+  const end = text.indexOf('\n---', 3);
+  if (end < 0) return meta;
+  for (const line of text.slice(3, end).split(/\r?\n/)) {
+    const m = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(line);
+    if (!m) continue;
+    let value = m[2].trim();
+    if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
+      value = value.slice(1, -1);
+    }
+    meta[m[1]] = value === 'true' ? true : value === 'false' ? false : value;
+  }
+  return meta;
+}
+
+function stripSkillFrontmatter(text) {
+  if (!text.startsWith('---')) return text;
+  const end = text.indexOf('\n---', 3);
+  if (end < 0) return text;
+  const after = text.indexOf('\n', end + 4);
+  return (after < 0 ? '' : text.slice(after + 1)).replace(/^\r?\n/, '');
+}
+
+/** 扫描可用目录，产出 skills 服务的候选条目（纯函数，便于测试）。 */
+export function discoverTeamSkills() {
+  const out = [];
+  for (const root of skillRoots()) {
+    let entries = [];
+    try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const dir = path.join(root, entry.name);
+      const file = path.join(dir, 'SKILL.md');
+      let meta;
+      try { meta = parseSkillFrontmatter(fs.readFileSync(file, 'utf8')); } catch { continue; }
+      const name = String(meta.name || entry.name);
+      if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)) continue;
+      out.push({
+        name,
+        description: String(meta.description || ''),
+        ...(meta.whenToUse ? { whenToUse: String(meta.whenToUse) } : {}),
+        invocation: { modelInvocable: true, userInvocable: meta['user-invocable'] !== false },
+        source: 'bundled',
+        provider: 'dsh-team',
+        rank: SKILL_RANK,
+        path: file,
+        resourceBase: { kind: 'directory', path: dir },
+        locator: { file, dir },
+        metadata: meta,
+      });
+    }
+  }
+  return out;
+}
+
+/** 读取候选对应的完整正文（frontmatter 已剥离）。 */
+function loadTeamSkill(candidate) {
+  const file = candidate?.locator?.file ?? candidate?.path;
+  if (!file) return undefined;
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); } catch { return undefined; }
+  return {
+    name: candidate.name,
+    description: candidate.description,
+    ...(candidate.whenToUse ? { whenToUse: candidate.whenToUse } : {}),
+    invocation: candidate.invocation,
+    source: candidate.source,
+    provider: candidate.provider,
+    path: candidate.path,
+    resourceBase: candidate.resourceBase,
+    metadata: candidate.metadata,
+    content: stripSkillFrontmatter(text),
+  };
+}
+
 /** Cordis apply：注册全局工具，接管自动拉起的 sidecar，并把 agent 生命周期桥接到 sidecar。 */
 export function apply(ctx, config) {
   const s = resolveConfig(config);
@@ -1708,6 +1805,18 @@ export function apply(ctx, config) {
       }
     };
   }, 'dsh-team.tools()');
+
+  // 技能：skills 服务在场时把包内 `skills/` 注册成 provider，装上插件就带 `dsh-agent-team` 技能；
+  // 服务缺失（老版本/测试假 ctx）时静默跳过，不影响工具面。
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['skills'], (scope) => {
+      scope.skills.registerProvider(() => ({
+        name: 'dsh-team',
+        list: async () => discoverTeamSkills(),
+        get: async (candidate) => loadTeamSkill(candidate),
+      }));
+    });
+  }
 
   if (s.reportToolCalls) {
     ctx.on('tools/execute', (exec, next) => traceToolCall(s, ctx, exec, next));

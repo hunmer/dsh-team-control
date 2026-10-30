@@ -11,8 +11,8 @@
 - 11 个工具里**只有 `team_create` 标了 `START HERE`**：它的 description 直接给出 5 步顺序、`runtime` 的语义与后果
   （不传 `runtime:"agent"` 就是 worker，成员不会思考）、以及 `teamId` 取自 `result.team.id`；`team_spawn` 写明返回的
   `member.id` 就是后面 `assignee` 要的值；`team_task` 写明简报必须自包含（成员看不到 Lead 的对话）。模型只看工具面就能按序走。
-- 完整配方（字段陷阱、拆任务与并发、症状→修法表）在 skill **`dsh-agent-team`**：[`../skills/dsh-agent-team/SKILL.md`](../skills/dsh-agent-team/SKILL.md)，
-  安装到 `~/.dsh/skills/dsh-agent-team/SKILL.md` 后出现在会话技能目录；`team_create` 描述末尾也指向它。
+- 完整配方（字段陷阱、拆任务与并发、症状→修法表）在 skill **`dsh-agent-team`**：[`../skills/dsh-agent-team/SKILL.md`](../skills/dsh-agent-team/SKILL.md)。
+  本插件启动时把这个目录注册成 skills provider（`name: 'dsh-team'`，rank 600），**装上插件即出现在会话技能目录**，无需 cp；`team_create` 描述末尾也指向它。
 
 ## 两种成员运行时
 
