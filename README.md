@@ -1,4 +1,6 @@
-# dsh-team — Agent 编排控制平面
+# dsh-team-control — Agent 编排控制平面
+
+[![node](https://img.shields.io/badge/node-%E2%89%A522.15-brightgreen)](#安装) [![deps](https://img.shields.io/badge/dependencies-0-brightgreen)](#安装) [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 > 把「8 人上限 + 只能并行 spawn + 口头协作 + advisory 写域」升级为**可配置上限、DAG 依赖自动驱动、四域强制执行权限、SSE 实时可观测**的独立 sidecar。
 > 实现依据：`prd/agent-team-plugin-prd.md` v1.0（冻结）→ `prd/implementation-brief.md`。实现契约见 [`docs/CONTRACT.md`](docs/CONTRACT.md)。
@@ -15,17 +17,61 @@ Worker × N ◀──stdio NDJSON RPC（只有代理工具）──┘        �
 DSH sub-agent × N ◀──subagents.startActivation / sendMessage── dsh-plugin ┘  ← runtime=agent
 ```
 
-## 5 分钟跑通
+## 安装
 
-要求 **Node.js ≥ 22.15**（`node:sqlite` 需 ≥22.5，Worker 的同步 `module.registerHooks` 需 ≥22.15；实测 v24.22）。**零依赖、零构建**，不需要 `npm install`。
+要求 **Node.js ≥ 22.15**（`node:sqlite` 需 ≥22.5，Worker 的同步 `module.registerHooks` 需 ≥22.15；实测 v24.22）。**零依赖、零构建**，克隆下来即可运行，不需要 `npm install`。
+
+### 1. 克隆
 
 ```bash
+git clone https://github.com/hunmer/dsh-team-control.git
+cd dsh-team-control
 node --version            # 应 ≥ v22.15
-node demo/run-demo.mjs    # 3 成员 + DAG + 一次越界审批 + 一次 interrupt/resume
-node tests/run-all.mjs    # 15 条 AC + 插件/面板/路由/CLI 脚本全量验收
 ```
 
-Demo 会打印每一步时间线，最后校验 4 个产物文件与事件流一致性。
+### 2. 跑 sidecar（CLI + Web 面板，最小可用）
+
+```bash
+node bin/dsh-team.mjs up --port 4317
+# stdout 首行是 {event:'ready', url, port, token, panel}
+```
+
+- 面板：<http://127.0.0.1:4317/panel>
+- 数据目录默认 `~/.dsh/team`（`--data` / `DSH_TEAM_HOME` 覆盖）
+- 仅监听回环地址，`/api/**` 与 `/panel` 免 token
+- 停止：`node bin/dsh-team.mjs down`
+
+### 3.（可选）装成 DSH 插件，让模型直接调用 `team_*` 工具
+
+两个 bundle 都是本地包（`@local/*`，未发布到 npm），必须按**克隆目录的绝对路径**安装：
+
+```text
+plugin_manager(action: "install_bundle", target: "<克隆目录绝对路径>/dsh-plugin")
+plugin_manager(action: "install_bundle", target: "<克隆目录绝对路径>/dsh-plugin-ui")   # 可选：GUI 内看板
+```
+
+- 期望返回 `application: "applied"`、`warnings: []`
+- 卸载 target：`@local/dsh-team-plugin` / `@local/dsh-team-ui`
+- 装完需**重启 DSH**（或禁用/启用一次 `include:dsh-team`），运行中的进程缓存了旧模块
+- Windows 路径可以直接写正斜杠，例如 `C:/Users/<you>/dsh-team-control/dsh-plugin`
+
+### 4.（可选）装 skill，让模型记住正确调用顺序
+
+```bash
+mkdir -p ~/.dsh/skills
+cp -r skills/dsh-agent-team ~/.dsh/skills/
+```
+
+### 5. 验证安装
+
+```bash
+node demo/run-demo.mjs     # 3 成员 + DAG + 一次越界审批 + 一次 interrupt/resume
+node tests/run-all.mjs     # 15 条 AC + 插件/面板/路由/CLI 脚本全量验收
+```
+
+## 完整验收
+
+`node demo/run-demo.mjs` 会打印每一步时间线，最后校验 4 个产物文件与事件流一致性。
 
 补充检查（非 AC，覆盖 AC 未触及的路径）：
 
@@ -95,7 +141,7 @@ sidecar 本身是独立进程；要让**模型直接调用**它，用 [`dsh-plug
 （11 个 `team_*` 工具 + 服务生命周期 + agent 成员调度，零第三方依赖）。安装后工具面对本 profile 的所有会话生效。
 
 ```text
-plugin_manager(action: "install_bundle", target: "C:\\...\\agent-team-plugin\\dsh-plugin-ui")
+plugin_manager(action: "install_bundle", target: "<克隆目录绝对路径>/dsh-plugin-ui")
 ```
 
 期望 `application: "applied"`、`warnings: []`；用 `cordis_inspect_query` 复核（无需审批）。
