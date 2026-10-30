@@ -364,7 +364,7 @@ window.__ModuleLoader__.load({
     const AGENT_FINDINGS_CSS = `.ui-afc{--ui-afc-card: #ffffff;--ui-afc-strong: #000000;--ui-afc-ink: rgba(0, 0, 0, 0.88);--ui-afc-text: rgba(0, 0, 0, 0.61);--ui-afc-muted: rgba(0, 0, 0, 0.45);--ui-afc-faint: rgba(0, 0, 0, 0.27);--ui-afc-line: rgba(0, 0, 0, 0.06);--ui-afc-fill: rgba(0, 0, 0, 0.06);--ui-afc-hover: rgba(0, 0, 0, 0.025);--ui-afc-select: rgba(0, 0, 0, 0.04);--ui-afc-run-bg: rgba(0, 96, 226, 0.1);--ui-afc-run-edge: rgba(0, 96, 226, 0.32);--ui-afc-done-bg: rgba(0, 0, 0, 0.05);--ui-afc-done-edge: rgba(0, 0, 0, 0.1);--ui-afc-fail-bg: #f52b0018;--ui-afc-fail-edge: rgba(215, 36, 0, 0.34);--ui-afc-crit: #d72400;--ui-afc-warn: #cc4e00;--ui-afc-note: rgba(0, 96, 226, 0.8);--ui-afc-focus: rgba(0, 96, 226, 0.35);--ui-afc-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.06), 0 1px 1px -1px rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.05);--ui-afc-ease: cubic-bezier(0.22, 1, 0.36, 1);position: relative;box-sizing: border-box;width: 100%;max-width: 640px;container-type: inline-size;font-family: "Inter", "InterVariable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;font-size: 13px;font-weight: 400;line-height: 20px;color: var(--ui-afc-text);text-align: left;-webkit-font-smoothing: antialiased}.ui-afc *, .ui-afc *::before, .ui-afc *::after{box-sizing: border-box}:where(.ui-afc) button{margin: 0;padding: 0;border: 0;background: none;font: inherit;color: inherit;text-align: inherit;cursor: pointer;-webkit-tap-highlight-color: transparent}.ui-afc button:focus-visible{outline: 2px solid var(--ui-afc-focus);outline-offset: -2px}.ui-afc :is(ul, ol){margin: 0;padding: 0;list-style: none}.ui-afc svg{display: block;flex: none}@keyframes ui-afc-swap{from{opacity: 0;transform: translateY(3px)}}@keyframes ui-afc-sheen{from{transform: translateX(-40px)}to{transform: translateX(160px)}}@keyframes ui-afc-breathe{from{opacity: 0.45}to{opacity: 1}}@container (max-width: 480px){.ui-afc__agent{grid-template-columns: 24px minmax(0, 1fr) 40px auto;gap: 8px}}@media (prefers-reduced-motion: reduce){.ui-afc *, .ui-afc *::before, .ui-afc *::after{animation: none !important;transition: none !important}}:where(.dark, [data-theme="dark"]) .ui-afc{--ui-afc-card: #1c1c1f;--ui-afc-strong: #ffffff;--ui-afc-ink: rgba(255, 255, 255, 0.9);--ui-afc-text: rgba(255, 255, 255, 0.62);--ui-afc-muted: rgba(255, 255, 255, 0.45);--ui-afc-faint: rgba(255, 255, 255, 0.28);--ui-afc-line: rgba(255, 255, 255, 0.08);--ui-afc-fill: rgba(255, 255, 255, 0.08);--ui-afc-hover: rgba(255, 255, 255, 0.04);--ui-afc-select: rgba(255, 255, 255, 0.06);--ui-afc-run-bg: rgba(112, 184, 255, 0.18);--ui-afc-run-edge: rgba(112, 184, 255, 0.5);--ui-afc-done-bg: rgba(255, 255, 255, 0.08);--ui-afc-done-edge: rgba(255, 255, 255, 0.14);--ui-afc-fail-bg: #ff35232b;--ui-afc-fail-edge: rgba(255, 151, 125, 0.45);--ui-afc-crit: #ff977d;--ui-afc-warn: #ffa057;--ui-afc-note: #70b8ff;--ui-afc-focus: rgba(91, 154, 255, 0.45);--ui-afc-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.4)}:where(.dark, [data-theme="dark"]) .ui-afc__spark{color: #70b8ff}:where(.dark, [data-theme="dark"]) .ui-afc__agent[data-status="running"] .ui-afc__fill::before{background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.14), transparent)}`;
 
     /** 成员计划清单：选中成员时在行下展开（状态符号 + 标题；done 划掉、blocked 标警告色）。 */
-    const PLAN_CSS = `.ui-afc__plan-wrap{display: grid; gap: 4px; margin: 4px 20px 10px 46px}.ui-afc__plan-head{display: flex; align-items: center; gap: 8px; padding: 0 8px; font-size: 11px; line-height: 14px; color: var(--ui-afc-muted)}.ui-afc__plan-label{font-weight: 500; letter-spacing: 0.3px; text-transform: uppercase}.ui-afc__plan-bar{flex: 1 1 auto; height: 3px; border-radius: 2px; background: var(--ui-afc-fill); overflow: hidden}.ui-afc__plan-bar > i{display: block; height: 100%; border-radius: 2px; background: var(--ui-afc-note); transition: width 600ms var(--ui-afc-ease)}.ui-afc__plan-count{flex: none; font-variant-numeric: tabular-nums}.ui-afc__plan{display: grid; gap: 1px; margin: 0; padding: 0; list-style: none}.ui-afc__plan-step{display: grid; grid-template-columns: 14px minmax(0, 1fr); align-items: start; gap: 8px; padding: 4px 8px; border-radius: 6px; font-size: 12px; line-height: 16px; color: var(--ui-afc-text); transition: background-color 160ms ease, color 160ms ease}.ui-afc__plan-step:hover{background: var(--ui-afc-hover)}.ui-afc__plan-icon{display: block; width: 14px; height: 14px; margin-top: 1px; color: var(--ui-afc-faint)}.ui-afc__plan-title{min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis}.ui-afc__plan-step[data-status="active"]{color: var(--ui-afc-ink)}.ui-afc__plan-step[data-status="active"] .ui-afc__plan-icon{color: var(--ui-afc-note); animation: ui-afc-spin 1200ms linear infinite}.ui-afc__plan-step[data-status="blocked"] .ui-afc__plan-icon{color: var(--ui-afc-warn)}.ui-afc__plan-step[data-status="done"], .ui-afc__plan-step[data-status="skipped"]{color: var(--ui-afc-muted)}.ui-afc__plan-step[data-status="done"] .ui-afc__plan-icon{color: var(--ui-afc-note); opacity: 0.72}.ui-afc__plan-step[data-status="done"] .ui-afc__plan-title, .ui-afc__plan-step[data-status="skipped"] .ui-afc__plan-title{text-decoration: line-through}.ui-afc__plan-step[data-status="skipped"] .ui-afc__plan-icon{opacity: 0.55}@keyframes ui-afc-spin{to{transform: rotate(360deg)}}.ui-afc__row{display: grid}.ui-afc__row .ui-afc__agent{cursor: default}.ui-afc__agents{padding-bottom: 10px}.ui-afc__chat{display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; color: var(--ui-afc-muted); transition: background-color 160ms ease, color 160ms ease}.ui-afc__chat:hover{background: var(--ui-afc-fill); color: var(--ui-afc-ink)}.ui-afc__agent{grid-template-columns: 24px minmax(0, 1fr) 128px auto auto}@container (max-width: 480px){.ui-afc__agent{grid-template-columns: 24px minmax(0, 1fr) 40px auto auto}}`;
+    const PLAN_CSS = `.ui-afc__plan-wrap{display: grid; gap: 4px; margin: 4px 20px 10px 46px}.ui-afc__plan-head{display: flex; align-items: center; gap: 8px; padding: 0 8px; font-size: 11px; line-height: 14px; color: var(--ui-afc-muted)}.ui-afc__plan-label{font-weight: 500; letter-spacing: 0.3px; text-transform: uppercase}.ui-afc__plan-bar{flex: 1 1 auto; height: 3px; border-radius: 2px; background: var(--ui-afc-fill); overflow: hidden}.ui-afc__plan-bar > i{display: block; height: 100%; border-radius: 2px; background: var(--ui-afc-note); transition: width 600ms var(--ui-afc-ease)}.ui-afc__plan-count{flex: none; font-variant-numeric: tabular-nums}.ui-afc__plan{display: grid; gap: 1px; margin: 0; padding: 0; list-style: none}.ui-afc__plan-step{display: grid; grid-template-columns: 14px minmax(0, 1fr); align-items: start; gap: 8px; padding: 4px 8px; border-radius: 6px; font-size: 12px; line-height: 16px; color: var(--ui-afc-text); transition: background-color 160ms ease, color 160ms ease}.ui-afc__plan-step:hover{background: var(--ui-afc-hover)}.ui-afc__plan-icon{display: block; width: 14px; height: 14px; margin-top: 1px; color: var(--ui-afc-faint)}.ui-afc__plan-title{min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis}.ui-afc__plan-step[data-status="active"]{color: var(--ui-afc-ink)}.ui-afc__plan-step[data-status="active"] .ui-afc__plan-icon{color: var(--ui-afc-note); animation: ui-afc-spin 1200ms linear infinite}.ui-afc__plan-step[data-status="blocked"] .ui-afc__plan-icon{color: var(--ui-afc-warn)}.ui-afc__plan-step[data-status="done"], .ui-afc__plan-step[data-status="skipped"]{color: var(--ui-afc-muted)}.ui-afc__plan-step[data-status="done"] .ui-afc__plan-icon{color: var(--ui-afc-note); opacity: 0.72}.ui-afc__plan-step[data-status="done"] .ui-afc__plan-title, .ui-afc__plan-step[data-status="skipped"] .ui-afc__plan-title{text-decoration: line-through}.ui-afc__plan-step[data-status="skipped"] .ui-afc__plan-icon{opacity: 0.55}@keyframes ui-afc-spin{to{transform: rotate(360deg)}}.ui-afc__row{display: grid}.ui-afc__row .ui-afc__agent{cursor: default}.ui-afc__agents{padding-bottom: 10px}.ui-afc__chat{display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; color: var(--ui-afc-muted); transition: background-color 160ms ease, color 160ms ease}.ui-afc__chat:hover{background: var(--ui-afc-fill); color: var(--ui-afc-ink)}.ui-afc__agent{grid-template-columns: 24px minmax(0, 1fr) 128px auto auto}@container (max-width: 480px){.ui-afc__agent{grid-template-columns: 24px minmax(0, 1fr) 40px auto auto}}@container (max-width: 560px){.ui-afc__agent{grid-template-columns: 24px minmax(0, 1fr) auto auto;grid-template-areas: \"avatar who count chat\" \"track track track track\";column-gap: 8px;row-gap: 7px;padding: 9px 10px}.ui-afc__avatar{grid-area: avatar}.ui-afc__who{grid-area: who}.ui-afc__track{grid-area: track;width: auto}.ui-afc__count{grid-area: count}.ui-afc__chat{grid-area: chat}.ui-afc__plan-wrap{margin: 4px 8px 8px 10px;gap: 6px}.ui-afc__plan-head{padding: 0 4px}.ui-afc__plan-step{padding: 4px 4px;line-height: 17px}.ui-afc__plan-title{white-space: normal;overflow: visible;text-overflow: clip;word-break: break-word}}`;
 
     const API_BASE = '/dsh-team-api/api';
     const POLL_MS = 4000;
@@ -1120,13 +1120,15 @@ window.__ModuleLoader__.load({
         ctx.effect(() => {
           const disposers = [];
           let betterDispose = null;
-          /** 撤掉本插件在 DSH 原生侧栏上的全部注册（切换到 better-sidebar 或卸载时调用）。 */
           const release = () => {
             for (const dispose of disposers.splice(0).reverse()) {
               try { dispose(); } catch { /* ignore */ }
             }
           };
-          /** 注册成 better-sidebar 页签；成功（或已注册）返回 true。 */
+          /**
+           * 额外注册成 better-sidebar 页签（可选宿主）。
+           * 装了 better-sidebar 也照样保留 DSH 原生侧栏入口，两边都能进。
+           */
           const useBetterSidebar = (service) => {
             if (betterDispose) return true;
             if (!service || typeof service.registerTab !== 'function') return false;
@@ -1138,12 +1140,12 @@ window.__ModuleLoader__.load({
               return false;
             }
           };
-          /** better-sidebar 晚于本插件加载时再切过去：装上就撤掉自己的左下角入口。 */
-          const upgradeToBetterSidebar = () => {
+          /** better-sidebar 晚于本插件加载时补注册（原生入口不动） */
+          const watchBetterSidebar = () => {
             if (typeof ctx.inject !== 'function') return;
             ctx.inject(['betterSidebar'], (child) => {
               betterDispose = null; // 服务实例变化时重新注册（旧注册随旧实例失效）
-              if (useBetterSidebar(child.betterSidebar)) release();
+              useBetterSidebar(child.betterSidebar);
             });
           };
           const cleanup = () => {
@@ -1154,47 +1156,56 @@ window.__ModuleLoader__.load({
             release();
           };
 
-          // 1) 首选：入口注册到 dsh-better-sidebar（原生右侧栏 guide + 插件底部工作台同一套页签）
-          const betterNow = getService('betterSidebar');
-          if (betterNow && useBetterSidebar(betterNow)) return cleanup;
-
           const sidebarRight = getService('sidebarRight');
           const sidebarRightTabs = getService('sidebarRightTabs');
+          const openRightTab = () => {
+            const right = getService('sidebarRight');
+            if (right && typeof right.openTab === 'function') {
+              right.openTab('dsh-team');
+              return;
+            }
+            const better = getService('betterSidebar');
+            if (better && typeof better.openTab === 'function') better.openTab('dsh-team:panel');
+          };
 
-          if (sidebarRight && sidebarRightTabs && typeof sidebarRight.openTab === 'function') {
-            // 2) 没装 better-sidebar：保留本插件自己的右侧栏 Tab + 侧边栏左下角入口
+          // 1) DSH 原生右侧栏入口：始终注入（不依赖 better-sidebar 是否安装）
+          if (sidebarRightTabs && typeof sidebarRightTabs.register === 'function') {
             disposers.push(sidebarRightTabs.register({
               id: 'dsh-team',
               kind: 'dsh-team',
               priority: 'extension',
               title: () => t('side_nav'),
             }));
-            disposers.push(ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
-              name: 'sidebar.right.pane.tab',
+          }
+          disposers.push(ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
+            name: 'sidebar.right.pane.tab',
+            key: 'dsh-team',
+          }, () => h(TeamView, { t, compact: true, getService }))));
+          disposers.push(ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
+            name: 'sidebar.footer.action',
+            id: 'dsh-team',
+            order: 30,
+            label: () => t('side_nav'),
+          }, railEntry(t, openRightTab))));
+
+          // 2) 既没有右侧栏页签服务、也没有 better-sidebar：中央停靠面板兜底（与「插件」页同级）
+          if (!sidebarRightTabs && !getService('betterSidebar')) {
+            disposers.push(ctx.slots.inject('main', () => ctx.slots.register({
+              name: 'main',
               key: 'dsh-team',
-            }, () => h(TeamView, { t, compact: true, getService }))));
-            disposers.push(ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
-              name: 'sidebar.footer.action',
+            }, () => h(TeamView, { t, compact: false, getService }))));
+            disposers.push(ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+              name: 'sidebar.panellist',
               id: 'dsh-team',
-              order: 30,
+              order: 20,
               label: () => t('side_nav'),
-            }, railEntry(t, () => sidebarRight.openTab('dsh-team')))));
-            upgradeToBetterSidebar();
-            return cleanup;
+            }, panelIcon(t))));
           }
 
-          // 3) 都没有：中央停靠面板兜底（与「插件」页同级）
-          disposers.push(ctx.slots.inject('main', () => ctx.slots.register({
-            name: 'main',
-            key: 'dsh-team',
-          }, () => h(TeamView, { t, compact: false, getService }))));
-          disposers.push(ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
-            name: 'sidebar.panellist',
-            id: 'dsh-team',
-            order: 20,
-            label: () => t('side_nav'),
-          }, panelIcon(t))));
-          upgradeToBetterSidebar();
+          // 3) 装了 better-sidebar 就再加一份页签入口；没装则等它加载
+          const betterNow = getService('betterSidebar');
+          if (betterNow && useBetterSidebar(betterNow)) return cleanup;
+          watchBetterSidebar();
           return cleanup;
         }, 'dsh-team-ui.entry()');
 
