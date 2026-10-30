@@ -1,4 +1,4 @@
-# @local/dsh-team-plugin
+# dsh-team-control
 
 把本仓的 **dsh-team sidecar** 暴露为 DSH 模型可调用工具的 Host 插件（bundle）。
 
@@ -56,22 +56,22 @@
 
 ## 安装
 
-在 DSH 里用 `plugin_manager` 安装本目录（绝对路径），它会写 profile 的 `dependencies`（`link:`）与 `dsh.profile.bundles`：
+本包已发布到 npm（`dsh-team-control`），sidecar 由依赖 `dsh-team-control-cli` 一起装上：
 
-```text
-plugin_manager(action: "install_bundle", target: "C:\\...\\agent-team-plugin\\dsh-plugin")
+```bash
+dsh plugin --profile web add dsh-team-control
 ```
 
-期望结果：`application: "applied"`、`warnings: []`，随后工具面出现 11 个 `team_*` 工具。
-安装后可用 `cordis_inspect_query` 的 `Tool.listTools` / `Config.listConfigs` 复核（无需审批）。
-卸载：`plugin_manager(action: "remove_bundle", target: "@local/dsh-team-plugin")`。
+装完重启 DSH，工具面出现 11 个 `team_*` 工具；`autoStart` 会自己拉起 sidecar。
+本地开发也可以按绝对路径装：`plugin_manager(action: "install_bundle", target: "<repo>/dsh-plugin")`。
+卸载：`dsh plugin --profile web remove dsh-team-control`。
 
 ## 配置（`cordis.patch.yml`）
 
 ```yaml
 - insert:
     - id: dsh-team
-      name: '@local/dsh-team-plugin'
+      name: 'dsh-team-control'
       config:
         baseUrl: http://127.0.0.1:4317
         autoStart: true
@@ -112,7 +112,7 @@ plugin_manager(action: "install_bundle", target: "C:\\...\\agent-team-plugin\\ds
 
 ## 面板位置
 
-本包只提供**工具面**。界面在配套的 [`@local/dsh-team-ui`](../dsh-plugin-ui/)：一个注册在
+本包只提供**工具面**。界面在配套的 [`dsh-team-control-ui`](../dsh-plugin-ui/)：一个注册在
 `settings.plugins.tab` 的 React 页面（设置 → 插件 → dsh-team 控制台），经 Host 同源代理读取
 sidecar。独立的 `{baseUrl}/panel` 仍然保留，适合不打开 DSH 时使用。
 
