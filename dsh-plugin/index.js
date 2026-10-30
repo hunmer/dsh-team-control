@@ -1,4 +1,4 @@
-// @local/dsh-team-plugin — 把本地 dsh-team sidecar 暴露为模型可调用工具。
+// dsh-team-control — 把本地 dsh-team sidecar 暴露为模型可调用工具。
 //
 // 设计约束（来自本仓 docs/CONTRACT.md 与 PRD）：
 // - 本插件只做「适配 + 生命周期」，编排/权限/事件流全部在 sidecar 进程内，不在这里重写。
@@ -9,6 +9,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,7 +22,17 @@ export const name = 'dsh-team';
 export const inject = ['tools'];
 
 const PKG_DIR = path.dirname(fileURLToPath(import.meta.url));
-const DEFAULT_ENTRY = path.resolve(PKG_DIR, '..', 'bin', 'dsh-team.mjs');
+const LOCAL_ENTRY = path.resolve(PKG_DIR, '..', 'bin', 'dsh-team.mjs');
+/** 本地克隆时入口在同级 `bin/`；npm 安装时从依赖 `dsh-team-control-cli` 里解析。 */
+function resolveDefaultEntry() {
+  if (fs.existsSync(LOCAL_ENTRY)) return LOCAL_ENTRY;
+  try {
+    return createRequire(import.meta.url).resolve('dsh-team-control-cli/bin/dsh-team.mjs');
+  } catch {
+    return LOCAL_ENTRY;
+  }
+}
+const DEFAULT_ENTRY = resolveDefaultEntry();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function resolveConfig(config) {

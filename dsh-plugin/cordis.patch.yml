@@ -2,7 +2,7 @@
 # baseUrl/home 必须与实际运行的 sidecar 一致；autoStart=true 时首次调用会自动拉起 `dsh-team up`。
 - insert:
     - id: dsh-team
-      name: '@local/dsh-team-plugin'
+      name: 'dsh-team-control'
       config:
         baseUrl: http://127.0.0.1:4317
         autoStart: true

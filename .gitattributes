@@ -1,0 +1,10 @@
+# 统一 LF：`bin/*.mjs` 的 shebang 若带 CRLF，会让 pnpm/npm pack 拒包，Unix 上也跑不起来
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.db binary

@@ -4,6 +4,16 @@
 
 **一句话**：给 DeepSeek Harness 的 Agent Team 加一个独立 sidecar——成员上限可配、DAG 依赖自动派发、`fs/exec/net/env` 四域强制执行权限、事件流可回放、SSE 实时面板。
 
+## 截图
+
+<p align="center">
+  <img src="screenshots/screenshot_1.png" width="49%" />
+  <img src="screenshots/screenshot_2.png" width="49%" />
+  <img src="screenshots/screenshot_3.png" width="49%" />
+  <img src="screenshots/screenshot_4.png" width="49%" />
+  <img src="screenshots/screenshot_5.png" width="49%" />
+</p>
+
 ## 安装
 
 要求 **Node.js ≥ 22.15**（`node:sqlite` ≥22.5、Worker 的 `module.registerHooks` ≥22.15；实测 v24.22）。**零依赖、零构建**，不需要 `npm install`。
@@ -24,27 +34,27 @@ dsh plugin --profile web add "github:hunmer/dsh-team-control#path:/dsh-plugin-ui
 ```
 
 ```bash
-# npm 包（预构建，尚未发布；发布后可用）
+# npm 包（预构建，装完即用；sidecar 以依赖 dsh-team-control-cli 一起装）
 dsh plugin --profile web add dsh-team-control
-dsh plugin --profile web add dsh-team-control-ui
+dsh plugin --profile web add dsh-team-control-ui   # 可选：GUI 看板
 ```
 
 装完**重启 DSH**（或到 设置 → 插件 里禁用/启用一次），`team_*` 工具与「编排」面板才会出现。卸载：
-`dsh plugin --profile web remove @local/dsh-team-plugin`（UI 包同理）。
+`dsh plugin --profile web remove dsh-team-control`（UI 包同理）。
 
 ### 2. 接入 sidecar
 
-`autoStart` 默认开启：首次调用 `team_*` 时插件会自己拉起 sidecar——**只有本地源码安装能自动拉起**，因为入口路径在克隆目录的 `bin/` 里。也可以手动起：
+`autoStart` 默认开启：首次调用 `team_*` 时插件会自己拉起 sidecar（本地安装走同级 `bin/`，npm 安装走依赖 `dsh-team-control-cli`）。也可以手动起：
 
 ```bash
-node ~/dsh-team-control/bin/dsh-team.mjs up --port 4317
+npx -y dsh-team-control-cli up --port 4317
+# 或本地克隆：node ~/dsh-team-control/bin/dsh-team.mjs up --port 4317
 # stdout 首行：{event:'ready', url, port, token, panel}
 ```
 
 - 面板：<http://127.0.0.1:4317/panel>
 - 数据目录默认 `~/.dsh/team`（`--data` / `DSH_TEAM_HOME` 覆盖）
-- 停止：`node ~/dsh-team-control/bin/dsh-team.mjs down`
-- 用 GitHub / npm 方式装的，想保留自动拉起：给插件配置 `sidecarEntry: <克隆目录>/bin/dsh-team.mjs`，或先手动起 sidecar 再调用工具。
+- 停止：`npx -y dsh-team-control-cli down`
 
 ### 3.（可选）装 skill
 

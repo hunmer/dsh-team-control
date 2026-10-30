@@ -1,9 +1,9 @@
-// @local/dsh-team-ui — Client half：把「编排」看板注册成 dsh-better-sidebar 的页签；没装时回退到
+// dsh-team-control-ui — Client half：把「编排」看板注册成 dsh-better-sidebar 的页签；没装时回退到
 // 本插件自己的右侧栏 Tab + 侧边栏左下角入口。内容一律内嵌 sidecar 自带 Web 面板。
 // 零外部 import（只 require('react')）；样式只用 --dsw-alias-* 主题 token；
 // iframe 走 Host 同源代理 /dsh-team-api/panel（浏览器拿不到 sidecar token）。
 window.__ModuleLoader__.load({
-  id: '@local/dsh-team-ui',
+  id: 'dsh-team-control-ui',
   factory(require) {
     const React = require('react');
     const h = React.createElement;

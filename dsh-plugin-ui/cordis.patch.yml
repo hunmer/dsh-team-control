@@ -1,7 +1,7 @@
 # dsh-team 仪表盘：设置 → 插件 中的一个页面，数据经 Host 同源代理转发到本地 sidecar。
 - insert:
     - id: dsh-team-ui
-      name: '@local/dsh-team-ui'
+      name: 'dsh-team-control-ui'
       config:
         baseUrl: http://127.0.0.1:4317
         autoStart: true
