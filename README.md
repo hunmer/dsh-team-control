@@ -42,9 +42,12 @@ dsh plugin --profile web add dsh-team-control-ui   # 可选：GUI 看板
 装完**重启 DSH**（或到 设置 → 插件 里禁用/启用一次），`team_*` 工具与「编排」面板才会出现。卸载：
 `dsh plugin --profile web remove dsh-team-control`（UI 包同理）。
 
-### 2. 接入 sidecar
+### 2. sidecar（**不用手动做**）
 
-`autoStart` 默认开启：首次调用 `team_*` 时插件会自己拉起 sidecar（本地安装走同级 `bin/`，npm 安装走依赖 `dsh-team-control-cli`）。也可以手动起：
+装完插件即可用：`autoStart` 默认开启，**首次调用 `team_*` 工具时插件自己拉起 sidecar**（本地安装走同级 `bin/`，npm 安装走依赖 `dsh-team-control-cli`），随后自动读 `~/.dsh/team/token` 鉴权。下面这些只在你想脱离插件、单独开面板时才需要：
+
+```bash
+
 
 ```bash
 npx -y dsh-team-control-cli up --port 4317
@@ -56,7 +59,10 @@ npx -y dsh-team-control-cli up --port 4317
 - 数据目录默认 `~/.dsh/team`（`--data` / `DSH_TEAM_HOME` 覆盖）
 - 停止：`npx -y dsh-team-control-cli down`
 
-### 3.（可选）装 skill
+### 3. 技能（**随插件自动注册**）
+
+插件启动时把仓库 `skills/` 注册成 skills provider（npm 安装读 `dsh-team-control-cli` 里的同一份文件），会话技能目录里直接出现 `dsh-agent-team`，**不用重启、也不用 cp**。
+只有在不装插件、又想让别的会话读这份用法时，才需要手动装：
 
 ```bash
 mkdir -p ~/.dsh/skills && cp -r ~/dsh-team-control/skills/dsh-agent-team ~/.dsh/skills/
