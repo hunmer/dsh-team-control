@@ -1,8 +1,10 @@
 const pad2 = (n: number) => String(n).padStart(2, '0');
 
-/** token 数：≥100k 取整 k，≥1k 保留一位小数，其余原样。 */
+/** token 数：≥1M 用 M（一位小数），≥100k 取整 k，≥1k 保留一位小数，其余原样。 */
 export function fmtTokens(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return '0';
+  // 1e6 以上再走 k 就会显示成 1000k：先切成 M
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
   if (n >= 100_000) return `${Math.round(n / 1000)}k`;
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(Math.round(n));

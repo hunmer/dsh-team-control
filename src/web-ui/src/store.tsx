@@ -73,6 +73,8 @@ interface PanelState {
   tab: TabName;
   filters: { member: string; phase: string };
   conn: ConnKind;
+  /** 从收件箱产物跳到「审阅」时要选中的文件；Review 消费后清空。 */
+  reviewFocus: { path: string; memberId?: string } | null;
 }
 
 const initialState: PanelState = {
@@ -80,7 +82,7 @@ const initialState: PanelState = {
   members: [], staleMembers: new Set(), degraded: false, snapshot: null,
   dag: null, tasks: [], todos: [], artifacts: [], changes: [], contexts: [], contextLead: null, trace: null, traceWindow: 0, matrix: [], policies: [], scopeRequests: [], messages: [],
   errors: {}, timeline: [], paused: false, speed: 1,
-  tab: 'home', filters: { member: '', phase: '' }, conn: 'connecting',
+  tab: 'home', filters: { member: '', phase: '' }, conn: 'connecting', reviewFocus: null,
 };
 
 export interface PanelActions {
@@ -117,6 +119,9 @@ export interface PanelActions {
   refreshTrace(windowMinutes?: number): Promise<void>;
   setTraceWindow(minutes: number): void;
   setTab(tab: TabName): void;
+  /** 跳到「审阅」并选中某个文件（收件箱产物点击）；Review 选中后清空。 */
+  focusReview(path: string, memberId?: string): void;
+  clearReviewFocus(): void;
   setPaused(paused: boolean): void;
   setSpeed(speed: 1 | 4): void;
   setFilterMember(member: string): void;
@@ -883,6 +888,15 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     }
   }, [patchUi, saveUiState, writeRoute, refreshStatus, refreshTrace, refreshDag, refreshTasks, refreshTodos, refreshChanges, refreshPermissions, refreshApprovals, refreshMessages]);
 
+  const focusReview = useCallback((path: string, memberId?: string) => {
+    setState((prev) => ({ ...prev, reviewFocus: { path, memberId } }));
+    setTab('review');
+  }, [setTab]);
+
+  const clearReviewFocus = useCallback(() => {
+    setState((prev) => (prev.reviewFocus ? { ...prev, reviewFocus: null } : prev));
+  }, []);
+
   const setPaused = useCallback((paused: boolean) => {
     pausedRef.current = paused;
     patchUi({ paused });
@@ -979,8 +993,9 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     state, toasts, authOverlay, bootError, memberName, toast,
     selectTeam, refreshTeams, selectWorkspace, refreshWorkspaces, teamsInWorkspace, stopTeam, archiveTeam, deleteTeam, refreshAll, decideScope, refreshPermissions, refreshMessages, refreshChanges, refreshContexts, refreshStatus, refreshTrace, setTraceWindow,
     setTab, setPaused, setSpeed, setFilterMember, setFilterPhase, exportReport,
+    focusReview, clearReviewFocus,
     retryBoot, submitToken,
-  }), [state, toasts, authOverlay, bootError, memberName, toast, selectTeam, refreshTeams, selectWorkspace, refreshWorkspaces, teamsInWorkspace, stopTeam, archiveTeam, deleteTeam, refreshAll, decideScope, refreshPermissions, refreshMessages, refreshChanges, refreshContexts, refreshStatus, refreshTrace, setTraceWindow, setTab, setPaused, setSpeed, setFilterMember, setFilterPhase, exportReport, retryBoot, submitToken]);
+  }), [state, toasts, authOverlay, bootError, memberName, toast, selectTeam, refreshTeams, selectWorkspace, refreshWorkspaces, teamsInWorkspace, stopTeam, archiveTeam, deleteTeam, refreshAll, decideScope, refreshPermissions, refreshMessages, refreshChanges, refreshContexts, refreshStatus, refreshTrace, setTraceWindow, setTab, setPaused, setSpeed, setFilterMember, setFilterPhase, exportReport, focusReview, clearReviewFocus, retryBoot, submitToken]);
 
   return <PanelContext.Provider value={actions}>{children}</PanelContext.Provider>;
 }

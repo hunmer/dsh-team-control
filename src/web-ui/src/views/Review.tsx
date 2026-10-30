@@ -136,8 +136,8 @@ function DiffPane({ change }: { change: MemberChange }) {
 }
 
 export function ReviewView() {
-  const { state, memberName, refreshChanges, toast } = usePanel();
-  const { changes, members, errors, teamId } = state;
+  const { state, memberName, refreshChanges, clearReviewFocus, toast } = usePanel();
+  const { changes, members, errors, teamId, reviewFocus } = state;
   const [query, setQuery] = useState('');
   const [memberFilter, setMemberFilter] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -167,6 +167,25 @@ export function ReviewView() {
     if (!teamId) return;
     if (!changes.length) void refreshChanges().catch(() => { /* 错误显示在横幅里 */ });
   }, [teamId, changes.length, refreshChanges]);
+
+  // 收件箱点产物跳过来：按路径（或文件名兜底）选中那条改动；找不到就等 changes 到齐再试。
+  useEffect(() => {
+    if (!reviewFocus) return;
+    const norm = (path: string) => String(path || '').replace(/\\/g, '/').toLowerCase();
+    const target = norm(reviewFocus.path);
+    if (!target) { clearReviewFocus(); return; }
+    const base = target.split('/').pop() ?? target;
+    const hit = changes.find((change) => {
+      const path = norm(change.path);
+      return path === target || path.endsWith('/' + target) || target.endsWith('/' + path)
+        || path.split('/').pop() === base;
+    });
+    if (!hit) return;
+    setMemberFilter('');
+    setQuery('');
+    setSelectedId(hit.id);
+    clearReviewFocus();
+  }, [reviewFocus, changes, clearReviewFocus]);
 
   const totals = useMemo(() => {
     const files = new Set(changes.map((change) => change.path));
