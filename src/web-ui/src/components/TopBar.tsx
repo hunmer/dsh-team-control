@@ -4,6 +4,7 @@
  */
 import { Archive, ChevronDown, Moon, Square, Sun, Trash2 } from 'lucide-react';
 import { usePanel } from '@/store';
+import { TeamSelect } from '@/components/TeamSelect';
 import { Button } from '@/components/ui/button';
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from '@/components/ui/menu';
 import { Spinner } from '@/components/ui/spinner';
@@ -68,6 +69,9 @@ export function TopBar() {
 
   return (
     <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
+      {/* 团队切换从侧栏移到这里：只展示当前工作区下的团队 */}
+      <TeamSelect className="w-52 max-w-[40%] shrink-0" />
+      <div className="flex min-w-0 items-center justify-end gap-2">
       {conn !== 'live' ? (
         <div
           className={`flex flex-none items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs ${CONN_CLASS[conn]}`}
@@ -119,6 +123,7 @@ export function TopBar() {
       >
         {theme === 'dark' ? <Sun /> : <Moon />}
       </Button>
+      </div>
     </div>
   );
 }

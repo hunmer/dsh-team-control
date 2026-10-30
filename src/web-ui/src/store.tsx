@@ -8,9 +8,10 @@ import {
 } from 'react';
 import { API_BASE, api, ApiError, EMBEDDED, enc, getToken, initUrlToken, pickItems, setToken } from './lib/api';
 import { fmtClock, storeGet, storeSet } from './lib/format';
-import type { DagData, MatrixRow, Member, Policy, ScopeRequest, Task, TaskArtifact, Team, TeamMessage, TimelineEntry, Todo, TraceData } from './types';
+import { workspaceMatches } from './lib/workspace';
+import type { ContextSnapshot, ContextUsage, DagData, MatrixRow, Member, Policy, ScopeRequest, Task, TaskArtifact, Team, TeamMessage, TimelineEntry, Todo, TraceData, Workspace } from './types';
 
-export const TAB_NAMES = ['board', 'dag', 'timeline', 'models', 'permissions', 'approvals', 'messages'] as const;
+export const TAB_NAMES = ['board', 'context', 'dag', 'timeline', 'models', 'permissions', 'approvals', 'messages'] as const;
 /**
  * 面板视图。`home` 是 affectui 风格的默认主页（FR-2/FR-4）：
  * 它不在 TAB_NAMES 里，因此不会被持久化；旧版本存下的 7 个业务 tab 仍按白名单恢复。
@@ -18,22 +19,28 @@ export const TAB_NAMES = ['board', 'dag', 'timeline', 'models', 'permissions', '
 export type TabName = (typeof TAB_NAMES)[number] | 'home';
 
 export const PHASES = ['init', 'read', 'write', 'exec', 'net', 'env', 'msg', 'wait', 'verify', 'interrupt', 'resume', 'done', 'fail', 'decision', 'recover'];
-const SSE_TYPES = ['member.status', 'step.append', 'task.state', 'message.delivered', 'scope.request', 'decision', 'lease.warn', 'span.append', 'artifact.added'];
+const SSE_TYPES = ['member.status', 'step.append', 'task.state', 'message.delivered', 'scope.request', 'decision', 'lease.warn', 'span.append', 'artifact.added', 'context.update'];
 const TIMELINE_CAP = 2000;
 const STORE_UI = 'dsh-team.panel.ui.v1';
 const STORE_LAST = 'dsh-team.panel.lastEventId.v1';
+/** 虚拟工作区：注册表里没有归属的团队（旧团队 / 路径已变），保证它们不会从下拉里消失。 */
+export const OTHER_WORKSPACE_ID = '__other';
 
 /** 暂停缓存（模块级单例 ref，供 Timeline 视图轮询展示长度）。 */
 export const pendingTimelineRef: { current: TimelineEntry[] } = { current: [] };
 
 export type ConnKind = 'connecting' | 'live' | 'reconnecting' | 'offline';
 export interface ToastItem { id: number; message: string; kind: 'ok' | 'warn' | 'error' | 'info'; }
-export type Errors = Partial<Record<'status' | 'dag' | 'permissions' | 'policies' | 'approvals' | 'messages' | 'timeline' | 'trace' | 'tasks' | 'todos' | 'artifacts', string | null>>;
+export type Errors = Partial<Record<'status' | 'dag' | 'permissions' | 'policies' | 'approvals' | 'messages' | 'timeline' | 'trace' | 'tasks' | 'todos' | 'artifacts' | 'contexts', string | null>>;
 
 interface PanelState {
   teamId: string | null;
   team: Team | null;
   teams: Team[];
+  /** DSH 工作区注册表（Host 插件同步过来的快照） */
+  workspaces: Workspace[];
+  /** 当前选中的工作区；null = 未上报工作区，退回显示全部团队 */
+  workspaceId: string | null;
   noTeams: boolean;
   members: Member[];
   staleMembers: Set<string>;
@@ -46,6 +53,10 @@ interface PanelState {
   todos: Todo[];
   /** 成员产物（/api/artifacts）：成员会话里 present / 改动过的文件，按任务展示 */
   artifacts: TaskArtifact[];
+  /** 成员上下文快照（/api/contexts）：上下文窗口被什么填满，「上下文分析」页的数据源 */
+  contexts: ContextSnapshot[];
+  /** Lead 会话的累计 LLM 用量（同一接口返回，仅参与排行，没有上下文快照） */
+  contextLead: ContextUsage | null;
   trace: TraceData | null;
   /** Trace 时间窗（分钟，0 = 全部历史）；默认只看最近 30 分钟，避免长期闲置团队的横轴被拉爆 */
   traceWindow: number;
@@ -63,9 +74,9 @@ interface PanelState {
 }
 
 const initialState: PanelState = {
-  teamId: null, team: null, teams: [], noTeams: false,
+  teamId: null, team: null, teams: [], workspaces: [], workspaceId: null, noTeams: false,
   members: [], staleMembers: new Set(), degraded: false, snapshot: null,
-  dag: null, tasks: [], todos: [], artifacts: [], trace: null, traceWindow: 0, matrix: [], policies: [], scopeRequests: [], messages: [],
+  dag: null, tasks: [], todos: [], artifacts: [], contexts: [], contextLead: null, trace: null, traceWindow: 0, matrix: [], policies: [], scopeRequests: [], messages: [],
   errors: {}, timeline: [], paused: false, speed: 1,
   tab: 'home', filters: { member: '', phase: '' }, conn: 'connecting',
 };
@@ -78,6 +89,11 @@ export interface PanelActions {
   memberName(id?: string | null): string;
   toast(message: string, kind?: ToastItem['kind'], ttl?: number): void;
   selectTeam(teamId: string): Promise<void>;
+  /** 切换工作区：只会选中该工作区下的团队（没有则进入空态）。 */
+  selectWorkspace(workspaceId: string, opts?: { push?: boolean }): Promise<void>;
+  refreshWorkspaces(): Promise<Workspace[]>;
+  /** 当前工作区下的团队；workspaceId 为空（未同步到工作区）时返回全部。 */
+  teamsInWorkspace(workspaceId?: string | null): Team[];
   refreshTeams(): Promise<Team[]>;
   /** 停止团队：中断所有活跃成员并保留团队；不传 teamId 用当前团队。 */
   stopTeam(teamId?: string): Promise<void>;
@@ -90,6 +106,8 @@ export interface PanelActions {
   decideScope(id: string, decision: 'approved' | 'denied'): Promise<void>;
   refreshPermissions(): Promise<void>;
   refreshMessages(): Promise<void>;
+  /** 刷新成员上下文快照（「上下文分析」页）。 */
+  refreshContexts(): Promise<void>;
   refreshStatus(): Promise<void>;
   /** 可选窗口覆盖（分钟）；不传则用当前 state.traceWindow */
   refreshTrace(windowMinutes?: number): Promise<void>;
@@ -130,8 +148,45 @@ function loadUiState() {
   return { ui, lastEventId: Number.isFinite(last) && last > 0 ? last : 0 };
 }
 
-function normalizeFrameEntry(frame: { id?: unknown; memberId?: string; taskId?: string; ts?: string }, payload: Record<string, unknown>): TimelineEntry | null {
-  const id = Number(frame.id);
+/* ---------- 面板内路由（hash）：#/w/<workspaceId>/t/<teamId>/<tab> ---------- */
+
+interface PanelRoute { ws: string | null; team: string | null; tab: TabName | null }
+
+const TAB_LOOKUP = new Set<string>([...TAB_NAMES, 'home']);
+
+function parseRoute(hash: string = location.hash): PanelRoute {
+  const route: PanelRoute = { ws: null, team: null, tab: null };
+  const segs = hash.replace(/^#\/?/, '').split('/').filter(Boolean);
+  for (let i = 0; i < segs.length; i += 1) {
+    const seg = segs[i];
+    if (seg === 'w' && segs[i + 1]) { route.ws = decodeURIComponent(segs[i + 1]); i += 1; }
+    else if (seg === 't' && segs[i + 1]) { route.team = decodeURIComponent(segs[i + 1]); i += 1; }
+    else if (TAB_LOOKUP.has(seg)) route.tab = seg as TabName;
+  }
+  return route;
+}
+
+function buildRoute(route: PanelRoute): string {
+  const parts: string[] = [];
+  if (route.ws) parts.push('w', encodeURIComponent(route.ws));
+  if (route.team) parts.push('t', encodeURIComponent(route.team));
+  if (route.tab && route.tab !== 'home') parts.push(route.tab);
+  return parts.length ? '#/' + parts.join('/') : '#/';
+}
+
+/** 写 hash（保留查询串）。push=true 时留一条历史，供浏览器前进/后退。 */
+function applyRoute(route: PanelRoute, push: boolean) {
+  try {
+    const url = new URL(location.href);
+    const hash = buildRoute(route);
+    if (url.hash === hash) return;
+    const next = url.pathname + url.search + hash;
+    if (push) history.pushState(null, '', next);
+    else history.replaceState(null, '', next);
+  } catch { /* ignore */ }
+}
+
+function normalizeFrameEntry(frame: { id?: unknown; memberId?: string; taskId?: string; ts?: string }, payload: Record<string, unknown>): TimelineEntry | null {  const id = Number(frame.id);
   if (!Number.isFinite(id)) return null;
   return {
     id, seq: payload.seq as number | undefined,
@@ -238,6 +293,40 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     return teams;
   }, [patchUi]);
 
+  /** DSH 工作区注册表快照（Host 插件低频同步到 sidecar）。 */
+  const refreshWorkspaces = useCallback(async () => {
+    const items = pickItems<Workspace>(await api('/api/workspaces', { onUnauthorized }));
+    patchUi({ workspaces: items });
+    return items;
+  }, [patchUi]);
+
+  /** 团队 → 所属工作区（按注册表里的 path 匹配）。 */
+  const workspaceForTeam = useCallback((team: Team | null | undefined, workspaces = stateRef.current.workspaces) =>
+    (team ? workspaces.find((w) => workspaceMatches(team.workspace, w.path)) || null : null), []);
+
+  const teamsInWorkspace = useCallback((workspaceId?: string | null) => {
+    const { teams, workspaces } = stateRef.current;
+    const wsId = workspaceId === undefined ? stateRef.current.workspaceId : workspaceId;
+    if (!wsId) return teams;
+    // 虚拟工作区：注册表里找不到归属的团队（旧团队、路径已改），避免它们从下拉里消失
+    if (wsId === OTHER_WORKSPACE_ID) {
+      return teams.filter((t) => !workspaces.some((w) => workspaceMatches(t.workspace, w.path)));
+    }
+    const ws = workspaces.find((w) => w.id === wsId);
+    if (!ws) return teams;
+    return teams.filter((t) => workspaceMatches(t.workspace, ws.path));
+  }, []);
+
+  /** 把当前 team/工作区/视图写进 URL（保持可复制、可后退）。 */
+  const writeRoute = useCallback((patch: Partial<PanelRoute> = {}, push = false) => {
+    const cur = stateRef.current;
+    applyRoute({
+      ws: patch.ws !== undefined ? patch.ws : cur.workspaceId,
+      team: patch.team !== undefined ? patch.team : cur.teamId,
+      tab: patch.tab !== undefined ? patch.tab : cur.tab,
+    }, push);
+  }, []);
+
   /** 团队状态 badge 依赖成员状态：member.status 帧到达时去抖刷新团队列表（避免每个 step 一次请求） */
   const teamsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refreshTeamsSoon = useCallback(() => {
@@ -304,6 +393,19 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, artifacts: items, errors: { ...prev.errors, artifacts: null } }));
   }, [onUnauthorized]);
 
+  const refreshContexts = useCallback(async () => {
+    const teamId = stateRef.current.teamId;
+    if (!teamId) return;
+    const resp = await api<{ items?: ContextSnapshot[]; lead?: ContextUsage | null }>('/api/contexts?team=' + enc(teamId), { onUnauthorized });
+    if (stateRef.current.teamId !== teamId) return; // 团队已切换：丢弃过期响应
+    setState((prev) => ({
+      ...prev,
+      contexts: resp?.items ?? [],
+      contextLead: resp?.lead ?? null,
+      errors: { ...prev.errors, contexts: null },
+    }));
+  }, [onUnauthorized]);
+
   const refreshPermissions = useCallback(async () => {
     const teamId = stateRef.current.teamId;
     const [policiesResponse, matrixResponse] = await Promise.all([
@@ -364,11 +466,12 @@ export function PanelProvider({ children }: { children: ReactNode }) {
       safe('tasks', refreshTasks),
       safe('todos', refreshTodos),
       safe('artifacts', refreshArtifacts),
+      safe('contexts', refreshContexts),
       safe('permissions', refreshPermissions),
       safe('approvals', refreshApprovals),
       safe('messages', refreshMessages),
     ]);
-  }, [refreshStatus, refreshTrace, refreshDag, refreshTasks, refreshTodos, refreshArtifacts, refreshPermissions, refreshApprovals, refreshMessages]);
+  }, [refreshStatus, refreshTrace, refreshDag, refreshTasks, refreshTodos, refreshArtifacts, refreshContexts, refreshPermissions, refreshApprovals, refreshMessages]);
 
   /**
    * 落盘一条越界申请的决策（home 右栏审批卡使用）。
@@ -381,16 +484,16 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     await Promise.all([refreshAll(), refreshPermissions()]);
   }, [refreshAll, refreshPermissions]);
 
-  const scheduleRefresh = useCallback((key: 'status' | 'trace' | 'dag' | 'tasks' | 'todos' | 'artifacts' | 'permissions' | 'approvals' | 'messages', delay = 200) => {
+  const scheduleRefresh = useCallback((key: 'status' | 'trace' | 'dag' | 'tasks' | 'todos' | 'artifacts' | 'contexts' | 'permissions' | 'approvals' | 'messages', delay = 200) => {
     if (refreshTimers.current[key]) return;
     refreshTimers.current[key] = setTimeout(async () => {
       delete refreshTimers.current[key];
       const map: Record<string, () => Promise<void>> = {
-        status: refreshStatus, trace: refreshTrace, dag: refreshDag, tasks: refreshTasks, todos: refreshTodos, artifacts: refreshArtifacts, permissions: refreshPermissions, approvals: refreshApprovals, messages: refreshMessages,
+        status: refreshStatus, trace: refreshTrace, dag: refreshDag, tasks: refreshTasks, todos: refreshTodos, artifacts: refreshArtifacts, contexts: refreshContexts, permissions: refreshPermissions, approvals: refreshApprovals, messages: refreshMessages,
       };
       try { await map[key](); } catch { return; }
     }, delay);
-  }, [refreshStatus, refreshTrace, refreshDag, refreshTasks, refreshTodos, refreshArtifacts, refreshPermissions, refreshApprovals, refreshMessages]);
+  }, [refreshStatus, refreshTrace, refreshDag, refreshTasks, refreshTodos, refreshArtifacts, refreshContexts, refreshPermissions, refreshApprovals, refreshMessages]);
 
   /* ---------- SSE ---------- */
   const memberName = useCallback((id?: string | null): string => {
@@ -490,6 +593,7 @@ export function PanelProvider({ children }: { children: ReactNode }) {
         }
         case 'task.state': scheduleRefresh('dag', 150); scheduleRefresh('tasks', 150); scheduleRefresh('artifacts', 200); break;
         case 'artifact.added': scheduleRefresh('artifacts', 150); break;
+        case 'context.update': scheduleRefresh('contexts', 200); break;
         case 'message.delivered': scheduleRefresh('messages', 250); break;
         case 'span.append':
           // 工具调用 / 步骤跨度变化：去抖刷新瀑布树，保留正在增长中的条
@@ -544,29 +648,53 @@ export function PanelProvider({ children }: { children: ReactNode }) {
   connectSSERef.current = connectSSE;
 
   /* ---------- 团队选择 / 启动 ---------- */
-  const selectTeam = useCallback(async (teamId: string) => {
+  const selectTeam = useCallback(async (teamId: string, opts: { route?: boolean } = {}) => {
     if (!teamId) return;
     const team = stateRef.current.teams.find((t) => t.id === teamId) || null;
+    // 团队自带工作区路径：切团队时同步工作区（深链接 / 跨工作区打开也一致）
+    const workspaceId = workspaceForTeam(team)?.id ?? stateRef.current.workspaceId;
     stopPlayback();
     pendingTimelineRef.current = [];
     timelineIdsRef.current = new Set();
     setState((prev) => ({
-      ...prev, teamId, team,
+      ...prev, teamId, team, workspaceId,
       members: [], staleMembers: new Set(), degraded: false, snapshot: null,
-      dag: null, tasks: [], todos: [], artifacts: [], trace: null, matrix: [], policies: [], scopeRequests: [], messages: [], timeline: [],
+      dag: null, tasks: [], todos: [], artifacts: [], contexts: [], contextLead: null, trace: null, matrix: [], policies: [], scopeRequests: [], messages: [], timeline: [],
       errors: {},
     }));
     // setState 异步生效；先同步 stateRef，保证随后的 refreshAll 读到新 teamId
-    stateRef.current = { ...stateRef.current, teamId, team };
-    try {
-      const url = new URL(location.href);
-      url.searchParams.set('team', teamId);
-      history.replaceState(null, '', url.pathname + url.search + url.hash);
-    } catch { /* ignore */ }
+    stateRef.current = { ...stateRef.current, teamId, team, workspaceId };
+    if (opts.route !== false) writeRoute({ team: teamId, ws: workspaceId }, true);
     await refreshAll();
     await backfillTimeline();
     connectSSE();
-  }, [refreshAll, backfillTimeline, connectSSE, stopPlayback]);
+  }, [refreshAll, backfillTimeline, connectSSE, stopPlayback, workspaceForTeam, writeRoute]);
+
+  /** 切换工作区：优先选该工作区下第一个团队，没有团队就进空态。 */
+  const selectWorkspace = useCallback(async (workspaceId: string, opts: { push?: boolean } = {}) => {
+    if (!workspaceId || workspaceId === stateRef.current.workspaceId) return;
+    const ws = stateRef.current.workspaces.find((w) => w.id === workspaceId) || null;
+    if (!ws && workspaceId !== OTHER_WORKSPACE_ID) return;
+    stateRef.current = { ...stateRef.current, workspaceId };
+    patchUi({ workspaceId });
+    const next = teamsInWorkspace(workspaceId)[0];
+    if (next) { await selectTeam(next.id, { route: false }); writeRoute({ ws: workspaceId, team: next.id }, opts.push !== false); return; }
+    // 该工作区没有团队：清空当前团队，保留工作区与视图
+    esRef.current?.close();
+    esRef.current = null;
+    stopPlayback();
+    pendingTimelineRef.current = [];
+    timelineIdsRef.current = new Set();
+    const cleared: Partial<PanelState> = {
+      teamId: null, team: null, members: [], staleMembers: new Set(), degraded: false, snapshot: null,
+      dag: null, tasks: [], todos: [], artifacts: [], contexts: [], contextLead: null, trace: null, matrix: [], policies: [], scopeRequests: [], messages: [],
+      timeline: [], errors: {},
+    };
+    stateRef.current = { ...stateRef.current, ...cleared, workspaceId };
+    setState((prev) => ({ ...prev, ...cleared, workspaceId }));
+    writeRoute({ ws: workspaceId, team: null }, opts.push !== false);
+    void refreshTeams().catch(() => undefined);
+  }, [patchUi, refreshTeams, selectTeam, stopPlayback, teamsInWorkspace, writeRoute]);
 
   const stopTeam = useCallback(async (teamId?: string) => {
     const id = teamId || stateRef.current.teamId;
@@ -599,23 +727,19 @@ export function PanelProvider({ children }: { children: ReactNode }) {
           timelineIdsRef.current = new Set();
           const cleared: Partial<PanelState> = {
             teamId: null, team: null, members: [], staleMembers: new Set(), degraded: false, snapshot: null,
-            dag: null, tasks: [], todos: [], artifacts: [], trace: null, matrix: [], policies: [], scopeRequests: [], messages: [],
+            dag: null, tasks: [], todos: [], artifacts: [], contexts: [], contextLead: null, trace: null, matrix: [], policies: [], scopeRequests: [], messages: [],
             timeline: [], errors: {},
           };
           stateRef.current = { ...stateRef.current, ...cleared };
           setState((prev) => ({ ...prev, ...cleared }));
-          try {
-            const url = new URL(location.href);
-            url.searchParams.delete('team');
-            history.replaceState(null, '', url.pathname + url.search + url.hash);
-          } catch { /* ignore */ }
+          writeRoute({ team: null }, false);
         }
       }
       toast('团队已删除', 'ok');
     } catch (err) {
       toast('删除团队失败：' + (err instanceof Error ? err.message : String(err)), 'error');
     }
-  }, [onUnauthorized, refreshTeams, selectTeam, stopPlayback, toast]);
+  }, [onUnauthorized, refreshTeams, selectTeam, stopPlayback, toast, writeRoute]);
 
   const archiveTeam = useCallback(async (teamId?: string) => {
     const id = teamId || stateRef.current.teamId;
@@ -634,23 +758,19 @@ export function PanelProvider({ children }: { children: ReactNode }) {
           timelineIdsRef.current = new Set();
           const cleared: Partial<PanelState> = {
             teamId: null, team: null, members: [], staleMembers: new Set(), degraded: false, snapshot: null,
-            dag: null, tasks: [], todos: [], artifacts: [], trace: null, matrix: [], policies: [], scopeRequests: [], messages: [],
+            dag: null, tasks: [], todos: [], artifacts: [], contexts: [], contextLead: null, trace: null, matrix: [], policies: [], scopeRequests: [], messages: [],
             timeline: [], errors: {},
           };
           stateRef.current = { ...stateRef.current, ...cleared };
           setState((prev) => ({ ...prev, ...cleared }));
-          try {
-            const url = new URL(location.href);
-            url.searchParams.delete('team');
-            history.replaceState(null, '', url.pathname + url.search + url.hash);
-          } catch { /* ignore */ }
+          writeRoute({ team: null }, false);
         }
       }
       toast('团队已封存，可在设置中恢复', 'ok');
     } catch (err) {
       toast('封存团队失败：' + (err instanceof Error ? err.message : String(err)), 'error');
     }
-  }, [onUnauthorized, refreshTeams, selectTeam, stopPlayback, toast]);
+  }, [onUnauthorized, refreshTeams, selectTeam, stopPlayback, toast, writeRoute]);
 
   const boot = useCallback(async () => {
     if (bootedRef.current) return;
@@ -659,15 +779,49 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     setAuthOverlay(null);
     setBootError(null);
     try {
+      const route = parseRoute();
       const { ui, lastEventId } = loadUiState();
       pausedRef.current = ui.paused;
       lastEventIdRef.current = lastEventId;
-      setState((prev) => ({ ...prev, tab: ui.tab, filters: ui.filters, paused: ui.paused, speed: ui.speed }));
+      const tab = route.tab ?? ui.tab;
+      // 旧链接可能带 ?team=：作为没有 hash 路由时的兜底
+      const legacyTeam = new URLSearchParams(location.search).get('team');
+      const wantedTeam = route.team ?? legacyTeam;
+      setState((prev) => ({ ...prev, tab, filters: ui.filters, paused: ui.paused, speed: ui.speed }));
+      storeSet(STORE_UI, JSON.stringify({ tab, filters: ui.filters, paused: ui.paused, speed: ui.speed }));
+      const workspaces = await refreshWorkspaces().catch(() => [] as Workspace[]);
       const teams = await refreshTeams();
-      if (!teams.length) return;
-      const wanted = new URLSearchParams(location.search).get('team');
-      const target = wanted && teams.some((t) => t.id === wanted) ? wanted : teams[0].id;
-      await selectTeam(target);
+      if (!teams.length) {
+        const wsId = route.ws ?? workspaces[0]?.id ?? null;
+        patchUi({ workspaceId: wsId });
+        stateRef.current = { ...stateRef.current, workspaceId: wsId };
+        writeRoute({ ws: wsId, team: null, tab }, false);
+        return;
+      }
+      const teamScope = (wsId: string | null) => {
+        if (!wsId) return teams;
+        if (wsId === OTHER_WORKSPACE_ID) {
+          return teams.filter((t) => !workspaces.some((w) => workspaceMatches(t.workspace, w.path)));
+        }
+        const ws = workspaces.find((w) => w.id === wsId);
+        return ws ? teams.filter((t) => workspaceMatches(t.workspace, ws.path)) : teams;
+      };
+      let workspaceId = route.ws && (workspaces.some((w) => w.id === route.ws) || route.ws === OTHER_WORKSPACE_ID) ? route.ws : null;
+      if (!workspaceId && wantedTeam) {
+        const known = teams.find((t) => t.id === wantedTeam);
+        workspaceId = known ? workspaces.find((w) => workspaceMatches(known.workspace, w.path))?.id ?? null : null;
+      }
+      if (!workspaceId) {
+        // 没有指定工作区时，优先落到「有团队」的第一个工作区，避免一进来就是空态
+        workspaceId = (workspaces.find((w) => teams.some((t) => workspaceMatches(t.workspace, w.path))) ?? workspaces[0])?.id ?? null;
+      }
+      const scoped = teamScope(workspaceId);
+      const target = (wantedTeam && scoped.some((t) => t.id === wantedTeam) ? wantedTeam : scoped[0]?.id) ?? null;
+      patchUi({ workspaceId });
+      stateRef.current = { ...stateRef.current, workspaceId };
+      if (!target) { writeRoute({ ws: workspaceId, team: null, tab }, false); return; }
+      await selectTeam(target, { route: false });
+      writeRoute({ ws: workspaceId, team: target, tab }, false);
     } catch (err) {
       if (err instanceof ApiError && err.code === 'E_UNAUTHORIZED') {
         patchUi({ conn: 'offline' });
@@ -675,7 +829,7 @@ export function PanelProvider({ children }: { children: ReactNode }) {
       }
       setBootError(err instanceof Error ? err.message : String(err));
     }
-  }, [patchUi, refreshTeams, selectTeam]);
+  }, [patchUi, refreshTeams, refreshWorkspaces, selectTeam, writeRoute]);
 
   const retryBoot = useCallback(() => {
     bootedRef.current = false;
@@ -699,9 +853,10 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     }));
   }, []);
 
-  const setTab = useCallback((tab: TabName) => {
+  const setTab = useCallback((tab: TabName, opts: { route?: boolean } = {}) => {
     patchUi({ tab });
     saveUiState({ tab });
+    if (opts.route !== false) writeRoute({ tab }, true);
     if (stateRef.current.teamId) {
       const map: Partial<Record<TabName, () => Promise<void>>> = {
         home: async () => { await refreshTasks(); await refreshTodos(); },
@@ -711,7 +866,7 @@ export function PanelProvider({ children }: { children: ReactNode }) {
       void map[tab]?.().catch(() => {});
       if (tab === 'board') void refreshTrace().catch(() => {});
     }
-  }, [patchUi, saveUiState, refreshStatus, refreshTrace, refreshDag, refreshTasks, refreshTodos, refreshPermissions, refreshApprovals, refreshMessages]);
+  }, [patchUi, saveUiState, writeRoute, refreshStatus, refreshTrace, refreshDag, refreshTasks, refreshTodos, refreshPermissions, refreshApprovals, refreshMessages]);
 
   const setPaused = useCallback((paused: boolean) => {
     pausedRef.current = paused;
@@ -736,6 +891,21 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, filters: { ...prev.filters, phase } }));
     saveUiState({ filters: { ...stateRef.current.filters, phase } });
   }, [saveUiState]);
+
+  /* ---------- 路由：浏览器前进/后退同步到面板状态 ---------- */
+  useEffect(() => {
+    const onRouteChange = () => {
+      const route = parseRoute();
+      const cur = stateRef.current;
+      if (route.tab && route.tab !== cur.tab) setTab(route.tab, { route: false });
+      if (route.ws && route.ws !== cur.workspaceId) { void selectWorkspace(route.ws, { push: false }); return; }
+      if (route.team && route.team !== cur.teamId && stateRef.current.teams.some((t) => t.id === route.team)) {
+        void selectTeam(route.team, { route: false });
+      }
+    };
+    window.addEventListener('hashchange', onRouteChange);
+    return () => window.removeEventListener('hashchange', onRouteChange);
+  }, [setTab, selectWorkspace, selectTeam]);
 
   const exportReport = useCallback(async () => {
     const teamId = stateRef.current.teamId;
@@ -766,7 +936,15 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     window.addEventListener('online', online);
     window.addEventListener('offline', offline);
     // 团队列表没有 SSE 事件（team_create/封存由插件或 API 触发）：低频轮询 + 回到前台时立即刷新。
-    const pollTeams = () => { if (!document.hidden) void refreshTeams().catch(() => undefined); };
+    // 工作区注册表同理（Host 每 20s 同步一次），这里每 6 次轮询（约 30s）顺带刷一次。
+    let ticks = 0;
+    const pollTeams = () => {
+      if (document.hidden) return;
+      void refreshTeams().catch(() => undefined);
+      ticks += 1;
+      // 工作区还没同步到（插件刚启动 / sidecar 刚起来）：每次轮询都补一次，直到有数据
+      if (!stateRef.current.workspaces.length || ticks % 6 === 0) void refreshWorkspaces().catch(() => undefined);
+    };
     const teamsPoll = window.setInterval(pollTeams, 5000);
     document.addEventListener('visibilitychange', pollTeams);
     return () => {
@@ -780,14 +958,14 @@ export function PanelProvider({ children }: { children: ReactNode }) {
       for (const timer of Object.values(refreshTimers.current)) clearTimeout(timer);
       if (teamsTimer.current) clearTimeout(teamsTimer.current);
     };
-  }, [boot, patchUi, stopPlayback, refreshTeams]);
+  }, [boot, patchUi, stopPlayback, refreshTeams, refreshWorkspaces]);
 
   const actions = useMemo<PanelActions>(() => ({
     state, toasts, authOverlay, bootError, memberName, toast,
-    selectTeam, refreshTeams, stopTeam, archiveTeam, deleteTeam, refreshAll, decideScope, refreshPermissions, refreshMessages, refreshStatus, refreshTrace, setTraceWindow,
+    selectTeam, refreshTeams, selectWorkspace, refreshWorkspaces, teamsInWorkspace, stopTeam, archiveTeam, deleteTeam, refreshAll, decideScope, refreshPermissions, refreshMessages, refreshContexts, refreshStatus, refreshTrace, setTraceWindow,
     setTab, setPaused, setSpeed, setFilterMember, setFilterPhase, exportReport,
     retryBoot, submitToken,
-  }), [state, toasts, authOverlay, bootError, memberName, toast, selectTeam, refreshTeams, stopTeam, archiveTeam, deleteTeam, refreshAll, decideScope, refreshPermissions, refreshMessages, refreshStatus, refreshTrace, setTraceWindow, setTab, setPaused, setSpeed, setFilterMember, setFilterPhase, exportReport, retryBoot, submitToken]);
+  }), [state, toasts, authOverlay, bootError, memberName, toast, selectTeam, refreshTeams, selectWorkspace, refreshWorkspaces, teamsInWorkspace, stopTeam, archiveTeam, deleteTeam, refreshAll, decideScope, refreshPermissions, refreshMessages, refreshContexts, refreshStatus, refreshTrace, setTraceWindow, setTab, setPaused, setSpeed, setFilterMember, setFilterPhase, exportReport, retryBoot, submitToken]);
 
   return <PanelContext.Provider value={actions}>{children}</PanelContext.Provider>;
 }

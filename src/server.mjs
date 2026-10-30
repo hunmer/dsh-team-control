@@ -62,6 +62,7 @@ export function createRoutes(core) {
     // teams
     ['POST', /^\/api\/teams$/, async (ctx) => C.createTeam(ctx.body)],
     ['GET', /^\/api\/teams$/, async (ctx) => ({ items: C.listTeams({ archived: qs(ctx.url).get('archived') === '1' }) })],
+    ['GET', /^\/api\/teams\/by-lead\/([^/]+)$/, async (ctx) => ({ item: C.teamByLead(decodeURIComponent(ctx.p[0])) })],
     ['GET', /^\/api\/teams\/([^/]+)$/, async (ctx) => C.teamView(C.getTeam(ctx.p[0]))],
     ['PATCH', /^\/api\/teams\/([^/]+)$/, async (ctx) => C.patchTeam(ctx.p[0], ctx.body)],
     ['POST', /^\/api\/teams\/([^/]+)\/stop$/, async (ctx) => C.stopTeam(ctx.p[0], ctx.body.reason)],
@@ -111,6 +112,14 @@ export function createRoutes(core) {
     // 成员产物（Host 插件采集 present / workspace 变更后推送到这里）
     ['GET', /^\/api\/artifacts$/, async (ctx) => C.listArtifacts(need(qs(ctx.url).get('team'), 'team'), { taskId: qs(ctx.url).get('task'), limit: qs(ctx.url).get('limit') })],
     ['POST', /^\/api\/artifacts$/, async (ctx) => C.addArtifacts(ctx.body)],
+
+    // 成员上下文分析（Host 插件算好「上下文窗口被什么占满」后推送；面板按成员展示）
+    ['GET', /^\/api\/contexts$/, async (ctx) => C.listContexts(need(qs(ctx.url).get('team'), 'team'), { memberId: qs(ctx.url).get('member') })],
+    ['POST', /^\/api\/contexts$/, async (ctx) => C.reportContext(ctx.body)],
+
+    // DSH 工作区列表（Host 插件从 ctx.workspaceRegistry 同步过来）
+    ['GET', /^\/api\/workspaces$/, async () => C.listWorkspaces()],
+    ['POST', /^\/api\/workspaces$/, async (ctx) => C.reportWorkspaces(ctx.body)],
 
     // status / steps / blockers / metrics
     ['GET', /^\/api\/status$/, async (ctx) => C.status({ teamId: qs(ctx.url).get('team'), memberId: qs(ctx.url).get('member') })],

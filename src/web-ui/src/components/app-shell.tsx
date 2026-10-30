@@ -87,7 +87,7 @@ function ShellBody({ nav, groups = [], active, onNavigate, header, sidebarTop, f
   return (
     <>
       <Sidebar collapsible="icon">
-        {sidebarTop && !topInHeader && <SidebarHeader className="p-2">{sidebarTop}</SidebarHeader>}
+        {sidebarTop && !topInHeader && <SidebarHeader className="p-2 pt-3.5">{sidebarTop}</SidebarHeader>}
         <SidebarContent>
           <SidebarGroup>
             <SidebarGroupLabel>导航</SidebarGroupLabel>

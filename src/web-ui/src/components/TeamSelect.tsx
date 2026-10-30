@@ -1,8 +1,8 @@
 /**
- * 团队切换（用户要求：从顶栏移到左侧栏顶部）。
+ * 团队切换：默认放在顶栏左侧（用户要求：从侧栏移到 TopBar），只展示「当前工作区」下的团队。
  *
- * 渲染在 AppShell 的 `sidebarTop` 插槽里，宽度跟随侧栏；
- * 数据与行为完全复用 store 的 teams / teamId / selectTeam。
+ * 数据来自 store：teams（全部）+ workspaceId + selectTeam；团队 → 工作区的归属由
+ * 团队自带的 workspace 路径与 /api/workspaces 的 path 匹配得出（见 teamsInWorkspace）。
  * 下拉列表：左侧运行状态 badge、右侧删除图标（删除前二次确认）。
  */
 import { Trash2 } from 'lucide-react';
@@ -16,18 +16,21 @@ const RUN_VARIANT: Record<TeamRunStatus, 'success' | 'warning' | 'secondary' | '
   running: 'success', blocked: 'warning', idle: 'secondary', empty: 'outline',
 };
 
-export function TeamSelect() {
-  const { state, selectTeam, deleteTeam, toast } = usePanel();
-  const { teams, teamId } = state;
+export function TeamSelect({ className = '' }: { className?: string } = {}) {
+  const { state, selectTeam, deleteTeam, teamsInWorkspace, toast } = usePanel();
+  const { teamId, workspaces, workspaceId } = state;
+  const teams = teamsInWorkspace();
 
   const current = teams.find((team) => team.id === teamId);
   const label = current
     ? current.name || current.id
     : teams.length
       ? '选择团队'
-      : state.noTeams
-        ? '暂无团队'
-        : '加载中…';
+      : workspaceId && workspaces.length
+        ? '该工作区暂无团队'
+        : state.noTeams
+          ? '暂无团队'
+          : '加载中…';
 
   const onDelete = (team: Team) => {
     const name = team.name || team.id;
@@ -39,7 +42,7 @@ export function TeamSelect() {
   };
 
   return (
-    <div className="ui-side-team">
+    <div className={'ui-side-team ' + className}>
       <Select
         value={teamId ?? ''}
         onValueChange={(value) => {

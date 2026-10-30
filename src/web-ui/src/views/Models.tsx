@@ -84,6 +84,13 @@ export function ModelsView() {
 
   useEffect(() => { void load(); }, []);
 
+  // 模型目录由 Host 插件启动时同步；这里在「目录为空」期间自动重试，免得用户手动切页刷新
+  useEffect(() => {
+    if (loading || (catalog && catalog.providers.length)) return;
+    const timer = setInterval(() => { void load(); }, 5000);
+    return () => clearInterval(timer);
+  }, [loading, catalog]);
+
   const mutate = async (model: LlmModel, patch: { enabled?: boolean; note?: string }) => {
     const key = keyOf(model);
     setBusy((prev) => new Set(prev).add(key));

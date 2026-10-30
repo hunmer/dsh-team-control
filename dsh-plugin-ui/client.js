@@ -229,7 +229,7 @@ window.__ModuleLoader__.load({
 
     // ---------- dsh-better-sidebar 页签（可选宿主，装了就把入口交给它） ----------
     /** 看板在 better-sidebar 里的页签描述：原生右侧栏的 guide 胶囊 + 插件底部工作台的 + 菜单同源。 */
-    function betterTabDescriptor(t) {
+    function betterTabDescriptor(t, getService) {
       return {
         id: 'dsh-team:panel',
         title: () => t('side_nav'),
@@ -237,12 +237,36 @@ window.__ModuleLoader__.load({
         icon: (size) => h(TeamIcon, { size: size || 16 }),
         order: 30,
         single: true,
-        component: () => h(TeamView, { t, compact: true }),
+        component: () => h(TeamView, { t, compact: true, getService }),
       };
     }
 
+    /** 自动打开面板时希望面板直接选中的团队（TeamView 渲染时带上 &team=）。 */
+    let pendingTeamId = null;
+
     /** 面板主体：iframe 复用 sidecar 自带 /panel（成员看板 Trace 瀑布 + 其余视图 + SSE）。 */
-    function TeamView({ t, compact }) {
+    function TeamView({ t, compact, getService }) {
+      const teamParam = pendingTeamId || '';
+      const frameSrc = '/dsh-team-api/panel?api=/dsh-team-api&embed=1'
+        + (teamParam ? '&team=' + encodeURIComponent(teamParam) : '');
+      const frameRef = React.useRef(null);
+      // 面板（同源 iframe）里点成员 → 在这里真正打开 DSH 的成员对话侧栏。
+      React.useEffect(() => {
+        const onMessage = (event) => {
+          const frame = frameRef.current;
+          if (!frame || !event || event.source !== frame.contentWindow) return;
+          const data = event.data;
+          if (!data || data.type !== 'dsh-team:open-member') return;
+          const childSessionId = typeof data.sessionId === 'string' ? data.sessionId : '';
+          if (!childSessionId) return;
+          const parentSessionId = typeof data.parentSessionId === 'string' ? data.parentSessionId : '';
+          if (!openMemberAside(getService, parentSessionId, childSessionId)) {
+            console.warn('[dsh-team] 无法打开成员会话：缺少 sidebarRight / uiWorkspace');
+          }
+        };
+        window.addEventListener('message', onMessage);
+        return () => window.removeEventListener('message', onMessage);
+      }, [getService]);
       return h('div', { className: 'dsht-page' },
         h('header', { className: 'dsht-page-head' },
           h('span', { className: 'dsht-page-mark' }, h(TeamIcon, { size: compact ? 14 : 16 })),
@@ -251,9 +275,11 @@ window.__ModuleLoader__.load({
           h('span', { className: 'dsht-spacer' })),
         h('div', { className: 'dsht-page-body' },
           h('iframe', {
+            ref: frameRef,
+            key: teamParam || 'default',
             className: 'dsht-frame',
             title: t('title'),
-            src: '/dsh-team-api/panel?api=/dsh-team-api&embed=1',
+            src: frameSrc,
           })));
     }
 
@@ -322,6 +348,23 @@ window.__ModuleLoader__.load({
       }
       return false;
     }
+
+    /** 把「编排」页签在会话侧栏里打开：优先 better-sidebar 页签，其次 DSH 原生右侧栏。 */
+    function openTeamPanel(getService, sessionId) {
+      const better = getService('betterSidebar');
+      if (better && typeof better.openTab === 'function') {
+        // target:'bottom' 让它落在 better-sidebar 自己的工作台并自动展开（默认 'right' 会走原生页签类型，本插件没注册）
+        try { better.openTab({ type: 'dsh-team:panel', target: 'bottom' }, { sessionId }); return true; } catch (e) { console.warn('[dsh-team] openTab failed', e); }
+      }
+      const right = getService('sidebarRight');
+      if (right && typeof right.openTab === 'function') {
+        try { right.openTab('dsh-team'); return true; } catch (e) { console.warn('[dsh-team] sidebarRight.openTab failed', e); }
+      }
+      return false;
+    }
+
+    /** 本会话是否已经自动推开过一次（用户手动收起后不再打扰）。 */
+    const AUTO_OPEN_KEY = 'dsh-team.autoopen.v1.';
 
     /* ------------------------------------------------------------------
      * 会话右上角团队卡片（移植 affectui `agent-findings`）
@@ -872,6 +915,38 @@ window.__ModuleLoader__.load({
         const kidsKey = kids.map((kid) => kid.id).join(',');
         const card = useCard(sessionId);
 
+        // 团队建好（或进入一个已有团队的会话）后自动把编排页推到侧栏；每会话只自动开一次。
+        React.useEffect(() => {
+          if (!sessionId) return undefined;
+          const key = AUTO_OPEN_KEY + sessionId;
+          try { if (window.sessionStorage.getItem(key) === '1') return undefined; } catch { /* ignore */ }
+          let stopped = false;
+          let timer = null;
+          let attempt = 0;
+          const tick = async () => {
+            if (stopped) return;
+            attempt += 1;
+            let team = null;
+            try {
+              const res = await fetch(SIDECAR_BASE + '/api/teams/by-lead/' + encodeURIComponent(sessionId),
+                { headers: { accept: 'application/json' } });
+              if (res && res.ok) team = ((await res.json()) || {}).item || null;
+            } catch { /* sidecar 没起：下一轮再试 */ }
+            if (stopped) return;
+            if (team) {
+              stopped = true;
+              try { window.sessionStorage.setItem(key, '1'); } catch { /* ignore */ }
+              pendingTeamId = team.id || null;
+              openTeamPanel(getService, sessionId);
+              return;
+            }
+            // 前 1 分钟勤快点（刚建团队），之后降频，避免长期空转
+            timer = setTimeout(tick, attempt < 20 ? 3000 : 15000);
+          };
+          timer = setTimeout(tick, 500);
+          return () => { stopped = true; if (timer) clearTimeout(timer); };
+        }, [sessionId]);
+
         React.useEffect(() => {
           if (!sessionId || !kidsKey) return undefined;
           cardStore.setActive(sessionId);
@@ -1081,7 +1156,7 @@ window.__ModuleLoader__.load({
             if (betterDispose) return true;
             if (!service || typeof service.registerTab !== 'function') return false;
             try {
-              betterDispose = service.registerTab(betterTabDescriptor(t));
+              betterDispose = service.registerTab(betterTabDescriptor(t, getService));
               return true;
             } catch (e) {
               console.warn('[dsh-team] betterSidebar.registerTab failed', e);
@@ -1122,7 +1197,7 @@ window.__ModuleLoader__.load({
             disposers.push(ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
               name: 'sidebar.right.pane.tab',
               key: 'dsh-team',
-            }, () => h(TeamView, { t, compact: true }))));
+            }, () => h(TeamView, { t, compact: true, getService }))));
             disposers.push(ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
               name: 'sidebar.footer.action',
               id: 'dsh-team',
@@ -1137,7 +1212,7 @@ window.__ModuleLoader__.load({
           disposers.push(ctx.slots.inject('main', () => ctx.slots.register({
             name: 'main',
             key: 'dsh-team',
-          }, () => h(TeamView, { t, compact: false }))));
+          }, () => h(TeamView, { t, compact: false, getService }))));
           disposers.push(ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
             name: 'sidebar.panellist',
             id: 'dsh-team',

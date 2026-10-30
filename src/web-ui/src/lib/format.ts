@@ -1,5 +1,19 @@
 const pad2 = (n: number) => String(n).padStart(2, '0');
 
+/** token 数：≥100k 取整 k，≥1k 保留一位小数，其余原样。 */
+export function fmtTokens(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0';
+  if (n >= 100_000) return `${Math.round(n / 1000)}k`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(Math.round(n));
+}
+
+/** 花费一般都很小，给到 4 位小数才不至于全显示成 $0.00。 */
+export function fmtCost(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '$0';
+  return n < 1 ? `$${n.toFixed(4)}` : `$${n.toFixed(2)}`;
+}
+
 export function fmtClock(ts?: string | null): string {
   const d = ts ? new Date(ts) : null;
   if (!d || Number.isNaN(d.getTime())) return '—';
