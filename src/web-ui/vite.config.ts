@@ -7,7 +7,21 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    // dev 模式：/panel/ 目录路径落到 panel.html（生产由 sidecar 托管时同样行为）
+    {
+      name: 'panel-dev-fallback',
+      apply: 'serve',
+      configureServer(server) {
+        server.middlewares.use((req, _res, next) => {
+          if (req.url === '/panel' || req.url === '/panel/') req.url = '/panel/panel.html';
+          next();
+        });
+      },
+    },
+  ],
   base: '/panel/',
   resolve: {
     alias: {
