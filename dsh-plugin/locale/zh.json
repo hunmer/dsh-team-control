@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "dsh-team 编排控制平面",
+    "title": "dsh-team 编排协同开发",
     "description": "把本地 dsh-team sidecar 暴露为模型可调用的工具：建队/加成员、DAG 任务与依赖、实时状态与阻塞、消息、四域越界审批、中断恢复与运行报告。"
   }
 }

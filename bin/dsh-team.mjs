@@ -111,7 +111,7 @@ async function cmdDown(opts) {
   try { fs.rmSync(file, { force: true }); } catch { /* ignore */ }
 }
 
-const HELP = `dsh-team — Agent 编排控制平面 CLI
+const HELP = `dsh-team — Agent 编排协同开发 CLI
 
 用法：
   dsh-team up [--port N] [--data DIR]
