@@ -1,11 +1,14 @@
 {
-  "name": "dsh-team",
+  "name": "dsh-team-control",
   "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "Agent 编排控制平面：可配置上限、DAG 自动派发、四域强制权限、SSE 实时可观测（PRD v1.0 实现）",
   "bin": { "dsh-team": "bin/dsh-team.mjs" },
   "engines": { "node": ">=22.15.0" },
+  "repository": { "type": "git", "url": "git+https://github.com/hunmer/dsh-team-control.git" },
+  "homepage": "https://github.com/hunmer/dsh-team-control#readme",
+  "bugs": { "url": "https://github.com/hunmer/dsh-team-control/issues" },
   "scripts": {
     "start": "node bin/dsh-team.mjs up",
     "test": "node tests/run-all.mjs",
