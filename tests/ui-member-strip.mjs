@@ -186,8 +186,8 @@ assert.ok(
 );
 assert.ok(headChildren[0].textContent.includes('@supports not ((backdrop-filter'), '不支持 backdrop-filter 时有不透明兜底');
 
-const strip = registrations.find((r) => r.desc && r.desc.name === 'conversation.session.header.utilities');
-assert.ok(strip, '应注册 conversation.session.header.utilities');
+const strip = registrations.find((r) => r.desc && r.desc.name === 'conversation.input.left');
+assert.ok(strip, '应注册 conversation.input.left');
 assert.equal(strip.desc.id, 'dsh-team:members', 'slot 条目 id');
 
 const dock = registrations.find((r) => r.desc && r.desc.name === 'shell.overlay');
@@ -235,8 +235,9 @@ assert.ok(requested.some((u) => u === '/dsh-team-api/api/status'), '通过 Host 
 const pill = strip.component({ sessionId: 's1', useSessions });
 assert.equal(pill.props['data-dsh-team-pill'], TEAM.id, 'pill 绑定团队 id');
 assert.equal(pill.props['aria-expanded'], 'true', '有运行中成员时卡片自动展开');
-assert.equal(textOf(byClass(pill, 'dsht-afc-pill-name')[0]), '小说团队', 'pill 显示团队名');
-assert.equal(textOf(byClass(pill, 'dsht-afc-pill-run')[0]), 'running_of[2,4]', '运行中 2 / 成员 4（不含他会话成员；idle 但有 running 任务的也算运行中）');
+assert.equal(byClass(pill, 'dsht-afc-pill-name').length, 0, '胶囊已精简：不再渲染团队名文本');
+assert.ok(String(pill.props['aria-label']).includes('小说团队'), '团队名只留在 aria-label/tooltip');
+assert.equal(textOf(byClass(pill, 'dsht-afc-pill-run')[0]), '2/4', '运行中 2 / 成员 4（不含他会话成员；idle 但有 running 任务的也算运行中）');
 
 const sevs = byClass(pill, 'dsht-afc-pill-sev');
 assert.equal(sevs.length, 2, '严重/警告两个计数');

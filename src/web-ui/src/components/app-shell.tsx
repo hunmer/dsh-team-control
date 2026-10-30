@@ -7,7 +7,7 @@
  * 侧栏收起成图标条时，`sidebarTop`（团队切换器）会移进顶栏内联展示，
  * 避免窄轨道里宽度超出侧栏、看起来像浮层。
  */
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import {
   Sidebar,
   SidebarContent,
@@ -80,9 +80,21 @@ function NavList({ items, active, onNavigate }: { items: NavItem[]; active: stri
 }
 
 function ShellBody({ nav, groups = [], active, onNavigate, header, sidebarTop, footer, children }: AppShellProps) {
-  const { isMobile, state } = useSidebar();
+  const { isMobile, state, setOpenMobile } = useSidebar();
   // 收起到图标条时顶栏没有多余宽度，把团队切换器内联进 header
   const topInHeader = !isMobile && state === 'collapsed';
+
+  // 小屏侧栏是抽屉：跳转到别的视图（点导航、收件箱跳审阅、hash 路由变化）后自动收起，
+  // 否则抽屉会盖住刚跳过去的页面。
+  useEffect(() => {
+    if (isMobile) setOpenMobile(false);
+  }, [active, isMobile, setOpenMobile]);
+
+  const navigate = (label: string) => {
+    onNavigate(label);
+    // 点当前视图时 active 不变、上面的 effect 不会触发，这里直接收掉
+    if (isMobile) setOpenMobile(false);
+  };
 
   return (
     <>
@@ -92,7 +104,7 @@ function ShellBody({ nav, groups = [], active, onNavigate, header, sidebarTop, f
           <SidebarGroup>
             <SidebarGroupLabel>导航</SidebarGroupLabel>
             <SidebarGroupContent>
-              <NavList items={nav} active={active} onNavigate={onNavigate} />
+              <NavList items={nav} active={active} onNavigate={navigate} />
             </SidebarGroupContent>
           </SidebarGroup>
           {groups.map((group, index) => (
@@ -103,7 +115,7 @@ function ShellBody({ nav, groups = [], active, onNavigate, header, sidebarTop, f
                 {group.items.length === 0 ? (
                   <p className="px-2 py-1.5 text-muted-foreground text-xs">{group.empty ?? '暂无内容'}</p>
                 ) : (
-                  <NavList items={group.items} active={active} onNavigate={onNavigate} />
+                  <NavList items={group.items} active={active} onNavigate={navigate} />
                 )}
               </SidebarGroupContent>
             </SidebarGroup>

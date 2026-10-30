@@ -141,7 +141,7 @@ check('better-sidebar 已装：额外注册页签，原生右侧栏入口仍在'
   assert.equal(better.tabs.length, 1, `registerTab 次数=${better.tabs.length}`);
   assert.deepEqual(
     app.entries.map((e) => e.spec.name).sort(),
-    ['conversation.session.header.utilities', 'shell.overlay', 'sidebar.right.pane.tab'],
+    ['conversation.input.left', 'shell.overlay', 'sidebar.right.pane.tab'],
     `原生入口 + 团队卡片都要在：${app.entries.map((e) => e.spec.name).join(',')}`,
   );
   assert.equal(app.injectCbs.length, 1, '只等 sidebarRightTabs（本用例没给这个服务）');
@@ -187,7 +187,7 @@ check('未装 better-sidebar：右侧栏 Tab + 「开始」页 guide 入口', ()
   const names = app.entries.map((e) => e.spec.name).sort();
   assert.deepEqual(
     names,
-    ['conversation.session.header.utilities', 'shell.overlay', 'sidebar.right.pane.tab'],
+    ['conversation.input.left', 'shell.overlay', 'sidebar.right.pane.tab'],
     names.join(','),
   );
   assert.equal(registered[0].guide.length, 1, 'guide 入口一个（右侧栏「开始」页）');
@@ -228,7 +228,7 @@ check('服务晚到：sidebarRightTabs 由 ctx.inject 等待，就绪后补注�
   const names = app.entries.map((e) => e.spec.name).sort();
   assert.deepEqual(
     names,
-    ['conversation.session.header.utilities', 'shell.overlay', 'sidebar.right.pane.tab'],
+    ['conversation.input.left', 'shell.overlay', 'sidebar.right.pane.tab'],
     names.join(','),
   );
   assert.ok(app.injectCbs.some((c) => c.deps.includes('sidebarRightTabs')), '等待 sidebarRightTabs');
