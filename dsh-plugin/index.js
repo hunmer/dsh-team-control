@@ -76,6 +76,8 @@ function resolveConfig(config) {
     agentIdleSettleMs: c.agentIdleSettleMs == null ? 12000 : Math.max(0, Number(c.agentIdleSettleMs) || 0),
     // 成员状态心跳：本地认为在跑、sidecar 却回落到 idle 时补报 running（任务仍在跑说明回合没结束）
     agentHeartbeatMs: Number(c.agentHeartbeatMs) || 15000,
+    // 任务投递后成员会话迟迟没有任何事件（模型路由报错、会话没启动）就判定失败并交回 sidecar 重试
+    agentStartTimeoutMs: Number(c.agentStartTimeoutMs) || 120000,
     // spawnTeammate 的 provider：默认与 dsh-experimental-tool-agent-team 一致
     freshProvider: String(c.freshProvider || 'spawn'),
     forkProvider: String(c.forkProvider || 'fork'),
@@ -717,6 +719,8 @@ async function dispatchLoop(s, ctx, teamId) {
         return { dispatched, error: `sendMessage failed: ${String(err?.message || err)}` };
       }
       dispatched.push({ taskId: task.id, task: task.subject, member: member.name });
+      // 投递成功 ≠ 真的跑起来：开一个「有没有活动」的监视，模型路由挂了也能把任务交回去
+      if (member.agentSessionId) armStartWatchdog(s, String(member.agentSessionId), teamId, task.id);
     }
     return { dispatched, reason: 'max_rounds' };
   } finally {
@@ -740,10 +744,38 @@ function reportAgentStatus(s, sessionId, status, detail) {
 const agentStatusBySession = new Map();
 /** sessionId → 待落库的 idle 上报定时器。 */
 const idleTimers = new Map();
+/** sessionId → 派发后「成员会话是否真的跑起来」的监视定时器。 */
+const startTimers = new Map();
 
 function cancelIdleReport(sessionId) {
   const timer = idleTimers.get(sessionId);
   if (timer) { clearTimeout(timer); idleTimers.delete(sessionId); }
+}
+
+/**
+ * 派发监视：任务投进成员信箱后，成员会话必须在这段时间内产生**任意**事件（turn/start、工具调用…）。
+ * 模型路由挂掉时（例如 provider 返回 failed before it finished），DSH 只会把状态回到 idle、
+ * 上一轮在途任务永远停在 running，那个成员就被“挂着 running 任务的 assignee”规则永久排除。
+ * 超时没有任何事件 → 报 failed，sidecar 按重试策略把任务交回 ready。
+ */
+function armStartWatchdog(s, sessionId, teamId, taskId) {
+  cancelStartWatchdog(sessionId);
+  const timeout = Number(s.agentStartTimeoutMs) || 0;
+  if (!sessionId || timeout <= 0) return;
+  const timer = setTimeout(() => {
+    startTimers.delete(sessionId);
+    if (agentStatusBySession.get(sessionId) !== 'running') return;      // 期间已经收工/失败过，不用管
+    agentStatusBySession.set(sessionId, 'idle');
+    reportAgentStatus(s, sessionId, 'failed',
+      `成员会话在 ${Math.round(timeout / 1000)}s 内没有任何活动（模型路由失败或会话未启动），任务交回重试`);
+  }, timeout);
+  timer.unref?.();
+  startTimers.set(sessionId, timer);
+}
+
+function cancelStartWatchdog(sessionId) {
+  const timer = startTimers.get(sessionId);
+  if (timer) { clearTimeout(timer); startTimers.delete(sessionId); }
 }
 
 /** 直接读 sidecar /status（不经 request：心跳/镜像不能顺手把 sidecar 拉起来）。 */
@@ -1141,7 +1173,7 @@ function buildTools(s, ctx) {
 
   tools.push({
     name: 'team_task',
-    description: 'Declare one task (DAG node) and hand it to a member. Two runtimes: on a `worker` team each plan step is one proxied action executed through the sidecar broker (the worker process has no direct IO, so a denied step fails hard); on an `agent` team the plan is a BRIEF sent to the member’s own sub-agent session, which does the work with its own tools and calls team_report_task when finished — write the brief self-contained (the member does not see this conversation). `assignee` takes a member **id** from team_spawn, not its name; omit it to let the scheduler pick an idle member. The scheduler satisfies dependencies itself — never poll. Creating a task on an agent team dispatches it immediately to an idle member when dependencies are already satisfied.',
+    description: 'Declare one task (DAG node) and hand it to a member. Two runtimes: on a `worker` team each plan step is one proxied action executed through the sidecar broker (the worker process has no direct IO, so a denied step fails hard); on an `agent` team the plan is a BRIEF sent to the member’s own sub-agent session, which does the work with its own tools and calls team_report_task when finished — write the brief self-contained (the member does not see this conversation). `assignee` takes a member **id** from team_spawn, not its name; omit it to let the scheduler pick an idle member. `deps[].from` takes a **task** id returned by an earlier team_task (member ids are rejected). The scheduler satisfies dependencies itself — never poll. Creating a task on an agent team dispatches it immediately to an idle member when dependencies are already satisfied.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -1157,7 +1189,7 @@ function buildTools(s, ctx) {
             type: 'object',
             additionalProperties: false,
             properties: {
-              from: { type: 'string', description: 'Upstream task id.' },
+              from: { type: 'string', description: 'Upstream **task** id (starts with task_), taken from the team_task result — not a member id.' },
               condition: { type: 'string', enum: ['all_success', 'any_success', 'on_failure', 'artifact_exists'] },
               artifactPath: { type: 'string', description: 'Workspace-relative path for condition=artifact_exists.' },
             },
@@ -1798,7 +1830,8 @@ export function apply(ctx, config) {
       for (const dispose of disposers.reverse()) { try { dispose(); } catch { /* ignore */ } }
       leadByTeam.clear(); runtimeByTeam.clear(); sessionMember.clear(); dispatching.clear(); teamBySession.clear(); contextReportAt.clear();
       for (const timer of idleTimers.values()) clearTimeout(timer);
-      idleTimers.clear(); agentStatusBySession.clear(); lastReplyBySession.clear();
+      for (const timer of startTimers.values()) clearTimeout(timer);
+      idleTimers.clear(); startTimers.clear(); agentStatusBySession.clear(); lastReplyBySession.clear();
       const spawned = s.spawned;
       if (spawned?.child && spawned.child.exitCode === null) {
         try { spawned.child.kill(); } catch { /* ignore */ }
@@ -1882,7 +1915,9 @@ export function apply(ctx, config) {
     const finish = () => {
       idleTimers.delete(sessionId);
       if (agentStatusBySession.get(sessionId) !== 'idle') return; // 窗口内又跑起来了
-      reportAgentStatus(s, sessionId, 'idle');
+      // 把这一轮最后的正文带给 sidecar：漏调 team_report_task 时，兜底收尾的 task.done 也有摘要可看
+      const reply = lastReplyBySession.get(sessionId);
+      reportAgentStatus(s, sessionId, 'idle', reply ? clip(reply, 500) : undefined);
       void flushMemberReply(s, sessionId).catch(() => { /* ignore */ });
       if (s.agentAutoDispatch) {
         void dispatchLoop(s, ctx, binding.teamId).catch(() => { /* ignore */ });
@@ -1899,6 +1934,21 @@ export function apply(ctx, config) {
   ctx.on('session/event', (session, event) => {
     const sessionId = session?.id != null ? String(session.id) : null;
     if (!sessionId || !sessionMember.has(sessionId)) return;
+    // 收到了这个会话的事件 → 会话确实活着，撤掉「派发后没动静」的监视
+    cancelStartWatchdog(sessionId);
+    // 回合以 error 结束（模型路由报错、上游超时、适配器异常…）：DSH 的 agent 状态只会回到 idle，
+    // 若不在这里报 failed，sidecar 会把在途任务当「正常收工」结掉，成员也得等下一次派发才发现。
+    if (event && event.type === 'turn/end') {
+      const reason = event.data?.reason;
+      if (reason && reason.kind === 'error') {
+        const err = reason.error || {};
+        const msg = String(err.message || err.code || 'unknown error').slice(0, 500);
+        cancelIdleReport(sessionId);
+        agentStatusBySession.set(sessionId, 'idle');
+        reportAgentStatus(s, sessionId, 'failed', `模型回合失败：${msg}`);
+      }
+      return;
+    }
     if (!event || event.type !== 'assistant/message') return;
     const text = assistantReplyText(event.data?.message);
     if (text) lastReplyBySession.set(sessionId, text);

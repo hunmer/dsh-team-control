@@ -19,6 +19,7 @@ const STATUSES = ['queued', 'provisioning', 'idle', 'running', 'blocked', 'done'
 
 /** 成员运行时：worker = 沙箱 Node 进程（sidecar 内派发）；agent = 真 DSH sub-agent（Host 插件派发） */
 export const RUNTIMES = ['worker', 'agent'];
+
 const runtimeOf = (team) => (team && team.runtime) || 'worker';
 /** status() 里附加 runtime；未知团队退回 'worker'，不让一次查询失败。 */
 const safeRuntimeOf = (core, teamId) => {
@@ -547,7 +548,23 @@ export class DshTeam {
       // 建任务后留 settle 窗口，让 Lead 有机会先声明依赖
       if (Date.now() - Date.parse(task.createdAt) < this.scheduler.settleMs) { settled++; continue; }
       const member = this.pickIdleAgent(teamId, task.assignee || null);
-      if (!member) return { dispatched: false, reason: 'no_idle_agent' };
+      if (!member) {
+        // 说清楚「为什么派不出去」：团队里到底有没有 idle 的 agent 成员、是不是被指定 assignee 卡住
+        const idleTotal = Number(this.get(
+          `SELECT COUNT(*) AS c FROM member m JOIN member_state s ON s.member_id=m.id
+           WHERE m.team_id=? AND m.agent_session_id IS NOT NULL AND s.status='idle'`
+        ).get(teamId).c);
+        return {
+          dispatched: false, reason: 'no_idle_agent', taskId: task.id,
+          ...(task.assignee ? { wantedAssignee: task.assignee } : {}),
+          idleMembers: idleTotal,
+          hint: task.assignee
+            ? `任务指定了 assignee ${task.assignee}，但它现在不空闲；用 team_control({action:"assign"}) 换人或先让它收工`
+            : (idleTotal
+              ? '有 idle 成员但都被未收尾的 running 任务占着；等一次心跳或再调一次 team_dispatch'
+              : '团队里没有 idle 的 agent 成员：确认成员会话还活着（team_status），必要时 team_control resume 或补一个成员'),
+        };
+      }
       this.get("UPDATE task SET status='running', assignee=?, attempts=attempts+1, attempted_at=?, updated_at=? WHERE id=?")
         .run(member.id, nowIso(), nowIso(), task.id);
       this.events.append({

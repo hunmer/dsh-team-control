@@ -95,6 +95,9 @@ team_spawn({ teamId, name:"architect", prompt:"...", agentProvider:"deepseek", m
 | 任务 `done` 但产物不对 | 成员看不到 Lead 的对话 | 简报自包含：目标文件、验收标准、不要假设它读过本对话 |
 | worker 团队「跑完 0 步」 | 把自然语言当简报给了 worker | 改用 `runtime:"agent"`，或把 `plan` 写成真实 op |
 | `team_spawn` 报「模型路由未启用」 | 指定的 provider/model 没在面板启用 | `team_models` 看可用项；让用户在面板「模型路由」页启用 |
+| `deps` 报 `E_BAD_REQUEST`：`"m_xxx" 是成员「alice」的 id` | `deps.from` 填了成员 id | 用 `team_task` 返回的 `task_…` 作为 `from` |
+| 成员会话「failed before it finished」/ 回合报错 | provider 路由挂了 | 插件的派发监视会在 `agentStartTimeoutMs`（默认 120s）无活动后把任务交回重试；换模型重派 `team_control({action:"assign"})`，或 `team_spawn` 换一个成员 |
+| `team_dispatch` 报 `no_idle_agent` 但成员看起来 idle | 成员还挂着未收尾的 running 任务，或被指定 `assignee` 卡住 | 看返回的 `idleMembers` 与 `hint`；等一次心跳、`team_control({action:"resume"})` 或去掉 `assignee` 重派 |
 
 ## 5. 观察与收尾
 
