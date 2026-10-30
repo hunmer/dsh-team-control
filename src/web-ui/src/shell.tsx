@@ -48,8 +48,12 @@ const TAB_ICONS: Record<TabName, LucideIcon> = {
   messages: Mail,
 };
 
-/** FR-3.2：主页在前，其余沿用 TAB_NAMES 的顺序。 */
-export const TAB_ORDER: TabName[] = ['home', 'board', 'review', 'context', 'dag', 'timeline', 'models', 'permissions', 'approvals', 'messages'];
+/**
+ * FR-3.2：主页在前，其余沿用 TAB_NAMES 的顺序。
+ * 审批队列已收进顶栏通知按钮（TopBar 的 ApprovalsDock），不再作为侧栏路由；
+ * TAB_LABELS / TAB_ICONS 仍保留 'approvals'，旧 hash 深链落到整页视图也不会报错。
+ */
+export const TAB_ORDER: TabName[] = ['home', 'board', 'review', 'context', 'dag', 'timeline', 'models', 'permissions', 'messages'];
 
 export type TabBadges = Partial<Record<TabName, number | null>>;
 

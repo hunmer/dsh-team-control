@@ -18,3 +18,7 @@ src/web-ui/.vite/
 src/web-ui/.tmp-build/
 .tmp-token
 src/web/assets/
+
+# 端到端建团测试的产物目录（team_create 的 workspace，如 team-e2e-1030/）
+# 约定：测试产物一律落在 team-e2e-*/ 下，不进版本库
+team-e2e-*/

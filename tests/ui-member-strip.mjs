@@ -3,7 +3,7 @@
 //  - 只认本会话的子会话（= 团队成员），非团队会话不渲染
 //  - pill 上显示团队名 / 运行中 n/m / 严重·警告计数
 //  - 有运行中成员时卡片自动展开，卡片渲染在 shell.overlay
-//  - 点发现条目用 dsh-resource://subagentchat/... 在右侧栏打开该成员对话
+//  - 成员计划清单常驻展开（不再折叠、不再有「最新发现」列表）
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -150,7 +150,11 @@ const plugin = definition.factory((name) => {
 
 // --- 假 ctx：捕获 slot 注册，服务可注入 ---
 const registrations = [];
-const services = { sessions: { subagentAddress: () => undefined } };
+const opened = [];
+const services = {
+  sessions: { subagentAddress: () => undefined },
+  sidebarRight: { openResource: (url, opts) => { opened.push({ url, opts }); } },
+};
 const ctx = {
   get: (name) => services[name],
   getService: (name) => services[name],
@@ -270,38 +274,32 @@ assert.equal(textOf(byClass(m5Row, 'ui-afc__count')[0]), '1/3', '进度按步骤
 assert.equal(textOf(byClass(m5Row, 'ui-afc__step')[0]), '写评语', '行内显示当前步骤');
 assert.match(byClass(m5Row, 'ui-afc__fill')[0].props.style.width, /^33\.33+%$/, '进度条按 1/3 填充');
 
-// --- 点成员行展开它的步骤清单（计划来自 sidecar 的 todo 表）---
-m5Row.props.onClick();
-const expanded = dock.component({});
-const steps = byClass(expanded, 'ui-afc__plan-step');
-assert.equal(steps.length, 3, '展开后显示三步计划');
-assert.equal(textOf(byClass(steps[0], 'ui-afc__plan-title')[0]), '读大纲');
-assert.equal(steps[0].props['data-status'], 'done');
-assert.ok(byClass(steps[0], 'ui-afc__plan-icon').length === 1, '完成的步骤用图标标记');
-assert.equal(steps[1].props['data-status'], 'active', '第二步进行中');
-assert.ok(byClass(steps[1], 'ui-afc__plan-icon').length === 1, '进行中的步骤用图标标记');
-assert.equal(textOf(byClass(expanded, 'ui-afc__plan-count')[0]), '1/3', '计划头部显示完成比');
-assert.equal(steps[2].props['data-status'], 'open');
-const chipped = byClass(expanded, 'ui-afc__chip')[0];
-chipped.props.onClick(); // 用顶部 chip 取消筛选，后续断言不受影响
-assert.equal(byClass(dock.component({}), 'ui-afc__plan-step').length, 0, '取消选中后计划清单收起');
+// --- 计划清单常驻展开（不点选、无折叠），成员行不可点 ---
+assert.equal(typeof m5Row.props.onClick, 'undefined', '成员行不再可点选（计划常驻展开）');
+assert.equal(m5Row.props['aria-pressed'], undefined, '成员行不再是折叠按钮');
+const steps = byClass(card, 'ui-afc__plan-step');
+assert.ok(steps.length >= 3, '计划清单直接列在卡片里');
+assert.deepEqual(steps.map((s) => textOf(byClass(s, 'ui-afc__plan-title')[0])).slice(-3), ['读大纲', '写评语', '改错字'], 'reviewer 三步计划全部展开');
+assert.equal(steps[steps.length - 3].props['data-status'], 'done');
+assert.ok(byClass(steps[steps.length - 3], 'ui-afc__plan-icon').length === 1, '完成的步骤用图标标记');
+assert.equal(steps[steps.length - 2].props['data-status'], 'active', '第二步进行中');
+assert.ok(byClass(steps[steps.length - 2], 'ui-afc__plan-icon').length === 1, '进行中的步骤用图标标记');
+assert.equal(steps[steps.length - 1].props['data-status'], 'open');
+assert.equal(textOf(byClass(card, 'ui-afc__plan-count').slice(-1)[0]), '1/3', '计划头部显示完成比');
 assert.ok(headChildren[0].textContent.includes('.ui-afc__plan-step'), '样式里含计划清单规则');
+assert.ok(byClass(card, 'ui-afc__finding').length === 0, '团队校验卡不再有「最新发现」列表');
+assert.ok(byClass(card, 'ui-afc__chip').length === 0, '移除「最新发现」的成员筛选 chip');
+assert.ok(!textOf(card).includes('最新发现'), '卡片里不再出现「最新发现」标题');
 
-const findings = byClass(card, 'ui-afc__finding');
-assert.equal(findings.length, 4, '1 条 blocker + 3 条事件 = 4 条发现');
-assert.match(textOf(byClass(card, 'ui-afc__ftitle')[0]), /npm publish/, '最新的失败事件排在最前');
-const firstBody = byClass(findings[0], 'ui-afc__body')[0];
-assert.ok(firstBody, '发现行有标题/元信息两行容器');
-assert.equal(byClass(firstBody, 'ui-afc__ftitle').length, 1, '标题在容器内');
-assert.equal(byClass(firstBody, 'ui-afc__meta').length, 1, '元信息与标题同容器、分行渲染（不再同一行叠字）');
-
-// --- 点发现：用 subagentchat 资源在右侧栏打开该成员的对话 ---
-const calls = [];
-services.sidebarRight = { openResource: (url, opts) => calls.push({ url, opts }) };
-findings[0].props.onClick();
-assert.equal(calls.length, 1, '点发现应打开成员对话');
-assert.equal(calls[0].url, 'dsh-resource://subagentchat/session/c1?parent=s1&mode=continuable', '用内置 subagentchat 页');
-assert.equal(calls[0].opts.kind, 'subagentchat');
+// --- 成员行右侧「查看对话」：有 agentSessionId 才有按钮，点了开子会话聊天面板 ---
+const chatBtn = byClass(m5Row, 'ui-afc__chat')[0];
+assert.ok(chatBtn, 'reviewer 行右侧有「查看对话」按钮');
+assert.equal(chatBtn.props.title, '在侧栏打开该成员的对话', '按钮提示走字典');
+chatBtn.props.onClick({ stopPropagation: () => {} });
+assert.equal(opened.length, 1, '点「查看对话」调用 sidebarRight.openResource');
+assert.equal(opened[0].opts.kind, 'subagentchat', '按子会话聊天面板打开');
+assert.match(opened[0].url, /c5/, '打开的是该成员自己的会话');
+assert.ok(headChildren[0].textContent.includes('.ui-afc__chat'), '样式里有对话按钮规则');
 
 // --- 收起后再渲染：pill 变窄，浮层不渲染 ---
 pill.props.onClick();
@@ -331,6 +329,6 @@ assert.equal(nonTeam, null, '子会话不属于任何团队时不渲染');
 assert.equal(strip.component({ sessionId: 's-nobody', useSessions }), null, '无子会话返回 null');
 assert.equal(strip.component({ sessionId: 's1' }), null, '缺 useSessions 时安全降级');
 
-console.log('PASS ui-member-strip — 右上角团队卡片：pill 显示团队/运行中/严重·警告计数，浮层渲染 AgentFindings，点发现打开成员对话');
+console.log('PASS ui-member-strip — 右上角团队卡片：pill 显示团队/运行中/严重·警告计数，浮层渲染 AgentFindings，成员计划全部展开');
 process.exit(0); // 渲染用的轮询/计时器会留在事件循环里，断言全过就显式退出
 

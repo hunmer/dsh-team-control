@@ -16,6 +16,7 @@ import { useMemo, useState } from 'react';
 import { ClipboardList, ListTree } from 'lucide-react';
 import { usePanel } from '@/store';
 import { api } from '@/lib/api';
+import { openMemberConversation } from '@/lib/dsh-bridge';
 import { fmtClockSec } from '@/lib/format';
 import type { ScopeRequest, Task, TimelineEntry, Todo } from '@/types';
 import { Button } from '@/components/ui/button';
@@ -91,7 +92,7 @@ function eventStatus(entry: TimelineEntry): 'running' | 'success' | 'error' {
 }
 
 export function HomeView() {
-  const { state, decideScope, refreshAll, setTab, setFilterMember, memberName, toast } =
+  const { state, decideScope, refreshAll, setTab, setFilterMember, memberName, toast, focusReview } =
     usePanel();
   const { dag, tasks, todos, scopeRequests, timeline, members, artifacts } = state;
 
@@ -195,6 +196,7 @@ export function HomeView() {
             ? `若拒绝将走 fallback：${request.fallback}`
             : '成员请求越界操作，等待你的决策。'),
         agent: memberName(request.memberId),
+        memberId: request.memberId,
         logo: logoOf(request.memberId),
         status: 'waiting',
         startedAt: ms(request.createdAt),
@@ -222,6 +224,7 @@ export function HomeView() {
           title: node.subject || node.taskId,
           description,
           agent: memberName(assignee),
+          memberId: assignee,
           logo: logoOf(assignee),
           status,
           startedAt,
@@ -263,6 +266,23 @@ export function HomeView() {
   const openTask = (task: AgentTask) => {
     if (task.id.startsWith(SCOPE_PREFIX)) return;
     setSelectedId(task.id);
+  };
+
+  /** 点产物 → 跳到「审阅」并选中这条改动（按路径匹配，文件名兜底）。 */
+  const openArtifact = (task: AgentTask, artifact: AgentTaskArtifact) => {
+    focusReview(artifact.path, task.memberId);
+  };
+
+  /** 查看对话：复用 member-info 里的 openMemberConversation（要求面板嵌在 DSH 页面里）。 */
+  const openChat = (task: AgentTask) => {
+    const member = members.find((item) => item.id === task.memberId);
+    if (!member) {
+      toast('找不到该成员，无法打开对话', 'warn');
+      return;
+    }
+    const result = openMemberConversation(member, state.team?.leadSessionId);
+    if (result === 'no-session') toast('该成员没有 DSH 会话（worker 运行时没有会话）', 'warn');
+    else if (result === 'not-embedded') toast('面板不在 DSH 页面里打开，无法唤起成员对话', 'warn');
   };
 
   /**
@@ -323,6 +343,8 @@ export function HomeView() {
                 onReject={(task) => decide(task, 'denied')}
                 onRetry={(task) => void retry(task)}
                 onOpen={openTask}
+                onOpenArtifact={openArtifact}
+                onOpenChat={openChat}
               />
             </div>
           </div>

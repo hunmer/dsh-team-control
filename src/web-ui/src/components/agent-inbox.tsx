@@ -33,6 +33,8 @@ export interface AgentTask {
   title: string;
   description?: string;
   agent: string;
+  /** 成员 id：用于「查看对话」唤起该成员的 DSH 会话。 */
+  memberId?: string;
   /** 成员头像插槽（模型图标）。 */
   logo?: ReactNode;
   status: AgentTaskStatus;
@@ -51,6 +53,10 @@ export interface AgentInboxProps {
   onReject?: (task: AgentTask) => void;
   onRetry?: (task: AgentTask) => void;
   onOpen?: (task: AgentTask) => void;
+  /** 点击产物 → 跳到「审阅」并选中该文件。 */
+  onOpenArtifact?: (task: AgentTask, artifact: AgentTaskArtifact) => void;
+  /** 「查看对话」→ 打开该成员成员的 DSH 会话记录。 */
+  onOpenChat?: (task: AgentTask) => void;
   title?: string;
   className?: string;
 }
@@ -110,7 +116,7 @@ function useNow(active: boolean): number {
   return now;
 }
 
-function TaskCard({ task, onApprove, onReject, onRetry, onOpen }: { task: AgentTask } & Pick<AgentInboxProps, 'onApprove' | 'onReject' | 'onRetry' | 'onOpen'>) {
+function TaskCard({ task, onApprove, onReject, onRetry, onOpen, onOpenArtifact, onOpenChat }: { task: AgentTask } & Pick<AgentInboxProps, 'onApprove' | 'onReject' | 'onRetry' | 'onOpen' | 'onOpenArtifact' | 'onOpenChat'>) {
   const meta = STATUS_META[task.status] ?? STATUS_META.done;
   const { Icon } = meta;
   const live = task.status === 'running' || task.status === 'waiting';
@@ -143,24 +149,42 @@ function TaskCard({ task, onApprove, onReject, onRetry, onOpen }: { task: AgentT
 
           {artifacts.length > 0 ? (
             <ul className="mt-1.5 space-y-0.5 border-l pl-2">
-              {artifacts.map((file) => (
-                <li className="flex items-baseline gap-1.5 text-xs" key={file.path}>
-                  <FileText className="size-3 shrink-0 self-center text-muted-foreground" />
-                  <span className="min-w-0 flex-1 truncate" title={file.path}>
-                    {fileName(file.path)}
-                  </span>
-                  {file.added != null || file.deleted != null ? (
-                    <span className="shrink-0 tabular-nums">
-                      <span className="text-emerald-600 dark:text-emerald-400">+{file.added ?? 0}</span>
-                      <span className="ms-1 text-rose-600 dark:text-rose-400">-{file.deleted ?? 0}</span>
+              {artifacts.map((file) => {
+                const body = (
+                  <>
+                    <FileText className="size-3 shrink-0 self-center text-muted-foreground" />
+                    <span className="min-w-0 flex-1 truncate" title={file.path}>
+                      {fileName(file.path)}
                     </span>
-                  ) : file.label ? (
-                    <span className="max-w-[45%] shrink-0 truncate text-muted-foreground" title={file.label}>
-                      {file.label}
-                    </span>
-                  ) : null}
-                </li>
-              ))}
+                    {file.added != null || file.deleted != null ? (
+                      <span className="shrink-0 tabular-nums">
+                        <span className="text-emerald-600 dark:text-emerald-400">+{file.added ?? 0}</span>
+                        <span className="ms-1 text-rose-600 dark:text-rose-400">-{file.deleted ?? 0}</span>
+                      </span>
+                    ) : file.label ? (
+                      <span className="max-w-[45%] shrink-0 truncate text-muted-foreground" title={file.label}>
+                        {file.label}
+                      </span>
+                    ) : null}
+                  </>
+                );
+                return (
+                  <li key={file.path}>
+                    {onOpenArtifact ? (
+                      <button
+                        className="-mx-1 flex w-[calc(100%+0.5rem)] items-baseline gap-1.5 rounded px-1 py-0.5 text-left text-xs hover:bg-accent/60"
+                        onClick={() => onOpenArtifact(task, file)}
+                        title={`${file.path} · 点击在「审阅」里查看`}
+                        type="button"
+                      >
+                        {body}
+                      </button>
+                    ) : (
+                      <div className="flex items-baseline gap-1.5 text-xs" title={file.path}>{body}</div>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           ) : steps.length > 0 ? (
             <ul className="mt-1.5 space-y-0.5 border-l pl-2">
@@ -196,6 +220,11 @@ function TaskCard({ task, onApprove, onReject, onRetry, onOpen }: { task: AgentT
                 打开
               </Button>
             )}
+            {(task.status === 'running' || task.status === 'done') && onOpenChat && (
+              <Button onClick={() => onOpenChat(task)} size="xs" type="button" variant="ghost">
+                查看对话
+              </Button>
+            )}
           </div>
         </div>
       </div>
@@ -203,7 +232,7 @@ function TaskCard({ task, onApprove, onReject, onRetry, onOpen }: { task: AgentT
   );
 }
 
-export function AgentInbox({ tasks, onApprove, onReject, onRetry, onOpen, title = '实时收件箱', className }: AgentInboxProps) {
+export function AgentInbox({ tasks, onApprove, onReject, onRetry, onOpen, onOpenArtifact, onOpenChat, title = '实时收件箱', className }: AgentInboxProps) {
   return (
     <div className={cn('flex min-h-0 flex-col gap-3', className)}>
       <div className="flex shrink-0 items-center gap-2">
@@ -227,6 +256,8 @@ export function AgentInbox({ tasks, onApprove, onReject, onRetry, onOpen, title 
                       key={task.id}
                       onApprove={onApprove}
                       onOpen={onOpen}
+                      onOpenArtifact={onOpenArtifact}
+                      onOpenChat={onOpenChat}
                       onReject={onReject}
                       onRetry={onRetry}
                       task={task}

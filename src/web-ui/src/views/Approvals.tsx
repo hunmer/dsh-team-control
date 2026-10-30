@@ -89,6 +89,27 @@ function ApprovalCard({ request }: { request: ScopeRequest }) {
   );
 }
 
+/**
+ * 审批队列主体：全页与顶栏通知弹层共用（dense = 弹层里单列紧凑排版，无 SectionHead）。
+ * requests 有值时只渲染这一页（顶栏弹层分页用；空态仍按全量判断）。
+ */
+export function ApprovalsPanel({ dense = false, requests }: { dense?: boolean; requests?: ScopeRequest[] }) {
+  const { state } = usePanel();
+  const { scopeRequests, errors } = state;
+  if (errors.approvals && !scopeRequests.length) {
+    return <EmptyState title="审批队列加载失败" detail={errors.approvals} />;
+  }
+  if (!scopeRequests.length) {
+    return <EmptyState title="审批队列为空" detail="没有待审批的越界申请" />;
+  }
+  const items = requests ?? scopeRequests;
+  return (
+    <div className={dense ? 'grid grid-cols-1 gap-2' : 'grid grid-cols-1 gap-3 xl:grid-cols-2'}>
+      {items.map((request) => <ApprovalCard key={request.id} request={request} />)}
+    </div>
+  );
+}
+
 export function ApprovalsView() {
   const { state } = usePanel();
   const { scopeRequests, errors } = state;
@@ -100,11 +121,7 @@ export function ApprovalsView() {
           {scopeRequests.length + ' 条待审批' + (errors.approvals ? ' · 加载失败：' + errors.approvals : '')}
         </MetaLine>}
       />
-      {errors.approvals && !scopeRequests.length
-        ? <EmptyState title="审批队列加载失败" detail={errors.approvals} />
-        : !scopeRequests.length
-          ? <EmptyState title="审批队列为空" detail="没有待审批的越界申请" />
-          : <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">{scopeRequests.map((request) => <ApprovalCard key={request.id} request={request} />)}</div>}
+      <ApprovalsPanel />
     </section>
   );
 }
