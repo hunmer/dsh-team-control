@@ -79,7 +79,22 @@ export class Scheduler {
     if (from === to) throw ERR.cycle('self dependency');
     const a = this.get('SELECT * FROM task WHERE id=?').get(from);
     const b = this.get('SELECT * FROM task WHERE id=?').get(to);
-    if (!a || !b) throw ERR.notFound('task');
+    // 常见误用：deps.from 填成成员 id —— 成员 id（m_xxx）与任务 id（task_xxx）都是一串短码，
+    // 报「task not found」时人看不出错在哪，这里直接点名「这是成员 X，请换成 task id」。
+    if (!a) {
+      const m = this.get('SELECT id, name FROM member WHERE id=?').get(from);
+      if (m) {
+        throw ERR.bad(`deps.from 必须是上游 task id；"${from}" 是成员「${m.name}」的 id`, {
+          field: 'deps.from', got: from,
+          hint: '用该成员任务返回的 task id；team_status({teamId, detail:"dag"}) 能看到每个节点 id 与依赖',
+        });
+      }
+      if (!/^task_/.test(String(from))) {
+        throw ERR.bad(`deps.from 必须是上游 task id；"${from}" 不是 task_ 开头的 id`, { field: 'deps.from', got: from });
+      }
+      throw ERR.notFound(`task ${from}`);
+    }
+    if (!b) throw ERR.notFound(`task ${to}`);
     if (a.team_id !== b.team_id) throw ERR.bad('tasks belong to different teams');
     const allowed = ['all_success', 'any_success', 'on_failure', 'artifact_exists'];
     if (!allowed.includes(condition)) throw ERR.bad(`condition must be one of ${allowed.join('|')}`);
