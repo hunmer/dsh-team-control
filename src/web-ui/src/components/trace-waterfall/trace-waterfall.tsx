@@ -353,6 +353,8 @@ interface RowProps {
   delay: number;
   formatCost: (v: number) => string;
   on: RowHandlers;
+  /** 成员组的组头行：随滚动吸顶，滚到下一组时被顶走 */
+  sticky?: boolean;
 }
 
 const Row = memo(function Row({
@@ -370,6 +372,7 @@ const Row = memo(function Row({
   delay,
   formatCost,
   on,
+  sticky,
 }: RowProps) {
   const children = span.children ?? [];
   // LLM calls are folded into this row's summary instead of rendered as rows of their own
@@ -423,6 +426,7 @@ const Row = memo(function Row({
       data-folded={folded ? `` : void 0}
       data-leaving={isLeaving ? `` : void 0}
       data-open={open ? `` : void 0}
+      data-sticky={sticky ? `` : void 0}
       style={{ animationDelay: `${isLeaving ? leaving : delay}ms` } as CSSProperties}
       onClick={() => !isLeaving && on.click(span.id)}
       onFocus={(e) => e.target === e.currentTarget && on.focus(span.id)}
@@ -726,6 +730,23 @@ export function TraceWaterfall({
   for (const g of ghosts) {
     if (rootLeaving) allRows.push(g.row);
     else allRows.splice(Math.min(g.index, allRows.length), 0, g.row);
+  }
+
+  // 顶层子树（每个成员）各包一层，组头就是成员行：滚动时它吸顶，滚到下一组时被顶走
+  const rowById = new Map(allRows.map((r) => [r.span.id, r]));
+  const groups: { head: RowEntry; rows: RowEntry[] }[] = [];
+  for (const row of allRows) {
+    let head = row;
+    for (let pid = row.parentId; pid; ) {
+      const parent = rowById.get(pid);
+      // 根部（团队）不参与吸顶，它下面的子行各自成组
+      if (!parent || parent.depth === 0) break;
+      head = parent;
+      pid = parent.parentId;
+    }
+    const last = groups[groups.length - 1];
+    if (last && last.head.span.id === head.span.id) last.rows.push(row);
+    else groups.push({ head, rows: [row] });
   }
 
   const navRows = allRows.filter((r) => !r.hidden && r.leaving === void 0);
@@ -1095,24 +1116,33 @@ export function TraceWaterfall({
             <span>Span</span>
           </div>
           <div ref={rowsRef} className="ui-twc__rows" role="tree" aria-label={title}>
-            {allRows.map((r) => (
-              <Row
-                key={r.leaving === void 0 ? r.span.id : `${r.span.id}~out`}
-                span={r.span}
-                depth={r.depth}
-                hidden={r.hidden}
-                leaving={r.leaving}
-                folded={(r.span.children ?? []).length > 0 && collapsedList.includes(r.span.id)}
-                open={open === r.span.id}
-                focusable={!r.hidden && r.leaving === void 0 && activeId === r.span.id}
-                slowest={slowest?.id === r.span.id}
-                now={liveIds.has(r.span.id) ? nowMs : void 0}
-                range={range}
-                trackW={trackW}
-                delay={enterDelays.current.get(r.span.id) ?? 0}
-                formatCost={fmtCost}
-                on={on}
-              />
+            {groups.map((group) => (
+              <div
+                key={`${group.head.span.id}:${group.rows[0].span.id}`}
+                className="ui-twc__group"
+                role="none"
+              >
+                {group.rows.map((r) => (
+                  <Row
+                    key={r.leaving === void 0 ? r.span.id : `${r.span.id}~out`}
+                    span={r.span}
+                    depth={r.depth}
+                    hidden={r.hidden}
+                    leaving={r.leaving}
+                    sticky={r === group.head && r.leaving === void 0 && group.head.depth > 0}
+                    folded={(r.span.children ?? []).length > 0 && collapsedList.includes(r.span.id)}
+                    open={open === r.span.id}
+                    focusable={!r.hidden && r.leaving === void 0 && activeId === r.span.id}
+                    slowest={slowest?.id === r.span.id}
+                    now={liveIds.has(r.span.id) ? nowMs : void 0}
+                    range={range}
+                    trackW={trackW}
+                    delay={enterDelays.current.get(r.span.id) ?? 0}
+                    formatCost={fmtCost}
+                    on={on}
+                  />
+                ))}
+              </div>
             ))}
           </div>
           {shownSpan && details(shownSpan)}

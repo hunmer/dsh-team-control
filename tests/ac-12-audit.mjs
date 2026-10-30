@@ -1,5 +1,7 @@
 // AC-12：审计还原。报告必须能还原「谁在何时改了哪个文件、hash 前后值」。
 import { runAc, mkTmp, startSidecar, waitFor, assert, sha256 } from './lib/harness.mjs';
+import fs from 'node:fs';
+import path from 'node:path';
 
 await runAc('AC-12', async () => {
   const tmp = mkTmp('ac12');
@@ -59,6 +61,15 @@ await runAc('AC-12', async () => {
     const steps = await s.api.get(`/api/steps?member=${m.id}&limit=500`);
     const state = (await s.api.get(`/api/status?member=${m.id}`)).members[0];
     assert(steps.items.length === state.seq, `progress 事件数(${steps.items.length}) 必须等于 member_state.seq(${state.seq})`);
+
+    // 5) reconcile 不能把别的团队写过的文件算成本团队的差异：file_state 是全局表（path 作主键），
+    //    若不过滤，新团队会凭空多出 missing 条目。
+    const otherWs = path.join(tmp.root, 'ws-other');
+    fs.mkdirSync(otherWs, { recursive: true });
+    const other = await s.api.post('/api/teams', { name: 'ac12-other', workspace: otherWs, maxMembers: 2, maxConcurrency: 1 });
+    const rec = await s.api.get(`/api/reconcile?team=${other.id}`);
+    assert(rec.diffs.every((d) => !String(d.target).includes('audit-target.txt')), '别的团队的文件不该出现在本团队差异里：' + JSON.stringify(rec.diffs));
+    assert(rec.ok === true, '干净团队 reconcile 应为 ok：' + JSON.stringify(rec.diffs));
 
     return `2 条写审计 hash 完整可还原（${h1.slice(0, 8)}…→${h2.slice(0, 8)}…）；报告含 actor/target/时间；事件数=seq=${state.seq}`;
   } finally {

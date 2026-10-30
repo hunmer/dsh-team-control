@@ -304,3 +304,23 @@ export interface ContextSnapshot {
   /** 累计 LLM 用量；后端无法汇总时为 0。 */
   usage?: ContextUsage;
 }
+
+/** 审阅改动的风险档：沿仓库既有色板，只做静态标注，不影响任何写操作。 */
+export type ChangeRisk = 'high' | 'medium' | 'low';
+
+/** 子成员对文件的一次 write/edit 改动（/api/changes）。 */
+export interface MemberChange {
+  id: string;
+  teamId: string;
+  taskId?: string | null;
+  memberId?: string | null;
+  /** 展示路径（workspace 相对路径或绝对路径，已压缩成 a/… 形式供 diff 头使用） */
+  path: string;
+  /** add = 新文件；edit = 改动既有文件 */
+  kind: 'add' | 'edit' | 'delete' | string;
+  /** unified diff 文本，头部两行为 --- a/… / +++ b/…；空串表示内容无变化 */
+  diff: string;
+  added?: number | null;
+  deleted?: number | null;
+  createdAt?: string;
+}

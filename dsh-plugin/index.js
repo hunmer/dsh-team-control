@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { FILE_TOOLS, changeKind, countDiff, displayPath, readTextSafe, targetFile, unifiedDiff } from './changes.js';
 import { priceUsage } from './pricing.js';
 
 /** Cordis plugin name. */
@@ -38,6 +39,8 @@ function resolveConfig(config) {
     requestTimeoutMs: Number(c.requestTimeoutMs) || 60000,
     // 把每次工具调用作为 trace span 上报到 sidecar（成员看板瀑布实时展示）
     reportToolCalls: c.reportToolCalls !== false,
+    // 把成员 write/edit 的改动作为 unified diff 上报到 sidecar（面板「审阅」页只读展示）
+    reportChanges: c.reportChanges !== false,
     // 把每次 LLM 调用的 token 用量与折算金额作为 span 上报（瀑布里的 ¥/$ 金额来源）
     reportLlmCalls: c.reportLlmCalls !== false,
     // 覆盖/扩展单价表（键为 provider id，结构见 pricing.js 的 DEFAULT_PRICE_TABLES）
@@ -58,6 +61,10 @@ function resolveConfig(config) {
     agentDispatchMax: Number(c.agentDispatchMax) || 16,
     // sidecar 建任务后留 200ms 的「声明依赖」窗口，派发前先等过这段时间
     agentSettleMs: Number(c.agentSettleMs) || 250,
+    // 成员 idle 的落库稳定窗口：DSH 在维护阶段（上下文压缩等）也会报 idle，立刻落库会把在途任务误判完成
+    agentIdleSettleMs: c.agentIdleSettleMs == null ? 12000 : Math.max(0, Number(c.agentIdleSettleMs) || 0),
+    // 成员状态心跳：本地认为在跑、sidecar 却回落到 idle 时补报 running（任务仍在跑说明回合没结束）
+    agentHeartbeatMs: Number(c.agentHeartbeatMs) || 15000,
     // spawnTeammate 的 provider：默认与 dsh-experimental-tool-agent-team 一致
     freshProvider: String(c.freshProvider || 'spawn'),
     forkProvider: String(c.forkProvider || 'fork'),
@@ -174,6 +181,11 @@ const dispatching = new Set();
  * `subagents` 服务：成员就是它起出来的 continuable 子会话。
  * 只用 optional 访问（`ctx.get`），宿主没装 dsh-subagent 时给出可读的报错，而不是加载失败。
  */
+/** 调用者对应的成员绑定；返回 null 说明调用者是 Lead。成员调用不得覆盖 Lead 句柄。 */
+const memberOfCaller = (agent) => {
+  const sid = agent?.sessionId ?? agent?.id ?? null;
+  return sid != null ? (sessionMember.get(String(sid)) || null) : null;
+};
 const subagentsOf = (ctx) => { try { return ctx.get('subagents'); } catch { return undefined; } };
 const subagentNames = (ctx) => { const svc = subagentsOf(ctx); return svc && typeof svc.list === 'function' ? svc.list() : []; };
 
@@ -631,8 +643,20 @@ async function deliverTask(s, ctx, lead, teamId, task, member) {
   const subs = subagentsOf(ctx);
   if (!subs || typeof subs.sendMessage !== 'function') throw new Error('subagents 服务不可用，无法派发给 agent 成员');
   if (!member.agentSessionId) throw new Error(`成员 ${member.name} 还没有绑定 sub-agent 会话`);
-  const content = [{ type: 'text', text: taskBrief(teamId, task, member) }];
+  const brief = taskBrief(teamId, task, member);
+  // 简报本身就是一条 Lead→成员的消息：先落信箱，面板【消息与回执】才有「提问 → 回复」可配对；
+  // 记录失败不影响派发本身。
+  let messageId = null;
+  try {
+    const recorded = await request(s, '/api/messages', {
+      method: 'POST',
+      body: { teamId, from: 'lead', to: member.id, kind: 'note', payload: { text: brief, taskId: task.id } },
+    });
+    messageId = recorded?.message?.id || null;
+  } catch { messageId = null; }
+  const content = [{ type: 'text', text: brief }];
   await subs.sendMessage(lead, String(member.agentSessionId), content, { signal: AbortSignal.timeout(s.requestTimeoutMs) });
+  await markDelivered(s, messageId);
 }
 
 /**
@@ -654,11 +678,19 @@ async function dispatchLoop(s, ctx, teamId) {
         return { dispatched, error: String(err?.message || err) };
       }
       if (!r || !r.dispatched) {
-        return { dispatched, ...(r && r.reason ? { reason: r.reason } : {}) };
+        return {
+          dispatched,
+          ...(r && r.reason ? { reason: r.reason } : {}),
+          // sidecar 的附加诊断（建图窗口等）原样透传，别让 Lead 看到「no_ready_task」就以为依赖写错了
+          ...(r && r.settled ? { settled: r.settled } : {}),
+          ...(r && r.hint ? { hint: r.hint } : {}),
+        };
       }
       const { task, member } = r;
       // 先记绑定再投递：成员第一轮 LLM 调用可能在 sendMessage 返回后就已开始
       if (member.agentSessionId) rememberMember(member.agentSessionId, teamId, member.id);
+      // 任务已投递：先按「在跑」记账，agent/status 的 running 事件可能因为状态未变化而不发
+      if (member.agentSessionId) agentStatusBySession.set(String(member.agentSessionId), 'running');
       try {
         await deliverTask(s, ctx, lead, teamId, task, member);
       } catch (err) {
@@ -687,6 +719,130 @@ function reportAgentStatus(s, sessionId, status, detail) {
     body,
     signal: AbortSignal.timeout(1500),
   }).catch(() => { /* ignore */ });
+}
+
+/** 成员会话最近一次上报给 sidecar 的状态（心跳据此判断有没有漏报）。 */
+const agentStatusBySession = new Map();
+/** sessionId → 待落库的 idle 上报定时器。 */
+const idleTimers = new Map();
+
+function cancelIdleReport(sessionId) {
+  const timer = idleTimers.get(sessionId);
+  if (timer) { clearTimeout(timer); idleTimers.delete(sessionId); }
+}
+
+/** 直接读 sidecar /status（不经 request：心跳/镜像不能顺手把 sidecar 拉起来）。 */
+async function readStatus(s) {
+  try {
+    const res = await fetch(s.baseUrl + '/api/status', {
+      headers: s.token ? { authorization: `Bearer ${s.token}` } : undefined,
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+/** DSH 内置 todo 的状态 → sidecar 计划步骤的状态。 */
+const TODO_TO_PLAN = { pending: 'open', in_progress: 'active', completed: 'done' };
+
+/**
+ * 成员没用 team_todo、而是用了内置 todo_write 时，把 DSH 的 `todos` 投影镜像成 sidecar 计划。
+ * todo_write 每次整份替换，这里也整份替换（POST /api/tasks/<taskId>/todos），
+ * 于是「todo 完成 → 计划步骤完成」自动同步，面板与团队校验都能看到成员的真实 plan。
+ */
+async function mirrorTodos(s, ctx, sessionId) {
+  const sid = sessionId != null ? String(sessionId) : '';
+  if (!sid || !sessionMember.has(sid)) return;
+  const sessions = sessionsOf(ctx);
+  const session = sessions && typeof sessions.get === 'function' ? sessions.get(sid) : undefined;
+  if (!session) return;
+  const projections = (() => { try { return ctx.get('sessionProjections'); } catch { return undefined; } })();
+  let todos = null;
+  try {
+    if (projections && typeof projections.stateOf === 'function') todos = projections.stateOf(session, 'todos');
+    else if (projections && typeof projections.snapshot === 'function') todos = projections.snapshot(session, ['todos'])?.values?.todos;
+  } catch { todos = null; }
+  if (!Array.isArray(todos) || todos.length === 0) return;
+  const items = todos.slice(0, 50).map((todo) => ({
+    title: clip(String(todo?.content || ''), 200),
+    status: TODO_TO_PLAN[String(todo?.status || '')] || 'open',
+  })).filter((item) => item.title);
+  if (items.length === 0) return;
+  const status = await readStatus(s);
+  const member = ((status && status.members) || []).find((m) => m && String(m.agentSessionId || '') === sid);
+  if (!member || !member.currentTaskId) return; // 还没有在途任务：等派发后下一次 todo_write/收工再镜像
+  await request(s, `/api/tasks/${encodeURIComponent(member.currentTaskId)}/todos`, {
+    method: 'POST',
+    body: { items, by: member.id },
+  }).catch(() => { /* 计划镜像失败不影响任务本身 */ });
+}
+
+/** 心跳：本地认为在跑、sidecar 却回落到 idle（且有在途任务）时补报 running。 */
+async function heartbeatAgentStatus(s) {
+  if (sessionMember.size === 0) return;
+  const status = await readStatus(s);
+  if (!status) return;
+  const bySession = new Map();
+  for (const member of status.members || []) {
+    if (member && member.agentSessionId) bySession.set(String(member.agentSessionId), member);
+  }
+  for (const sessionId of sessionMember.keys()) {
+    if (idleTimers.has(sessionId)) continue;                 // idle 正在等稳定窗口，别把它救回 running
+    if (agentStatusBySession.get(sessionId) !== 'running') continue;
+    const member = bySession.get(sessionId);
+    if (!member || !member.currentTaskId) continue;          // 没有在途任务：可能真的闲下来了
+    if (member.status === 'running') continue;
+    reportAgentStatus(s, sessionId, 'running', 'heartbeat');
+  }
+}
+
+/** 消息推进成员信箱后补记「送达」：面板不再把已送达的消息显示成 queued。 */
+async function markDelivered(s, messageId) {
+  if (!messageId) return;
+  await request(s, `/api/messages/${encodeURIComponent(messageId)}/ack`, {
+    method: 'POST',
+    body: { state: 'delivered' },
+  }).catch(() => { /* 回执补记失败不影响投递 */ });
+}
+
+/** 成员会话这一轮最后的助手正文：收工时落库成 member→lead 的回复消息。 */
+const lastReplyBySession = new Map();
+
+/** 从 assistant/message 的 content 里取正文；纯工具调用步骤没有正文，返回空串。 */
+function assistantReplyText(message) {
+  const content = message && Array.isArray(message.content) ? message.content : [];
+  const parts = [];
+  for (const block of content) {
+    if (block && block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+      parts.push(block.text.trim());
+    }
+  }
+  return parts.join('\n').trim();
+}
+
+/**
+ * 把成员这一轮的结论作为 member→lead 的消息落库（kind=response）。
+ * 成员用 send_message / team_report_task 回话都不经过消息总线，面板里只剩 Lead 单向提问；
+ * 收工时补一条回复，【消息与回执】才能配对成双向箭头并展示两条正文。
+ */
+async function flushMemberReply(s, sessionId) {
+  const sid = sessionId != null ? String(sessionId) : '';
+  if (!sid) return;
+  const binding = sessionMember.get(sid);
+  const text = lastReplyBySession.get(sid) || '';
+  lastReplyBySession.delete(sid);
+  if (!binding || !text) return;
+  await request(s, '/api/messages', {
+    method: 'POST',
+    body: {
+      teamId: binding.teamId,
+      from: binding.memberId,
+      to: 'lead',
+      kind: 'response',
+      payload: { text: clip(text, 4000) },
+    },
+  }).catch(() => { /* 回复落库失败不影响任务收尾 */ });
 }
 
 // ---------- 工具 schema 片段 ----------
@@ -1004,7 +1160,7 @@ function buildTools(s, ctx) {
     },
     output: jsonOutput('{ task, dispatched? }'),
     async execute(args, exec) {
-      if (exec?.agent) leadByTeam.set(args.teamId, exec.agent);
+      if (exec?.agent && !memberOfCaller(exec.agent)) leadByTeam.set(args.teamId, exec.agent);
       const task = await request(s, '/api/tasks', {
         method: 'POST',
         body: {
@@ -1085,6 +1241,9 @@ function buildTools(s, ctx) {
         try {
           await subs.sendMessage(caller, String(target.agentSessionId), content, { signal: AbortSignal.timeout(s.requestTimeoutMs) });
           delivered.push(target.name);
+          // 投递成功才补记送达：这一条消息确实进了成员会话
+          const row = (recorded.messages || [recorded.message]).find((m) => m && String(m.to) === String(target.id));
+          await markDelivered(s, row?.id);
         } catch (err) {
           failed.push({ target: target.name, error: String(err?.message || err) });
         }
@@ -1156,7 +1315,7 @@ function buildTools(s, ctx) {
         summary: args.summary,
       };
       const res = await request(s, '/api/agents/report', { method: 'POST', body });
-      if (exec?.agent) leadByTeam.set(args.teamId, exec.agent);
+      if (exec?.agent && !memberOfCaller(exec.agent)) leadByTeam.set(args.teamId, exec.agent);
       try {
         const items = collectArtifacts(ctx, sessionId);
         if (items.length) {
@@ -1178,9 +1337,9 @@ function buildTools(s, ctx) {
       properties: { teamId: { type: 'string' } },
       required: ['teamId'],
     },
-    output: jsonOutput('{ dispatched, reason? }'),
+    output: jsonOutput('{ dispatched, reason?, settled?, hint?, error? }'),
     async execute(args, exec) {
-      if (exec?.agent) leadByTeam.set(args.teamId, exec.agent);
+      if (exec?.agent && !memberOfCaller(exec.agent)) leadByTeam.set(args.teamId, exec.agent);
       return await dispatchLoop(s, ctx, args.teamId);
     },
   });
@@ -1353,7 +1512,7 @@ function bindSessionTeam(sessionId, args, resultValue) {
  * `tools/execute` waterfall：进入前报 running，返回/抛错后报终态。
  * 同一 spanId 幂等 upsert，因此面板可在调用进行中就先画出增长中的条。
  */
-async function traceToolCall(s, exec, next) {
+async function traceToolCall(s, ctx, exec, next) {
   const sessionId = exec?.agent?.id != null ? String(exec.agent.id) : null;
   const callId = exec?.callId != null ? String(exec.callId) : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const spanId = `tool:${sessionId || 'host'}:${callId}`;
@@ -1395,6 +1554,49 @@ async function traceToolCall(s, exec, next) {
       error: failed ? clipText(result?.error?.message || result?.value || 'tool error', 2000) : null,
     });
   }
+  return result;
+}
+
+// ---------- 成员改动（审阅）：write/edit 落盘前后的 unified diff ----------
+// 只上报成员（子 agent）的改动：Lead 自己改文件不进审阅页。read 失败 / 工具失败一律静默跳过，
+// 绝不影响工具调用本身。
+async function reportFileChange(s, ctx, exec, next) {
+  const name = String(exec?.name || '');
+  const sessionId = exec?.agent?.id != null ? String(exec.agent.id) : null;
+  const binding = sessionId ? sessionMember.get(sessionId) : null;
+  if (!binding || !FILE_TOOLS.has(name)) return next();
+  const args = exec?.arguments && typeof exec.arguments === 'object' ? exec.arguments : null;
+  const raw = args ? targetFile(name, args) : '';
+  if (!raw) return next();
+  // 成员会话的当前目录：Agent 上没有 cwd 字段，得问 workingDirectory 服务（子会话启动时被设成
+  // team.workspace）。拿不到才退回宿主进程 cwd，否则 diff 里的路径会变成相对宿主 cwd 的怪形式。
+  let agentCwd = typeof exec?.agent?.cwd === 'string' ? exec.agent.cwd : '';
+  if (!agentCwd && exec?.agent?.session && typeof ctx?.workingDirectory?.get === 'function') {
+    try { agentCwd = ctx.workingDirectory.get(exec.agent.session) || ''; } catch { /* 忽略 */ }
+  }
+  const baseDir = agentCwd || process.cwd();
+  const abs = path.isAbsolute(raw) ? raw : path.resolve(baseDir, raw);
+  const before = readTextSafe(abs);
+  const result = await next();
+  const failed = !!result && (result.isError === true || result.error != null);
+  if (failed) return result;
+  const after = readTextSafe(abs);
+  if (after === null) return result;
+  // 新建的空文件没有可审内容
+  if (before === null && after === '') return result;
+  const shown = displayPath(abs, baseDir);
+  const diff = unifiedDiff(shown, before ?? '', after);
+  if (!diff) return result;
+  const { added, deleted } = countDiff(diff);
+  void request(s, '/api/changes', {
+    method: 'POST',
+    body: {
+      teamId: binding.teamId,
+      memberId: binding.memberId,
+      sessionId,
+      items: [{ path: shown, kind: changeKind(before, after), diff, added, deleted }],
+    },
+  }).catch(() => { /* 上报失败不影响工具调用 */ });
   return result;
 }
 
@@ -1482,6 +1684,8 @@ export function apply(ctx, config) {
     return () => {
       for (const dispose of disposers.reverse()) { try { dispose(); } catch { /* ignore */ } }
       leadByTeam.clear(); runtimeByTeam.clear(); sessionMember.clear(); dispatching.clear(); teamBySession.clear(); contextReportAt.clear();
+      for (const timer of idleTimers.values()) clearTimeout(timer);
+      idleTimers.clear(); agentStatusBySession.clear(); lastReplyBySession.clear();
       const spawned = s.spawned;
       if (spawned?.child && spawned.child.exitCode === null) {
         try { spawned.child.kill(); } catch { /* ignore */ }
@@ -1490,8 +1694,28 @@ export function apply(ctx, config) {
   }, 'dsh-team.tools()');
 
   if (s.reportToolCalls) {
-    ctx.on('tools/execute', (exec, next) => traceToolCall(s, exec, next));
+    ctx.on('tools/execute', (exec, next) => traceToolCall(s, ctx, exec, next));
   }
+
+  // 成员写/改文件 → unified diff 上报（面板「审阅」页）：只给子成员，Lead 的改动不进审阅。
+  // 钩子打上 dshTeamHook 标记：测试与排障能在多个 tools/execute 拦截器里认出它。
+  if (s.reportChanges) {
+    const fileChangeHook = (exec, next) => reportFileChange(s, ctx, exec, next);
+    fileChangeHook.dshTeamHook = 'file-change';
+    ctx.on('tools/execute', fileChangeHook);
+  }
+
+  // 成员用内置 todo_write 维护计划（没建 team_todo）时，把 DSH 的 `todos` 投影镜像成
+  // sidecar 计划步骤：面板/团队校验能看到真实 plan，todo 勾完计划步骤也跟着完成。
+  ctx.on('tools/execute', async (exec, next) => {
+    const result = await next();
+    const sid = exec?.agent?.id != null ? String(exec.agent.id) : null;
+    const failed = !!result && (result.isError === true || result.error != null);
+    if (sid && String(exec?.name || '') === 'todo_write' && !failed) {
+      void mirrorTodos(s, ctx, sid).catch(() => { /* ignore */ });
+    }
+    return result;
+  });
 
   // 每次 LLM 调用的 token 用量 → 金额（瀑布里的 ¥/$ 就来自这条 span）
   if (s.reportLlmCalls) {
@@ -1504,16 +1728,66 @@ export function apply(ctx, config) {
   });
 
   // 成员 sub-agent 的 running/idle 回写 sidecar：面板实时、idle 兜底收尾在途任务。
+  // idle 不立刻落库：DSH 把 maintenance（压缩/整理）也算 idle，立刻落库会把正在干活的成员
+  // 判成收工、把在途任务兜底判 done（页面上一段时间灰显）。等一个稳定窗口再落库。
   ctx.on('agent/status', ({ agent, status } = {}) => {
     const sessionId = agent?.id != null ? String(agent.id) : null;
     if (!sessionId) return;
     const binding = sessionMember.get(sessionId);
     if (!binding) return;
-    reportAgentStatus(s, sessionId, status === 'idle' ? 'idle' : status);
-    if (status === 'idle' && s.agentAutoDispatch) {
-      void dispatchLoop(s, ctx, binding.teamId).catch(() => { /* ignore */ });
+    // DSH 的 status getter 把 maintenance（上下文压缩/整理）也算 idle，但它不是收工：
+    // 这类事件直接忽略，避免把在途任务误判 done（页面上一段时间显示灰色的根因）。
+    const phaseKind = agent && agent.phase && agent.phase.kind;
+    if (status === 'idle' && phaseKind === 'maintenance') {
+      cancelIdleReport(sessionId);
+      agentStatusBySession.set(sessionId, 'running');
+      return;
     }
+    if (status !== 'idle') {
+      cancelIdleReport(sessionId);
+      agentStatusBySession.set(sessionId, status);
+      reportAgentStatus(s, sessionId, status);
+      return;
+    }
+    cancelIdleReport(sessionId);
+    agentStatusBySession.set(sessionId, 'idle');
+    // 收工前把内置 todo 的影子计划同步一次，保证「todo 完成 → 计划完成」不丢最后一步
+    void mirrorTodos(s, ctx, sessionId).catch(() => { /* ignore */ });
+    const settle = Math.max(0, Number(s.agentIdleSettleMs) || 0);
+    const finish = () => {
+      idleTimers.delete(sessionId);
+      if (agentStatusBySession.get(sessionId) !== 'idle') return; // 窗口内又跑起来了
+      reportAgentStatus(s, sessionId, 'idle');
+      void flushMemberReply(s, sessionId).catch(() => { /* ignore */ });
+      if (s.agentAutoDispatch) {
+        void dispatchLoop(s, ctx, binding.teamId).catch(() => { /* ignore */ });
+      }
+    };
+    if (!settle) { finish(); return; }
+    const timer = setTimeout(finish, settle);
+    timer.unref?.();
+    idleTimers.set(sessionId, timer);
   });
+
+  // 成员回合的助手正文：只在收工时（agent/status idle 稳定窗口后）落库成回复消息。
+  // 每轮先攒着，纯工具步骤没有正文就清掉缓存，避免把上一轮结论当成这一轮的回复。
+  ctx.on('session/event', (session, event) => {
+    const sessionId = session?.id != null ? String(session.id) : null;
+    if (!sessionId || !sessionMember.has(sessionId)) return;
+    if (!event || event.type !== 'assistant/message') return;
+    const text = assistantReplyText(event.data?.message);
+    if (text) lastReplyBySession.set(sessionId, text);
+    else lastReplyBySession.delete(sessionId);
+  });
+
+  // 状态心跳：本地认为在跑、sidecar 却回落到 idle 且有在途任务时补报 running
+  ctx.effect(() => {
+    const timer = setInterval(() => {
+      void heartbeatAgentStatus(s).catch(() => { /* ignore */ });
+    }, Math.max(2000, s.agentHeartbeatMs));
+    timer.unref?.();
+    return () => clearInterval(timer);
+  }, 'dsh-team.agent-heartbeat()');
 
   // 成员上下文快照：面板「上下文分析」页的数据来源。周期泵覆盖进行中的回合，
   // agent/status 变化时补报一次（回合结束/中断后上下文占用才定型）。

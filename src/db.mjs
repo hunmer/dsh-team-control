@@ -169,6 +169,19 @@ CREATE TABLE IF NOT EXISTS artifact (
 );
 CREATE INDEX IF NOT EXISTS idx_artifact_team ON artifact(team_id, created_at);
 
+-- 成员改动：Host 插件在成员 write/edit 落盘后上报的 unified diff，
+-- 面板「审阅」页只读展示（审批/合并不在 sidecar 职责内）。
+CREATE TABLE IF NOT EXISTS member_change (
+  id TEXT PRIMARY KEY, team_id TEXT NOT NULL,
+  task_id TEXT, member_id TEXT,
+  path TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'edit',
+  diff TEXT NOT NULL DEFAULT '',
+  added INTEGER, deleted INTEGER,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_change_team ON member_change(team_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_change_member ON member_change(team_id, member_id);
+
 -- 成员上下文快照：Host 插件从 DSH 会话（token 计量 + 上下文投影 + 会话事件）算出
 -- 「上下文窗口被什么占满」，面板「上下文分析」页按成员展示。每个成员只留最新一条；
 -- compaction 的 before 侧在写入时从前一条快照里取，因此历史只在这一次切换中用到。

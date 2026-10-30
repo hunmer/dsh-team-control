@@ -88,10 +88,16 @@ export class MessageBus {
     const r = this.get('SELECT * FROM message WHERE id=?').get(id);
     if (!r) throw ERR.notFound('message');
     const at = nowIso();
-    const st = state === 'read' ? 'read' : 'acked';
+    const st = state === 'read' ? 'read' : (state === 'delivered' ? 'delivered' : 'acked');
     if (RANK[st] > RANK[r.status] && r.status !== 'expired') {
-      this.get('UPDATE message SET status=?, read_at=COALESCE(read_at,?), acked_at=? WHERE id=?')
-        .run(st, at, st === 'acked' ? at : r.acked_at, id);
+      if (st === 'delivered') {
+        // agent 团队成员由 Host 插件直接推进成员信箱：只记送达，不冒充已读/已确认
+        this.get('UPDATE message SET status=?, delivered_at=COALESCE(delivered_at,?) WHERE id=?')
+          .run(st, at, id);
+      } else {
+        this.get('UPDATE message SET status=?, read_at=COALESCE(read_at,?), acked_at=? WHERE id=?')
+          .run(st, at, st === 'acked' ? at : r.acked_at, id);
+      }
     }
     return rowToMessage(this.get('SELECT * FROM message WHERE id=?').get(id));
   }

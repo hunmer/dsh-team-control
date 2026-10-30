@@ -36,6 +36,8 @@ window.__ModuleLoader__.load({
         card_totals_aria: '{c} 严重，{w} 警告',
         card_found_aria: '{c} 严重，{w} 警告',
         card_expand_hint: '点击筛选该成员',
+        card_plan_aria: '成员计划',
+        card_plan: '计划',
         sev_critical: '严重',
         sev_warning: '警告',
         sev_note: '备注',
@@ -74,6 +76,8 @@ window.__ModuleLoader__.load({
         card_totals_aria: '{c} critical, {w} warnings',
         card_found_aria: '{c} critical, {w} warnings',
         card_expand_hint: 'Click to filter this member',
+        card_plan_aria: 'Member plan',
+        card_plan: 'Plan',
         sev_critical: 'Critical',
         sev_warning: 'Warning',
         sev_note: 'Note',
@@ -349,16 +353,25 @@ window.__ModuleLoader__.load({
       return false;
     }
 
-    /** 把「编排」页签在会话侧栏里打开：优先 better-sidebar 页签，其次 DSH 原生右侧栏。 */
+    /**
+     * 把「编排」页在右侧栏（DSH 原生 Sidebar）打开。
+     * better-sidebar 的 openTab 只会落它自己的底部工作台，右侧栏要走 DSH 原生的
+     * sidebarRight.openTab(kind)：装了 better-sidebar 时它会把自己注册的页签同步成
+     * 原生 kind（本插件的 descriptor id 即 'dsh-team:panel'），没装时用本插件在
+     * client.js 兜底分支注册的 'dsh-team'。kind 未注册会抛错，所以逐个尝试。
+     */
     function openTeamPanel(getService, sessionId) {
-      const better = getService('betterSidebar');
-      if (better && typeof better.openTab === 'function') {
-        // target:'bottom' 让它落在 better-sidebar 自己的工作台并自动展开（默认 'right' 会走原生页签类型，本插件没注册）
-        try { better.openTab({ type: 'dsh-team:panel', target: 'bottom' }, { sessionId }); return true; } catch (e) { console.warn('[dsh-team] openTab failed', e); }
-      }
       const right = getService('sidebarRight');
       if (right && typeof right.openTab === 'function') {
-        try { right.openTab('dsh-team'); return true; } catch (e) { console.warn('[dsh-team] sidebarRight.openTab failed', e); }
+        for (const kind of ['dsh-team:panel', 'dsh-team']) {
+          try { right.openTab(kind); return true; } catch { /* 该 kind 未注册，试下一个 */ }
+        }
+        console.warn('[dsh-team] no sidebarRight kind registered for the team panel');
+      }
+      const better = getService('betterSidebar');
+      if (better && typeof better.openTab === 'function') {
+        // 最后兜底：bottom 工作台（右侧栏打不开时至少能看到编排页）
+        try { better.openTab({ type: 'dsh-team:panel' }, { sessionId }); return true; } catch (e) { console.warn('[dsh-team] openTab failed', e); }
       }
       return false;
     }
@@ -372,7 +385,10 @@ window.__ModuleLoader__.load({
      * - 卡片本体渲染在 shell.overlay（frame-wide 浮层），停靠会话右上角
      * - 数据：Host 代理 /dsh-team-api → sidecar（/status /teams /tasks /events）
      * ------------------------------------------------------------------ */
-    const AGENT_FINDINGS_CSS = `.ui-afc{--ui-afc-card: #ffffff;--ui-afc-strong: #000000;--ui-afc-ink: rgba(0, 0, 0, 0.88);--ui-afc-text: rgba(0, 0, 0, 0.61);--ui-afc-muted: rgba(0, 0, 0, 0.45);--ui-afc-faint: rgba(0, 0, 0, 0.27);--ui-afc-line: rgba(0, 0, 0, 0.06);--ui-afc-fill: rgba(0, 0, 0, 0.06);--ui-afc-hover: rgba(0, 0, 0, 0.025);--ui-afc-select: rgba(0, 0, 0, 0.04);--ui-afc-run-bg: rgba(0, 96, 226, 0.1);--ui-afc-run-edge: rgba(0, 96, 226, 0.32);--ui-afc-done-bg: rgba(0, 0, 0, 0.05);--ui-afc-done-edge: rgba(0, 0, 0, 0.1);--ui-afc-fail-bg: #f52b0018;--ui-afc-fail-edge: rgba(215, 36, 0, 0.34);--ui-afc-crit: #d72400;--ui-afc-warn: #cc4e00;--ui-afc-note: rgba(0, 96, 226, 0.8);--ui-afc-focus: rgba(0, 96, 226, 0.35);--ui-afc-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.06), 0 1px 1px -1px rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.05);--ui-afc-ease: cubic-bezier(0.22, 1, 0.36, 1);--ui-afc-row: 40px;position: relative;box-sizing: border-box;width: 100%;max-width: 640px;container-type: inline-size;font-family: "Inter", "InterVariable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;font-size: 13px;font-weight: 400;line-height: 20px;color: var(--ui-afc-text);text-align: left;-webkit-font-smoothing: antialiased}.ui-afc *, .ui-afc *::before, .ui-afc *::after{box-sizing: border-box}:where(.ui-afc) button{margin: 0;padding: 0;border: 0;background: none;font: inherit;color: inherit;text-align: inherit;cursor: pointer;-webkit-tap-highlight-color: transparent}.ui-afc button:focus-visible{outline: 2px solid var(--ui-afc-focus);outline-offset: -2px}.ui-afc :is(ul, ol){margin: 0;padding: 0;list-style: none}.ui-afc svg{display: block;flex: none}.ui-afc b{font-weight: 500}.ui-afc__sr{position: absolute;width: 1px;height: 1px;overflow: hidden;clip-path: inset(50%);white-space: nowrap}.ui-afc__card{border-radius: 10px;background: var(--ui-afc-card);box-shadow: var(--ui-afc-shadow);overflow: hidden}.ui-afc__bar{display: flex;align-items: center;gap: 10px;min-width: 0;padding: 14px 16px;border-bottom: 0.5px solid var(--ui-afc-line)}.ui-afc__spark{display: grid;flex: none;place-items: center;width: 16px;color: rgba(0, 96, 226, 0.765)}.ui-afc__title{font-weight: 500;color: var(--ui-afc-strong);white-space: nowrap}.ui-afc__progress{flex: 1;min-width: 0;overflow: hidden;font-size: 12px;line-height: 16px;color: var(--ui-afc-muted);white-space: nowrap;text-overflow: ellipsis;font-variant-numeric: tabular-nums}.ui-afc__totals{display: flex;flex: none;gap: 12px;font-size: 12px;line-height: 16px;white-space: nowrap}.ui-afc__totals > span{display: inline-flex;align-items: center;gap: 6px;transition: color 300ms ease}.ui-afc__totals > span::before{content: "";width: 6px;height: 6px;border-radius: 50%;background: currentColor}.ui-afc__totals [data-severity="critical"]{color: var(--ui-afc-crit)}.ui-afc__totals [data-severity="warning"]{color: var(--ui-afc-warn)}.ui-afc__totals [data-zero]{color: var(--ui-afc-faint)}.ui-afc__totals b, .ui-afc__found b{display: inline-block;font-variant-numeric: tabular-nums;animation: ui-afc-roll 420ms var(--ui-afc-ease)}.ui-afc__agents{padding: 6px 6px 2px}.ui-afc__agent{display: grid;grid-template-columns: 24px minmax(0, 1fr) 128px 40px 60px;align-items: center;gap: 12px;width: 100%;height: 48px;padding: 0 10px;border-radius: 8px;transition: background-color 160ms ease, opacity 220ms ease}.ui-afc__agent:hover{background: var(--ui-afc-hover)}.ui-afc__agent[aria-pressed="true"]{background: var(--ui-afc-select)}.ui-afc__agent[data-dim]{opacity: 0.5}.ui-afc__agent[data-dim]:hover{opacity: 0.8}.ui-afc__avatar{display: grid;place-items: center;width: 24px;height: 24px;overflow: hidden;border-radius: 6px;background: var(--ui-afc-fill);font-size: 10px;font-weight: 500;letter-spacing: 0.3px;color: var(--ui-afc-text)}.ui-afc__avatar[data-logo]{background: var(--ui-afc-card);box-shadow: var(--ui-afc-shadow)}.ui-afc__avatar > svg, .ui-afc__avatar > img{width: 14px;height: 14px;object-fit: contain}.ui-afc__who{display: grid;min-width: 0}.ui-afc__name{overflow: hidden;font-weight: 500;line-height: 18px;color: var(--ui-afc-ink);white-space: nowrap;text-overflow: ellipsis}.ui-afc__step{overflow: hidden;font-size: 12px;line-height: 16px;color: var(--ui-afc-muted);white-space: nowrap;text-overflow: ellipsis;animation: ui-afc-swap 360ms var(--ui-afc-ease)}.ui-afc__track{position: relative;height: 6px;border-radius: 3px;background: var(--ui-afc-fill);overflow: hidden}.ui-afc__fill{position: absolute;inset: 0 auto 0 0;overflow: hidden;border-radius: 3px;background: var(--ui-afc-done-bg);box-shadow: inset 0 0 0 0.5px var(--ui-afc-done-edge);transition: width 700ms var(--ui-afc-ease), background-color 300ms ease}.ui-afc__agent[data-status="running"] .ui-afc__fill{background: var(--ui-afc-run-bg);box-shadow: inset 0 0 0 0.5px var(--ui-afc-run-edge)}.ui-afc__agent[data-status="failed"] .ui-afc__fill{background: var(--ui-afc-fail-bg);box-shadow: inset 0 0 0 0.5px var(--ui-afc-fail-edge)}.ui-afc__agent[data-status="running"] .ui-afc__fill::before{content: "";position: absolute;inset: 0 auto 0 0;width: 40px;background: linear-gradient(90deg, transparent, var(--ui-afc-card), transparent);opacity: 0.7;animation: ui-afc-sheen 1500ms linear infinite}.ui-afc__agent[data-status="running"] .ui-afc__fill::after{content: "";position: absolute;inset: 0 0 0 auto;width: 18px;background: linear-gradient(90deg, transparent, var(--ui-afc-run-edge));animation: ui-afc-breathe 1100ms ease-in-out infinite alternate}.ui-afc__count{font-size: 12px;line-height: 16px;color: var(--ui-afc-muted);text-align: right;font-variant-numeric: tabular-nums}.ui-afc__found{display: flex;justify-content: flex-end;gap: 10px;font-size: 12px;line-height: 16px}.ui-afc__found > span{display: inline-flex;align-items: center;gap: 4px;min-width: 22px}.ui-afc__found [data-zero]{opacity: 0.28}.ui-afc__found [data-zero] .ui-afc__mark{color: var(--ui-afc-faint)}.ui-afc__found [data-severity="critical"] b{color: var(--ui-afc-crit)}.ui-afc__found [data-severity="warning"] b{color: var(--ui-afc-warn)}.ui-afc__found [data-zero] b{color: var(--ui-afc-muted)}.ui-afc__mark[data-severity="critical"]{color: var(--ui-afc-crit)}.ui-afc__mark[data-severity="warning"]{color: var(--ui-afc-warn)}.ui-afc__mark[data-severity="note"]{color: var(--ui-afc-note)}.ui-afc__feed-head{display: flex;align-items: center;gap: 8px;height: 40px;margin-top: 4px;padding: 0 16px;border-top: 0.5px solid var(--ui-afc-line)}.ui-afc__label{font-size: 10px;font-weight: 500;line-height: 16px;letter-spacing: 0.5px;text-transform: uppercase;color: var(--ui-afc-muted)}.ui-afc__chip{display: inline-flex;align-items: center;gap: 4px;height: 20px;padding: 0 6px 0 8px;border-radius: 6px;background: var(--ui-afc-fill);font-size: 12px;font-weight: 500;line-height: 16px;color: var(--ui-afc-ink);animation: ui-afc-swap 260ms var(--ui-afc-ease)}.ui-afc__chip svg{color: var(--ui-afc-muted)}.ui-afc__feed{position: relative;height: calc(var(--ui-afc-rows) * var(--ui-afc-row) + 8px);margin: 0 6px;padding-bottom: 8px;overflow: hidden}.ui-afc__slot{position: absolute;top: 0;right: 0;left: 0;height: var(--ui-afc-row);transition: transform 520ms var(--ui-afc-ease), opacity 320ms ease}.ui-afc__slot[data-out]{opacity: 0;pointer-events: none}.ui-afc__finding{display: block;width: 100%;height: 100%;border-radius: 8px;transition: background-color 160ms ease}.ui-afc__finding:hover{background: var(--ui-afc-hover)}.ui-afc__in{display: flex;align-items: center;gap: 10px;height: 100%;min-width: 0;padding: 0 10px;animation: ui-afc-in 560ms var(--ui-afc-ease)}.ui-afc__ftitle{flex: 0 1 auto;min-width: 0;overflow: hidden;color: var(--ui-afc-ink);white-space: nowrap;text-overflow: ellipsis}.ui-afc__meta{display: flex;flex: 1 1 0;align-items: center;gap: 6px;min-width: 0;overflow: hidden;font-size: 12px;line-height: 16px;color: var(--ui-afc-muted);white-space: nowrap}.ui-afc__meta code{overflow: hidden;font-family: ui-monospace, "SF Mono", Menlo, monospace;font-size: 11.5px;text-overflow: ellipsis}.ui-afc__dot{color: var(--ui-afc-faint)}.ui-afc__time{flex: none;min-width: 28px;font-size: 12px;line-height: 16px;color: var(--ui-afc-faint);text-align: right;font-variant-numeric: tabular-nums}.ui-afc__empty{display: grid;place-items: center;height: var(--ui-afc-row);font-size: 12px;color: var(--ui-afc-muted)}@keyframes ui-afc-in{from{opacity: 0;transform: translateY(-10px);filter: blur(2px)}}@keyframes ui-afc-swap{from{opacity: 0;transform: translateY(3px)}}@keyframes ui-afc-roll{from{opacity: 0;transform: translateY(-5px)}}@keyframes ui-afc-sheen{from{transform: translateX(-40px)}to{transform: translateX(160px)}}@keyframes ui-afc-breathe{from{opacity: 0.45}to{opacity: 1}}@container (max-width: 480px){.ui-afc__agent{grid-template-columns: 24px minmax(0, 1fr) 64px 52px;gap: 10px}.ui-afc__count{display: none}.ui-afc__progress{display: none}.ui-afc__meta{display: none}.ui-afc__ftitle{flex: 1}}@media (prefers-reduced-motion: reduce){.ui-afc *, .ui-afc *::before, .ui-afc *::after{animation: none !important;transition: none !important}}:where(.dark, [data-theme="dark"]) .ui-afc{--ui-afc-card: #1c1c1f;--ui-afc-strong: #ffffff;--ui-afc-ink: rgba(255, 255, 255, 0.9);--ui-afc-text: rgba(255, 255, 255, 0.62);--ui-afc-muted: rgba(255, 255, 255, 0.45);--ui-afc-faint: rgba(255, 255, 255, 0.28);--ui-afc-line: rgba(255, 255, 255, 0.08);--ui-afc-fill: rgba(255, 255, 255, 0.08);--ui-afc-hover: rgba(255, 255, 255, 0.04);--ui-afc-select: rgba(255, 255, 255, 0.06);--ui-afc-run-bg: rgba(112, 184, 255, 0.18);--ui-afc-run-edge: rgba(112, 184, 255, 0.5);--ui-afc-done-bg: rgba(255, 255, 255, 0.08);--ui-afc-done-edge: rgba(255, 255, 255, 0.14);--ui-afc-fail-bg: #ff35232b;--ui-afc-fail-edge: rgba(255, 151, 125, 0.45);--ui-afc-crit: #ff977d;--ui-afc-warn: #ffa057;--ui-afc-note: #70b8ff;--ui-afc-focus: rgba(91, 154, 255, 0.45);--ui-afc-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.4)}:where(.dark, [data-theme="dark"]) .ui-afc__spark{color: #70b8ff}:where(.dark, [data-theme="dark"]) .ui-afc__agent[data-status="running"] .ui-afc__fill::before{background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.14), transparent)}`;
+    const AGENT_FINDINGS_CSS = `.ui-afc{--ui-afc-card: #ffffff;--ui-afc-strong: #000000;--ui-afc-ink: rgba(0, 0, 0, 0.88);--ui-afc-text: rgba(0, 0, 0, 0.61);--ui-afc-muted: rgba(0, 0, 0, 0.45);--ui-afc-faint: rgba(0, 0, 0, 0.27);--ui-afc-line: rgba(0, 0, 0, 0.06);--ui-afc-fill: rgba(0, 0, 0, 0.06);--ui-afc-hover: rgba(0, 0, 0, 0.025);--ui-afc-select: rgba(0, 0, 0, 0.04);--ui-afc-run-bg: rgba(0, 96, 226, 0.1);--ui-afc-run-edge: rgba(0, 96, 226, 0.32);--ui-afc-done-bg: rgba(0, 0, 0, 0.05);--ui-afc-done-edge: rgba(0, 0, 0, 0.1);--ui-afc-fail-bg: #f52b0018;--ui-afc-fail-edge: rgba(215, 36, 0, 0.34);--ui-afc-crit: #d72400;--ui-afc-warn: #cc4e00;--ui-afc-note: rgba(0, 96, 226, 0.8);--ui-afc-focus: rgba(0, 96, 226, 0.35);--ui-afc-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.06), 0 1px 1px -1px rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.05);--ui-afc-ease: cubic-bezier(0.22, 1, 0.36, 1);--ui-afc-row: 40px;position: relative;box-sizing: border-box;width: 100%;max-width: 640px;container-type: inline-size;font-family: "Inter", "InterVariable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;font-size: 13px;font-weight: 400;line-height: 20px;color: var(--ui-afc-text);text-align: left;-webkit-font-smoothing: antialiased}.ui-afc *, .ui-afc *::before, .ui-afc *::after{box-sizing: border-box}:where(.ui-afc) button{margin: 0;padding: 0;border: 0;background: none;font: inherit;color: inherit;text-align: inherit;cursor: pointer;-webkit-tap-highlight-color: transparent}.ui-afc button:focus-visible{outline: 2px solid var(--ui-afc-focus);outline-offset: -2px}.ui-afc :is(ul, ol){margin: 0;padding: 0;list-style: none}.ui-afc svg{display: block;flex: none}.ui-afc__sr{position: absolute;width: 1px;height: 1px;overflow: hidden;clip-path: inset(50%);white-space: nowrap}.ui-afc__card{border-radius: 10px;background: var(--ui-afc-card);box-shadow: var(--ui-afc-shadow);overflow: hidden}.ui-afc__bar{display: flex;align-items: center;gap: 10px;min-width: 0;padding: 16px 20px;border-bottom: 0.5px solid var(--ui-afc-line)}.ui-afc__spark{display: grid;flex: none;place-items: center;width: 16px;color: rgba(0, 96, 226, 0.765)}.ui-afc__title{font-weight: 500;color: var(--ui-afc-strong);white-space: nowrap}.ui-afc__agents{padding: 8px 10px 4px}.ui-afc__agent{display: grid;grid-template-columns: 24px minmax(0, 1fr) 128px auto;align-items: center;gap: 12px;width: 100%;height: 48px;padding: 0 12px;border-radius: 8px;transition: background-color 160ms ease, opacity 220ms ease}.ui-afc__agent:hover{background: var(--ui-afc-hover)}.ui-afc__agent[aria-pressed="true"]{background: var(--ui-afc-select)}.ui-afc__agent[data-dim]{opacity: 0.5}.ui-afc__agent[data-dim]:hover{opacity: 0.8}.ui-afc__avatar{display: grid;place-items: center;width: 24px;height: 24px;overflow: hidden;border-radius: 6px;background: var(--ui-afc-fill);font-size: 10px;font-weight: 500;letter-spacing: 0.3px;color: var(--ui-afc-text)}.ui-afc__avatar[data-logo]{background: var(--ui-afc-card);box-shadow: var(--ui-afc-shadow)}.ui-afc__avatar > svg, .ui-afc__avatar > img{width: 14px;height: 14px;object-fit: contain}.ui-afc__who{display: grid;min-width: 0}.ui-afc__name{overflow: hidden;font-weight: 500;line-height: 18px;color: var(--ui-afc-ink);white-space: nowrap;text-overflow: ellipsis}.ui-afc__step{overflow: hidden;font-size: 12px;line-height: 16px;color: var(--ui-afc-muted);white-space: nowrap;text-overflow: ellipsis;animation: ui-afc-swap 360ms var(--ui-afc-ease)}.ui-afc__track{position: relative;height: 6px;border-radius: 3px;background: var(--ui-afc-fill);overflow: hidden}.ui-afc__fill{position: absolute;inset: 0 auto 0 0;overflow: hidden;border-radius: 3px;background: var(--ui-afc-done-bg);box-shadow: inset 0 0 0 0.5px var(--ui-afc-done-edge);transition: width 700ms var(--ui-afc-ease), background-color 300ms ease}.ui-afc__agent[data-status="running"] .ui-afc__fill{background: var(--ui-afc-run-bg);box-shadow: inset 0 0 0 0.5px var(--ui-afc-run-edge)}.ui-afc__agent[data-status="failed"] .ui-afc__fill{background: var(--ui-afc-fail-bg);box-shadow: inset 0 0 0 0.5px var(--ui-afc-fail-edge)}.ui-afc__agent[data-status="running"] .ui-afc__fill::before{content: "";position: absolute;inset: 0 auto 0 0;width: 40px;background: linear-gradient(90deg, transparent, var(--ui-afc-card), transparent);opacity: 0.7;animation: ui-afc-sheen 1500ms linear infinite}.ui-afc__agent[data-status="running"] .ui-afc__fill::after{content: "";position: absolute;inset: 0 0 0 auto;width: 18px;background: linear-gradient(90deg, transparent, var(--ui-afc-run-edge));animation: ui-afc-breathe 1100ms ease-in-out infinite alternate}.ui-afc__count{font-size: 12px;line-height: 16px;color: var(--ui-afc-muted);text-align: right;font-variant-numeric: tabular-nums}.ui-afc__mark[data-severity="critical"]{color: var(--ui-afc-crit)}.ui-afc__mark[data-severity="warning"]{color: var(--ui-afc-warn)}.ui-afc__mark[data-severity="note"]{color: var(--ui-afc-note)}.ui-afc__feed-head{display: flex;align-items: center;gap: 8px;height: 40px;margin-top: 4px;padding: 0 20px;border-top: 0.5px solid var(--ui-afc-line)}.ui-afc__label{font-size: 10px;font-weight: 500;line-height: 16px;letter-spacing: 0.5px;text-transform: uppercase;color: var(--ui-afc-muted)}.ui-afc__chip{display: inline-flex;align-items: center;gap: 4px;height: 20px;padding: 0 6px 0 8px;border-radius: 6px;background: var(--ui-afc-fill);font-size: 12px;font-weight: 500;line-height: 16px;color: var(--ui-afc-ink);animation: ui-afc-swap 260ms var(--ui-afc-ease)}.ui-afc__chip svg{color: var(--ui-afc-muted)}.ui-afc__feed{position: relative;height: calc(var(--ui-afc-rows) * var(--ui-afc-row) + 10px);margin: 0 10px;padding-bottom: 10px;overflow: hidden}.ui-afc__slot{position: absolute;top: 0;right: 0;left: 0;height: var(--ui-afc-row);transition: transform 520ms var(--ui-afc-ease), opacity 320ms ease}.ui-afc__slot[data-out]{opacity: 0;pointer-events: none}.ui-afc__finding{display: block;width: 100%;height: 100%;border-radius: 8px;transition: background-color 160ms ease}.ui-afc__finding:hover{background: var(--ui-afc-hover)}.ui-afc__in{display: grid;grid-template-columns: auto minmax(0, 1fr) auto;align-items: center;gap: 12px;height: 100%;min-width: 0;padding: 0 14px;animation: ui-afc-in 560ms var(--ui-afc-ease)}.ui-afc__body{display: grid;min-width: 0;gap: 1px}.ui-afc__ftitle{min-width: 0;overflow: hidden;color: var(--ui-afc-ink);white-space: nowrap;text-overflow: ellipsis}.ui-afc__meta{display: flex;align-items: center;gap: 6px;min-width: 0;overflow: hidden;font-size: 11px;line-height: 14px;color: var(--ui-afc-muted);white-space: nowrap}.ui-afc__meta code{overflow: hidden;font-family: ui-monospace, "SF Mono", Menlo, monospace;font-size: 11.5px;text-overflow: ellipsis}.ui-afc__dot{color: var(--ui-afc-faint)}.ui-afc__time{flex: none;min-width: 28px;font-size: 12px;line-height: 16px;color: var(--ui-afc-faint);text-align: right;font-variant-numeric: tabular-nums}.ui-afc__empty{display: grid;place-items: center;height: var(--ui-afc-row);font-size: 12px;color: var(--ui-afc-muted)}@keyframes ui-afc-in{from{opacity: 0;transform: translateY(-10px);filter: blur(2px)}}@keyframes ui-afc-swap{from{opacity: 0;transform: translateY(3px)}}@keyframes ui-afc-roll{from{opacity: 0;transform: translateY(-5px)}}@keyframes ui-afc-sheen{from{transform: translateX(-40px)}to{transform: translateX(160px)}}@keyframes ui-afc-breathe{from{opacity: 0.45}to{opacity: 1}}@container (max-width: 480px){.ui-afc__agent{grid-template-columns: 24px minmax(0, 1fr) 40px auto;gap: 8px}}@media (prefers-reduced-motion: reduce){.ui-afc *, .ui-afc *::before, .ui-afc *::after{animation: none !important;transition: none !important}}:where(.dark, [data-theme="dark"]) .ui-afc{--ui-afc-card: #1c1c1f;--ui-afc-strong: #ffffff;--ui-afc-ink: rgba(255, 255, 255, 0.9);--ui-afc-text: rgba(255, 255, 255, 0.62);--ui-afc-muted: rgba(255, 255, 255, 0.45);--ui-afc-faint: rgba(255, 255, 255, 0.28);--ui-afc-line: rgba(255, 255, 255, 0.08);--ui-afc-fill: rgba(255, 255, 255, 0.08);--ui-afc-hover: rgba(255, 255, 255, 0.04);--ui-afc-select: rgba(255, 255, 255, 0.06);--ui-afc-run-bg: rgba(112, 184, 255, 0.18);--ui-afc-run-edge: rgba(112, 184, 255, 0.5);--ui-afc-done-bg: rgba(255, 255, 255, 0.08);--ui-afc-done-edge: rgba(255, 255, 255, 0.14);--ui-afc-fail-bg: #ff35232b;--ui-afc-fail-edge: rgba(255, 151, 125, 0.45);--ui-afc-crit: #ff977d;--ui-afc-warn: #ffa057;--ui-afc-note: #70b8ff;--ui-afc-focus: rgba(91, 154, 255, 0.45);--ui-afc-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.4)}:where(.dark, [data-theme="dark"]) .ui-afc__spark{color: #70b8ff}:where(.dark, [data-theme="dark"]) .ui-afc__agent[data-status="running"] .ui-afc__fill::before{background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.14), transparent)}`;
+
+    /** 成员计划清单：选中成员时在行下展开（状态符号 + 标题；done 划掉、blocked 标警告色）。 */
+    const PLAN_CSS = `.ui-afc__plan-wrap{display: grid; gap: 4px; margin: 4px 20px 10px 46px}.ui-afc__plan-head{display: flex; align-items: center; gap: 8px; padding: 0 8px; font-size: 11px; line-height: 14px; color: var(--ui-afc-muted)}.ui-afc__plan-label{font-weight: 500; letter-spacing: 0.3px; text-transform: uppercase}.ui-afc__plan-bar{flex: 1 1 auto; height: 3px; border-radius: 2px; background: var(--ui-afc-fill); overflow: hidden}.ui-afc__plan-bar > i{display: block; height: 100%; border-radius: 2px; background: var(--ui-afc-note); transition: width 600ms var(--ui-afc-ease)}.ui-afc__plan-count{flex: none; font-variant-numeric: tabular-nums}.ui-afc__plan{display: grid; gap: 1px; margin: 0; padding: 0; list-style: none}.ui-afc__plan-step{display: grid; grid-template-columns: 14px minmax(0, 1fr); align-items: start; gap: 8px; padding: 4px 8px; border-radius: 6px; font-size: 12px; line-height: 16px; color: var(--ui-afc-text); transition: background-color 160ms ease, color 160ms ease}.ui-afc__plan-step:hover{background: var(--ui-afc-hover)}.ui-afc__plan-icon{display: block; width: 14px; height: 14px; margin-top: 1px; color: var(--ui-afc-faint)}.ui-afc__plan-title{min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis}.ui-afc__plan-step[data-status="active"]{color: var(--ui-afc-ink)}.ui-afc__plan-step[data-status="active"] .ui-afc__plan-icon{color: var(--ui-afc-note); animation: ui-afc-spin 1200ms linear infinite}.ui-afc__plan-step[data-status="blocked"] .ui-afc__plan-icon{color: var(--ui-afc-warn)}.ui-afc__plan-step[data-status="done"], .ui-afc__plan-step[data-status="skipped"]{color: var(--ui-afc-muted)}.ui-afc__plan-step[data-status="done"] .ui-afc__plan-icon{color: var(--ui-afc-note); opacity: 0.72}.ui-afc__plan-step[data-status="done"] .ui-afc__plan-title, .ui-afc__plan-step[data-status="skipped"] .ui-afc__plan-title{text-decoration: line-through}.ui-afc__plan-step[data-status="skipped"] .ui-afc__plan-icon{opacity: 0.55}@keyframes ui-afc-spin{to{transform: rotate(360deg)}}`;
 
     const API_BASE = '/dsh-team-api/api';
     const POLL_MS = 4000;
@@ -493,6 +509,35 @@ window.__ModuleLoader__.load({
       // 侧车冒出未知状态时不要当成「已完成」，否则进度条会显示 1/1 全部完成
       return 'idle';
     };
+    /**
+     * 成员在页面上的状态：任务还在 running 就一定按「运行中」画。
+     * DSH 的 agent 在维护阶段（上下文压缩、整理）会短暂报 idle，只看 member.status
+     * 会把正在干活的成员画成灰色已完成；任务状态是更可靠的事实源。
+     */
+    const memberDisplayStatus = (member, current) => {
+      if (member.status === 'failed') return 'failed';
+      if (current && current.status === 'running') return 'running';
+      return memberStatus(member.status);
+    };
+    /** sidecar 计划步骤状态 → 卡片里的符号。 */
+    /** 计划行状态图标（对齐 web-ui PlanSteps：pending 虚线圈 / active 转圈 / done 对勾 / blocked 叉 / skipped 减号）。 */
+    function PlanIcon(props) {
+      const status = props.status || 'open';
+      const common = {
+        className: 'ui-afc__plan-icon',
+        width: 14, height: 14, viewBox: '0 0 24 24',
+        fill: 'none', stroke: 'currentColor', strokeWidth: 2,
+        strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true',
+      };
+      const ring = (dashed) => h('circle', {
+        cx: 12, cy: 12, r: 9, strokeDasharray: dashed ? '2 3' : undefined,
+      });
+      if (status === 'done') return h('svg', common, ring(false), h('path', { d: 'm8.4 12.6 2.5 2.5 4.9-5.4' }));
+      if (status === 'active') return h('svg', common, h('circle', { cx: 12, cy: 12, r: 9, opacity: 0.3 }), h('path', { d: 'M21 12a9 9 0 0 0-9-9' }));
+      if (status === 'blocked') return h('svg', common, ring(false), h('path', { d: 'm9.4 9.4 5.2 5.2m0-5.2-5.2 5.2' }));
+      if (status === 'skipped') return h('svg', common, ring(false), h('path', { d: 'M8.5 12h7' }));
+      return h('svg', common, ring(true));
+    };
 
     /**
      * sidecar 快照 → affectui AgentFindings 的 {agents, findings}。
@@ -510,6 +555,12 @@ window.__ModuleLoader__.load({
       }
       const agents = [];
       const findings = [];
+      const planByMember = new Map();
+      for (const todo of snapshot.todos || []) {
+        if (!todo || !todo.memberId) continue;
+        if (!planByMember.has(todo.memberId)) planByMember.set(todo.memberId, []);
+        planByMember.get(todo.memberId).push(todo);
+      }
 
       for (const member of members) {
         const assigned = tasks.filter((task) => task && task.assignee === member.id);
@@ -519,15 +570,29 @@ window.__ModuleLoader__.load({
         let total = assigned.length;
         let done = doneTasks;
         let planDriven = false;
-        if (current && Array.isArray(current.plan) && current.plan.length > 0) {
+        // 成员自己报的步骤清单（team_todo，或内置 todo_write 被镜像成计划）才是真实进度，优先用它。
+        const plan = (planByMember.get(member.id) || [])
+          .slice()
+          .sort((a, b) => (a.orderNo || 0) - (b.orderNo || 0))
+          .map((todo) => ({ title: String(todo.title || ''), status: String(todo.status || 'open') }));
+        const planDone = plan.filter((step) => step.status === 'done' || step.status === 'skipped').length;
+        const activeStep = plan.find((step) => step.status === 'active')
+          || plan.find((step) => step.status === 'blocked')
+          || plan.find((step) => step.status !== 'done' && step.status !== 'skipped')
+          || null;
+        if (plan.length > 0) {
+          planDriven = true;
+          total = plan.length;
+          done = planDone;
+        } else if (current && Array.isArray(current.plan) && current.plan.length > 0) {
           planDriven = true;
           const planSteps = current.plan.length;
           // sidecar 的 pct = (当前步序 + 1) / plan 步数；没有 pct 时退化为「已完成步数」。
-          const planDone = member.pct != null
+          const planStepDone = member.pct != null
             ? Math.min(planSteps, Math.round(member.pct * planSteps))
             : (idx != null ? Math.min(planSteps, idx) : 0);
           total = Math.max(total, planSteps);
-          done = Math.max(doneTasks, planDone);
+          done = Math.max(doneTasks, planStepDone);
         }
         if (!total) {
           total = 1;
@@ -538,9 +603,11 @@ window.__ModuleLoader__.load({
           name: member.name || member.id,
           model: member.model || '',
           step: member.step || '',
+          planStep: activeStep ? activeStep.title : '',
+          plan,
           done,
           total,
-          status: memberStatus(member.status),
+          status: memberDisplayStatus(member, current),
           statusRaw: member.status || '',
           pct: typeof member.pct === 'number' ? member.pct : null,
           planDriven,
@@ -581,7 +648,7 @@ window.__ModuleLoader__.load({
       };
     }
 
-    /** 读 sidecar：/status 里按子会话 agentSessionId 认出团队，再补任务与事件。 */
+    /** 读 sidecar：/status 里按子会话 agentSessionId 认出团队，再补任务、事件与成员计划。 */
     async function loadSnapshot(sessionIds) {
       const wanted = new Set(sessionIds);
       const [status, teams] = await Promise.all([fetchJson('/status'), fetchJson('/teams')]);
@@ -592,13 +659,15 @@ window.__ModuleLoader__.load({
       const team = ((teams && teams.items) || []).find((item) => item.id === teamId) || { id: teamId, name: teamId };
       const members = all.filter((member) => member && member.teamId === teamId && member.status !== 'retired');
       const encoded = encodeURIComponent(teamId);
-      const [tasksRes, eventsRes] = await Promise.all([
+      const [tasksRes, eventsRes, todosRes] = await Promise.all([
         fetchJson('/tasks?team=' + encoded).catch(() => null),
         fetchJson('/events/history?team=' + encoded + '&limit=40').catch(() => null),
+        fetchJson('/todos?team=' + encoded).catch(() => null),
       ]);
       const tasks = (tasksRes && (tasksRes.items || tasksRes.tasks)) || [];
       const events = (eventsRes && (eventsRes.items || eventsRes.events)) || [];
-      return { team, members, tasks, events, asOf: Date.now() };
+      const todos = (todosRes && (todosRes.items || todosRes.todos)) || [];
+      return { team, members, tasks, events, todos, asOf: Date.now() };
     }
 
     /**
@@ -789,14 +858,6 @@ window.__ModuleLoader__.load({
         return () => clearInterval(timer);
       }, []);
 
-      const checksTotal = agents.reduce((sum, agent) => sum + Math.max(0, agent.total || 0), 0);
-      const checksDone = agents.reduce((sum, agent) => sum + Math.min(agent.done || 0, agent.total || 0), 0);
-      const count = (severity, agentId) => findings.reduce(
-        (total, finding) => total + (finding.severity === severity && (!agentId || finding.agentId === agentId) ? 1 : 0),
-        0,
-      );
-      const criticalAll = count('critical');
-      const warningAll = count('warning');
       const visible = findings
         .filter((finding) => !selected || finding.agentId === selected)
         .sort((a, b) => toTime(b.at) - toTime(a.at))
@@ -804,6 +865,8 @@ window.__ModuleLoader__.load({
       const statusText = (agent) => {
         if (agent.status === 'done') return t('card_all_done');
         if (agent.status === 'failed') return t('card_stopped');
+        // 有计划时优先显示「当前在做的步骤」，比 sidecar 的步序（S3）更好懂。
+        if (agent.planStep) return clip(agent.planStep, 96);
         if (agent.step) return agent.step;
         const raw = agent.statusRaw || 'running';
         return t('status_' + (KNOWN_STATUS.includes(raw) ? raw : 'unknown'));
@@ -822,23 +885,23 @@ window.__ModuleLoader__.load({
         h('header', { className: 'ui-afc__bar' },
           h('span', { className: 'ui-afc__spark' }, h(Spark, { size: 14 })),
           h('span', { className: 'ui-afc__title' }, props.title || t('card_title')),
-          h('span', { className: 'ui-afc__progress' }, t('card_checks', { done: checksDone, total: checksTotal })),
-          h('span', { className: 'ui-afc__totals', 'aria-label': t('card_totals_aria', { c: criticalAll, w: warningAll }) },
-            h('span', { 'data-severity': 'critical', 'data-zero': criticalAll ? undefined : '' },
-              h('b', { key: criticalAll }, criticalAll), ' ' + t('card_critical')),
-            h('span', { 'data-severity': 'warning', 'data-zero': warningAll ? undefined : '' },
-              h('b', { key: warningAll }, warningAll), ' ' + t('card_warning')))),
+          ),
         h('ul', { className: 'ui-afc__agents' }, agents.map((agent) => {
-          const percent = agent.pct != null
-            ? Math.min(100, Math.max(0, agent.pct * 100))
-            : (agent.total ? Math.min(100, ((agent.done || 0) / agent.total) * 100) : 0);
+          // 计划驱动的成员按「已完成步数 / 计划步数」画，和右侧数字保持一致；
+          // 没有计划时退回 sidecar 上报的 pct（当前步序进度）。
+          const percent = agent.planDriven && agent.total
+            ? Math.min(100, Math.max(0, ((agent.done || 0) / agent.total) * 100))
+            : agent.pct != null
+              ? Math.min(100, Math.max(0, agent.pct * 100))
+              : (agent.total ? Math.min(100, ((agent.done || 0) / agent.total) * 100) : 0);
           const progressLabel = !agent.planDriven && agent.pct != null
             ? Math.round(percent) + '%'
             : (agent.done || 0) + '/' + (agent.total || 0);
           const logo = modelLogo(agent.model, agent.name);
-          const critical = count('critical', agent.id);
-          const warning = count('warning', agent.id);
           const pressed = selected === agent.id;
+          const planTotal = agent.plan.length;
+          const planDone = agent.plan.filter((step) => step.status === 'done').length;
+          const planPercent = planTotal ? Math.round((planDone / planTotal) * 100) : 0;
           return h('li', { key: agent.id },
             h('button', {
               type: 'button',
@@ -857,13 +920,25 @@ window.__ModuleLoader__.load({
               h('span', { className: 'ui-afc__fill', style: { width: percent + '%' } })),
             h('span', {
               className: 'ui-afc__count',
-              title: (agent.done || 0) + '/' + (agent.total || 0) + (agent.model ? ' · ' + agent.model : ''),
+              title: t('card_plan') + ' ' + (agent.done || 0) + '/' + (agent.total || 0) + (agent.model ? ' · ' + agent.model : ''),
             }, progressLabel),
-            h('span', { className: 'ui-afc__found' },
-              h('span', { 'data-severity': 'critical', 'data-zero': critical ? undefined : '' },
-                h(SeverityMark, { severity: 'critical' }), h('b', { key: critical }, critical)),
-              h('span', { 'data-severity': 'warning', 'data-zero': warning ? undefined : '' },
-                h(SeverityMark, { severity: 'warning' }), h('b', { key: warning }, warning)))));
+
+            // 选中成员时展开他的计划清单（成员自报的 todo / team_todo 步骤）
+            pressed && agent.plan.length > 0
+              ? h('div', { className: 'ui-afc__plan-wrap' },
+                h('div', { className: 'ui-afc__plan-head' },
+                  h('span', { className: 'ui-afc__plan-label' }, t('card_plan')),
+                  h('span', { className: 'ui-afc__plan-bar' }, h('i', { style: { width: planPercent + '%' } })),
+                  h('span', { className: 'ui-afc__plan-count' }, planDone + '/' + planTotal)),
+                h('ol', { className: 'ui-afc__plan', 'aria-label': t('card_plan_aria') },
+                  agent.plan.map((step, index) => h('li', {
+                    key: index,
+                    className: 'ui-afc__plan-step',
+                    'data-status': step.status,
+                  },
+                  h(PlanIcon, { status: step.status }),
+                  h('span', { className: 'ui-afc__plan-title', title: step.title }, step.title)))))
+              : null));
         })),
         h('div', { className: 'ui-afc__feed-head' },
           h('span', { className: 'ui-afc__title' }, t('card_latest')),
@@ -890,10 +965,11 @@ window.__ModuleLoader__.load({
             h('span', { className: 'ui-afc__in' },
               h(SeverityMark, { severity: finding.severity }),
               h('span', { className: 'ui-afc__sr' }, t('sev_' + finding.severity)),
-              h('span', { className: 'ui-afc__ftitle' }, finding.title),
-              h('span', { className: 'ui-afc__meta' },
-                h('span', {}, agentName(finding.agentId)),
-                finding.location ? h('code', {}, clip(finding.location, 28)) : null),
+              h('span', { className: 'ui-afc__body' },
+                h('span', { className: 'ui-afc__ftitle', title: finding.title }, finding.title),
+                h('span', { className: 'ui-afc__meta' },
+                  h('span', {}, agentName(finding.agentId)),
+                  finding.location ? h('code', {}, clip(finding.location, 28)) : null)),
               h('span', { className: 'ui-afc__time' }, relativeTime(toTime(finding.at), now)))))))));
     }
 
@@ -1114,7 +1190,7 @@ window.__ModuleLoader__.load({
       if (document.getElementById('dsh-team-ui-styles')) return;
       const node = document.createElement('style');
       node.id = 'dsh-team-ui-styles';
-      node.textContent = CSS + '\n' + AGENT_FINDINGS_CSS;
+      node.textContent = CSS + '\n' + AGENT_FINDINGS_CSS + '\n' + PLAN_CSS;
       document.head.appendChild(node);
     }
 

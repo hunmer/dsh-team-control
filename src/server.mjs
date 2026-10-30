@@ -113,6 +113,10 @@ export function createRoutes(core) {
     ['GET', /^\/api\/artifacts$/, async (ctx) => C.listArtifacts(need(qs(ctx.url).get('team'), 'team'), { taskId: qs(ctx.url).get('task'), limit: qs(ctx.url).get('limit') })],
     ['POST', /^\/api\/artifacts$/, async (ctx) => C.addArtifacts(ctx.body)],
 
+    // 成员改动（Host 插件在成员 write/edit 落盘后上报 unified diff；面板「审阅」页只读展示）
+    ['GET', /^\/api\/changes$/, async (ctx) => C.listChanges(need(qs(ctx.url).get('team'), 'team'), { taskId: qs(ctx.url).get('task'), memberId: qs(ctx.url).get('member'), limit: qs(ctx.url).get('limit') })],
+    ['POST', /^\/api\/changes$/, async (ctx) => C.addChanges(ctx.body)],
+
     // 成员上下文分析（Host 插件算好「上下文窗口被什么占满」后推送；面板按成员展示）
     ['GET', /^\/api\/contexts$/, async (ctx) => C.listContexts(need(qs(ctx.url).get('team'), 'team'), { memberId: qs(ctx.url).get('member') })],
     ['POST', /^\/api\/contexts$/, async (ctx) => C.reportContext(ctx.body)],

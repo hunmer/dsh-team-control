@@ -11,10 +11,21 @@ const React = {
   createElement(type, props, ...children) {
     return { type, props: { ...(props || {}), children: children.length <= 1 ? children[0] : children } };
   },
+  // 页面组件（iframe 版编排页）用到基础 hooks：桩成「每次渲染重算」的即时求值
+  useRef: (initial) => ({ current: initial }),
+  useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}],
+  useMemo: (fn) => fn(),
+  useEffect: (fn) => {
+    const cleanup = fn();
+    return typeof cleanup === 'function' ? cleanup : undefined;
+  },
 };
 
 let plugin;
 globalThis.window = {
+  // iframe 页会监听 postMessage / resize：测试里不需要真的收消息
+  addEventListener() {},
+  removeEventListener() {},
   __ModuleLoader__: {
     load({ factory }) {
       plugin = factory((id) => {

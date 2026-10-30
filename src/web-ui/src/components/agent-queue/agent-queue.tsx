@@ -79,6 +79,8 @@ export interface AgentQueueProps {
   title?: string;
   name?: string;
   className?: string;
+  /** 头部右上角的额外操作（标题栏工具区最左侧）。 */
+  actions?: React.ReactNode;
 }
 
 // ---------------------------------------------------------------------------
@@ -536,6 +538,7 @@ export function AgentQueue({
   title = 'Queue',
   name,
   className,
+  actions,
 }: AgentQueueProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const cardRef = useRef<HTMLDivElement | null>(null);
@@ -1265,6 +1268,7 @@ export function AgentQueue({
           )}
         </span>
         <span className="ui-agqc__tools">
+          {actions}
           {onPausedChange && (
             <button
               type="button"

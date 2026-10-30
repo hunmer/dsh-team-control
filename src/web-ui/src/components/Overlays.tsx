@@ -34,7 +34,7 @@ export function AuthOverlayDialog() {
           <DialogTitle>{text.title}</DialogTitle>
           <DialogDescription>{text.detail}</DialogDescription>
         </DialogHeader>
-        <div className="space-y-3">
+        <div className="space-y-3 px-6 pb-3">
           <Input
             type="password"
             placeholder="粘贴 token（来自 sidecar 启动横幅）"
@@ -43,11 +43,11 @@ export function AuthOverlayDialog() {
             onChange={(event) => setToken(event.target.value)}
             onKeyDown={(event) => { if (event.key === 'Enter') submit(); }}
           />
-          <DialogFooter>
-            <Button variant="outline" onClick={() => location.reload()}>重新加载页面</Button>
-            <Button onClick={submit}>使用 token 进入</Button>
-          </DialogFooter>
         </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => location.reload()}>重新加载页面</Button>
+          <Button onClick={submit}>使用 token 进入</Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

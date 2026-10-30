@@ -741,7 +741,7 @@ function JsonViewer({
           <DialogTitle className="sr-only">
             {title ?? "JSON Viewer"}
           </DialogTitle>
-          <div className="max-h-[70vh] overflow-auto">
+          <div className="max-h-[70vh] overflow-auto p-4">
             <JsonViewer
               data={data}
               title={title}

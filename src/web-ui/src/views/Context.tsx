@@ -4,19 +4,22 @@
  * 数据来自 GET /api/contexts（Host 插件周期上报 + agent/status 变化时补报）：
  *   每个成员一条快照：blocks(按类别归并的 token 占用) / limit(窗口) / compaction(压缩前后)
  * SSE 的 context.update 帧会触发去抖刷新，所以压缩发生时看板会自动切到对比视图。
+ *
+ * 展示：每个成员一张 ContextMap 卡片并列铺开（左上角是成员名 + 模型图标），不再用下拉切换。
+ * 底部的「上下文用量总览」按 trace 里的 LLM 调用时间顺序铺格子：不同成员的调用交错出现，
+ * 悬浮任意一格可看到这一刻是谁、用的什么模型、本次输入/输出与花费。
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { usePanel } from '@/store';
-import type { ContextUsage } from '@/types';
-import { ContextMap, type ContextAgent } from '@/components/context-map/context-map';
+import type { ContextUsage, TraceNode } from '@/types';
+import { ContextMap } from '@/components/context-map/context-map';
 import { BarRaceChart, type BarRaceDatum } from '@/components/bar-race-chart/bar-race-chart';
-import { MemberFanoutGrid, type FanoutMember } from '@/components/fan-out-grid/fan-out-grid';
+import { MemberFanoutGrid, type FanoutMember, type FanoutSlice } from '@/components/fan-out-grid/fan-out-grid';
 import { Button } from '@/components/ui/button';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { SegmentedControl, SegmentedControlItem } from '@/components/ui/segmented-control';
 import { EmptyState, MetaLine, SectionHead } from '@/components/Bits';
 import { modelAvatar } from '@/components/ModelAvatar';
-import { MemberAvatarButton, MemberInfoDialog } from '@/components/member-info';
+import { MemberInfoDialog } from '@/components/member-info';
 import { fmtCost, fmtTokens } from '@/lib/format';
 
 /** 窗口未知（provider 没报 contextWindow）时的兜底值，只用于画空闲空间。 */
@@ -42,37 +45,13 @@ function metricValue(usage: ContextUsage | null | undefined, metric: RankingMetr
 }
 
 export function ContextView() {
-  const { state, refreshContexts, memberName } = usePanel();
-  const { teamId, contexts, contextLead, errors, members } = state;
-  const [picked, setPicked] = useState<string | null>(null);
+  const { state, refreshContexts, refreshTrace, memberName } = usePanel();
+  const { teamId, contexts, contextLead, errors, members, trace } = state;
   const [busy, setBusy] = useState(false);
-  /** 当前查看的成员（要拿它的 agentSessionId 去 DSH 打开对话）。 */
-  const currentMember = members.find((m) => m.id === (picked ?? contexts[0]?.memberId)) ?? null;
   const [metric, setMetric] = useState<RankingMetric>('total');
   /** 点排行榜某行时打开同一个成员信息对话框 */
   const [infoId, setInfoId] = useState<string | null>(null);
   const infoMember = infoId ? members.find((m) => m.id === infoId) ?? null : null;
-
-  // 快照按 updated_at 倒序返回：默认看最近上报的那个成员
-  const selected = picked && contexts.some((c) => c.memberId === picked) ? picked : contexts[0]?.memberId ?? null;
-  const snap = useMemo(() => contexts.find((c) => c.memberId === selected) ?? null, [contexts, selected]);
-
-  const agents = useMemo<ContextAgent[]>(
-    () => contexts.map((c) => ({
-      id: c.memberId,
-      name: memberName(c.memberId),
-      model: c.model ?? undefined,
-      icon: modelAvatar(c.model, memberName(c.memberId), c.provider, 14),
-      limit: c.limit || DEFAULT_LIMIT,
-    })),
-    [contexts, memberName],
-  );
-
-  /** Base UI Select 需要 items 才能把 value 映射回显示文案，否则触发器显示原始 id。 */
-  const memberItems = useMemo(
-    () => agents.map((a) => ({ value: a.id, label: `${a.name}${a.model ? ` · ${a.model}` : ''}` })),
-    [agents],
-  );
 
   const refresh = () => {
     if (!teamId || busy) return;
@@ -80,12 +59,57 @@ export function ContextView() {
     void refreshContexts().catch(() => undefined).finally(() => setBusy(false));
   };
 
+  /** 头部汇总：所有成员窗口之和，作为并列卡片的总体参照。 */
+  const totalUsed = contexts.reduce((sum, c) => sum + (c.used || c.blocks.reduce((s, b) => s + b.tokens, 0)), 0);
+  const totalLimit = contexts.reduce((sum, c) => sum + (c.limit || DEFAULT_LIMIT), 0);
+
+  // 总览网格需要 trace 里的调用时间线；从别的页签切进来时 trace 可能还没加载过。
+  useEffect(() => {
+    if (teamId && !trace) void refreshTrace().catch(() => undefined);
+  }, [teamId, trace, refreshTrace]);
+
+  /**
+   * 时间切片：trace 里每次 LLM 调用一条，按发生时间升序。
+   * 成员归属靠最近的 `member:` 前缀节点；`session:` 是 Lead 的会话。
+   */
+  const slices = useMemo<FanoutSlice[]>(() => {
+    if (!trace?.root) return [];
+    const out: FanoutSlice[] = [];
+    const walk = (node: TraceNode, fallbackMember: string) => {
+      const memberId = node.id.startsWith('member:')
+        ? node.id.slice('member:'.length)
+        : node.id.startsWith('session:')
+          ? 'lead'
+          : fallbackMember;
+      if (node.kind === 'llm') {
+        const tokens = (node.tokensIn ?? 0) + (node.tokensOut ?? 0);
+        if (tokens > 0) {
+          out.push({
+            memberId,
+            tokens,
+            at: trace.originMs + node.start,
+            note: node.model,
+            inTokens: node.tokensIn,
+            outTokens: node.tokensOut,
+            cost: node.cost,
+          });
+        }
+      }
+      for (const child of node.children) walk(child, memberId);
+    };
+    walk(trace.root, 'lead');
+    return out.sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
+  }, [trace]);
+
+  /** 没有成员快照时保持原来的累计视图，避免和「还没有上下文上报」的空态自相矛盾。 */
+  const timeSlices = contexts.length ? slices : [];
+
   let body: React.ReactNode;
   if (!teamId) {
     body = <EmptyState title="未选择团队" />;
   } else if (errors.contexts && !contexts.length) {
     body = <EmptyState title="上下文数据加载失败" detail={errors.contexts} />;
-  } else if (!snap) {
+  } else if (!contexts.length) {
     body = (
       <EmptyState
         title="还没有上下文上报"
@@ -93,23 +117,34 @@ export function ContextView() {
       />
     );
   } else {
+    // 并列展示：所有成员一次性排成一行，每张卡片固定宽度，放不下就横向滚动
     body = (
-      <ContextMap
-        title="上下文窗口"
-        blocks={snap.blocks}
-        limit={snap.limit || DEFAULT_LIMIT}
-        model={snap.model ?? undefined}
-        agents={agents}
-        agent={snap.memberId}
-        onAgentChange={(id) => setPicked(id)}
-        compaction={snap.compaction ?? null}
-        status={snap.status ?? undefined}
-      />
+      <div className="flex snap-x snap-mandatory items-start gap-3 overflow-x-auto pb-2">
+        {contexts.map((c) => {
+          const name = memberName(c.memberId);
+          return (
+            <div key={c.memberId} className="w-[520px] shrink-0 snap-start rounded-xl border bg-card p-4">
+              <ContextMap
+                title={name}
+                headerIcon={modelAvatar(c.model, name, c.provider, 14)}
+                blocks={c.blocks}
+                limit={c.limit || DEFAULT_LIMIT}
+                compaction={c.compaction ?? null}
+                status={c.status ?? undefined}
+              />
+              {c.breakdown ? (
+                <MetaLine>
+                  system {fmtTokens(c.breakdown.system ?? 0)} · tools {fmtTokens(c.breakdown.tools ?? 0)} · messages{' '}
+                  {fmtTokens(c.breakdown.messages ?? 0)}
+                  {c.asOfSeq ? ` · 截至事件 #${c.asOfSeq}` : ''}
+                </MetaLine>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
     );
   }
-
-  const used = snap ? snap.used || snap.blocks.reduce((sum, b) => sum + b.tokens, 0) : 0;
-  const limit = snap?.limit || DEFAULT_LIMIT;
 
   /** 排行：所有成员 + Lead 的用量，按当前口径降序；SSE 刷新时数值与名次都会带过渡动画。 */
   const ranking = useMemo<BarRaceDatum[]>(() => {
@@ -130,43 +165,65 @@ export function ContextView() {
 
   /** 总览网格的成员口径：所有成员的累计 tokens / 花费（Lead 一起算，口径与排行一致）。 */
   const fanoutMembers = useMemo<FanoutMember[]>(() => {
-    const rows: FanoutMember[] = contexts.map((c) => ({
-      id: c.memberId,
-      name: memberName(c.memberId),
-      tokens: c.usage?.total ?? 0,
-      cost: c.usage?.cost ?? 0,
-      icon: modelAvatar(c.model, memberName(c.memberId), c.provider, 16),
-    }));
+    const rows: FanoutMember[] = contexts.map((c) => {
+      const limit = c.limit || DEFAULT_LIMIT;
+      const used = c.used || c.blocks.reduce((s, b) => s + b.tokens, 0);
+      return {
+        id: c.memberId,
+        name: memberName(c.memberId),
+        tokens: c.usage?.total ?? 0,
+        cost: c.usage?.cost ?? 0,
+        icon: modelAvatar(c.model, memberName(c.memberId), c.provider, 16),
+        // 悬浮明细：每个成员的模型与上下文窗口占用都不同
+        detail: `${c.model ?? '未知模型'} · 上下文 ${fmtTokens(used)} / ${fmtTokens(limit)}（${Math.round((used / limit) * 100)}%）`,
+      };
+    });
+    const seen = new Set(rows.map((r) => r.id));
     if (contextLead && (contextLead.total > 0 || contextLead.cost > 0)) {
-      rows.push({ id: 'lead', name: memberName('lead'), tokens: contextLead.total, cost: contextLead.cost });
+      rows.push({
+        id: 'lead',
+        name: memberName('lead'),
+        tokens: contextLead.total,
+        cost: contextLead.cost,
+        detail: '主控 agent · 未上报上下文窗口',
+      });
+      seen.add('lead');
+    }
+    // trace 里出现过、但没有上下文快照的成员：用调用切片汇总，避免总览缺人 / 配色错位
+    if (timeSlices.length) {
+      const agg = new Map<string, { tokens: number; cost: number; note?: string }>();
+      for (const s of timeSlices) {
+        if (seen.has(s.memberId)) continue;
+        const cur = agg.get(s.memberId) ?? { tokens: 0, cost: 0 };
+        cur.tokens += s.tokens;
+        cur.cost += s.cost ?? 0;
+        cur.note = cur.note ?? s.note;
+        agg.set(s.memberId, cur);
+      }
+      for (const [id, v] of agg) {
+        rows.push({
+          id,
+          name: memberName(id),
+          tokens: v.tokens,
+          cost: v.cost,
+          detail: `${v.note ?? '未知模型'} · 来自 trace 调用记录（无上下文快照）`,
+        });
+      }
     }
     return rows;
-  }, [contexts, contextLead, memberName]);
+  }, [contexts, contextLead, memberName, timeSlices]);
 
   return (
     <section className="space-y-3">
       <SectionHead
         title="上下文分析"
-        meta={snap ? `${fmtTokens(used)} / ${fmtTokens(limit)} tokens · ${snap.updatedAt ?? ''}` : undefined}
+        meta={
+          contexts.length
+            ? `${contexts.length} 个成员 · 合计 ${fmtTokens(totalUsed)} / ${fmtTokens(totalLimit)} tokens`
+            : undefined
+        }
         controls={
           <div className="flex items-center gap-2">
-            {agents.length ? (
-              <Select
-                items={memberItems}
-                value={selected ?? undefined}
-                onValueChange={(value) => setPicked(String(value))}
-              >
-                <SelectTrigger size="sm" className="w-52" title="切换查看的成员" aria-label="成员">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {memberItems.map((item) => (
-                    <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            ) : null}
-            <MemberAvatarButton member={currentMember} size={18} />
             <Button size="sm" variant="outline" disabled={!teamId || busy} onClick={refresh}>
               {busy ? '刷新中…' : '刷新上下文'}
             </Button>
@@ -204,16 +261,15 @@ export function ContextView() {
       {fanoutMembers.length ? (
         <MemberFanoutGrid
           members={fanoutMembers}
+          slices={timeSlices}
           title="上下文用量总览"
-          job={`${fanoutMembers.length} 个成员 · 累计`}
+          job={
+            timeSlices.length
+              ? `${fanoutMembers.length} 个成员 · ${timeSlices.length} 次调用（按时间顺序）`
+              : `${fanoutMembers.length} 个成员 · 累计`
+          }
           formatCost={fmtCost}
         />
-      ) : null}
-      {snap?.breakdown ? (
-        <MetaLine>
-          system {fmtTokens(snap.breakdown.system ?? 0)} · tools {fmtTokens(snap.breakdown.tools ?? 0)} · messages {fmtTokens(snap.breakdown.messages ?? 0)}
-          {snap.asOfSeq ? ` · 截至事件 #${snap.asOfSeq}` : ''}
-        </MetaLine>
       ) : null}
       {contexts.length && errors.contexts ? (
         <MetaLine>上一次自动刷新失败：{errors.contexts}（保留最后一次成功快照）</MetaLine>

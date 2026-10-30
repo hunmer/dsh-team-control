@@ -136,6 +136,29 @@ try {
     return `${sse.frames.length} frames`;
   });
 
+  // 审阅页：成员改动的统一 diff 契约
+  const change = await s.api.post('/api/changes', {
+    teamId: team.id, memberId: m1.id,
+    items: [{ path: 'src/panel.txt', kind: 'edit', diff: '--- a/src/panel.txt\n+++ b/src/panel.txt\n@@ -1,2 +1,2 @@\n old\n-old\n+new\n', added: 1, deleted: 1 }],
+  });
+  check('POST /api/changes', () => {
+    assert(Array.isArray(change.items) && change.items.length === 1, 'items');
+    const c = change.items[0];
+    assert(typeof c.id === 'string' && c.id.startsWith('chg_'), 'id');
+    assert(c.path === 'src/panel.txt' && c.kind === 'edit', 'path/kind');
+    assert(c.diff.includes('@@ -1,2 +1,2 @@'), 'diff 原文');
+    assert(c.added === 1 && c.deleted === 1, 'added/deleted');
+    assert(typeof c.createdAt === 'string', 'createdAt');
+    return 'ok';
+  });
+  const changes = await s.api.get(`/api/changes?team=${team.id}&member=${m1.id}`);
+  check('GET /api/changes', () => {
+    assert(Array.isArray(changes.items) && changes.items.length === 1, 'items');
+    assert(changes.items[0].memberId === m1.id, 'memberId');
+    assert(changes.items[0].diff.includes('+new'), 'diff 含新增行');
+    return 'ok';
+  });
+
   // 面板从不引用 dev-mock
   check('panel 不依赖 dev-mock/外链', () => {
     assert(!html.includes('dev-mock'), 'dev-mock leaked');
