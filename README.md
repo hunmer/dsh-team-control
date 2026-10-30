@@ -8,46 +8,54 @@
 
 要求 **Node.js ≥ 22.15**（`node:sqlite` ≥22.5、Worker 的 `module.registerHooks` ≥22.15；实测 v24.22）。**零依赖、零构建**，不需要 `npm install`。
 
-### 1. 克隆
+### 1. 装插件（`dsh plugin`）
 
 ```bash
-git clone https://github.com/hunmer/dsh-team-control.git
-cd dsh-team-control
-node --version            # 应 ≥ v22.15
+# 本地源码（推荐：sidecar 能被插件自动拉起）
+git clone https://github.com/hunmer/dsh-team-control.git ~/dsh-team-control
+dsh plugin --profile web add "$HOME/dsh-team-control/dsh-plugin"
+dsh plugin --profile web add "$HOME/dsh-team-control/dsh-plugin-ui"   # 可选：GUI 看板
 ```
 
-### 2. 起 sidecar（CLI + Web 面板）
+```bash
+# GitHub 源码（免 clone；本仓库无构建脚本，不需要 allowBuilds 授权）
+dsh plugin --profile web add "github:hunmer/dsh-team-control#path:/dsh-plugin"
+dsh plugin --profile web add "github:hunmer/dsh-team-control#path:/dsh-plugin-ui"
+```
 
 ```bash
-node bin/dsh-team.mjs up --port 4317
+# npm 包（预构建，尚未发布；发布后可用）
+dsh plugin --profile web add dsh-team-control
+dsh plugin --profile web add dsh-team-control-ui
+```
+
+装完**重启 DSH**（或到 设置 → 插件 里禁用/启用一次），`team_*` 工具与「编排」面板才会出现。卸载：
+`dsh plugin --profile web remove @local/dsh-team-plugin`（UI 包同理）。
+
+### 2. 接入 sidecar
+
+`autoStart` 默认开启：首次调用 `team_*` 时插件会自己拉起 sidecar——**只有本地源码安装能自动拉起**，因为入口路径在克隆目录的 `bin/` 里。也可以手动起：
+
+```bash
+node ~/dsh-team-control/bin/dsh-team.mjs up --port 4317
 # stdout 首行：{event:'ready', url, port, token, panel}
 ```
 
 - 面板：<http://127.0.0.1:4317/panel>
 - 数据目录默认 `~/.dsh/team`（`--data` / `DSH_TEAM_HOME` 覆盖）
-- 停止：`node bin/dsh-team.mjs down`
+- 停止：`node ~/dsh-team-control/bin/dsh-team.mjs down`
+- 用 GitHub / npm 方式装的，想保留自动拉起：给插件配置 `sidecarEntry: <克隆目录>/bin/dsh-team.mjs`，或先手动起 sidecar 再调用工具。
 
-### 3.（可选）装成 DSH 插件，让模型直接调用 `team_*` 工具
-
-两个 bundle 是本地包（`@local/*`，未发布 npm），按**克隆目录的绝对路径**安装：
-
-```text
-plugin_manager(action: "install_bundle", target: "<克隆目录绝对路径>/dsh-plugin")
-plugin_manager(action: "install_bundle", target: "<克隆目录绝对路径>/dsh-plugin-ui")   # 可选：GUI 看板
-```
-
-期望返回 `application: "applied"`、`warnings: []`；卸载 target 为 `@local/dsh-team-plugin` / `@local/dsh-team-ui`。
-装完需**重启 DSH**（或禁用/启用一次 `include:dsh-team`），运行中的进程缓存了旧模块。
-
-### 4.（可选）装 skill
+### 3.（可选）装 skill
 
 ```bash
-mkdir -p ~/.dsh/skills && cp -r skills/dsh-agent-team ~/.dsh/skills/
+mkdir -p ~/.dsh/skills && cp -r ~/dsh-team-control/skills/dsh-agent-team ~/.dsh/skills/
 ```
 
-### 5. 验证
+### 4. 验证
 
 ```bash
+cd ~/dsh-team-control
 node demo/run-demo.mjs     # 3 成员 + DAG + 一次越界审批 + 一次 interrupt/resume
 node tests/run-all.mjs     # AC-1 ~ AC-15 与插件/面板/路由/CLI 全量验收
 ```
