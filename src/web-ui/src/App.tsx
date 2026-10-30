@@ -5,7 +5,6 @@ import { isUnacked } from '@/views/Messages';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Toaster } from '@/components/Toaster';
 import { AuthOverlayDialog, BootErrorOverlay } from '@/components/Overlays';
-import { AgentQueueDock } from '@/components/agent-queue/agent-queue-dock';
 import { TopBar } from '@/components/TopBar';
 import { WorkspaceSelect } from '@/components/WorkspaceSelect';
 import { SettingsDialog } from '@/components/SettingsDialog';
@@ -15,6 +14,7 @@ import { ToastProvider } from '@/components/ui/toast';
 import { buildNav, TAB_LABELS, tabFromLabel, type ShellChrome } from '@/shell';
 import { HomeView } from '@/views/Home';
 import { BoardView } from '@/views/Board';
+import { ReviewView } from '@/views/Review';
 import { ContextView } from '@/views/Context';
 import { DagView } from '@/views/Dag';
 import { TimelineView } from '@/views/Timeline';
@@ -45,6 +45,7 @@ function Banner() {
 function ActiveView({ tab }: { tab: TabName }) {
   switch (tab) {
     case 'board': return <BoardView />;
+    case 'review': return <ReviewView />;
     case 'context': return <ContextView />;
     case 'dag': return <DagView />;
     case 'timeline': return <TimelineView />;
@@ -109,7 +110,6 @@ export default function App() {
         </div>
       </AppShell>
       <AuthOverlayDialog />
-      <AgentQueueDock />
       <Toaster />
       <noscript><p className="p-4 text-sm">本面板需要启用 JavaScript 才能显示实时数据。</p></noscript>
     </ToastProvider>

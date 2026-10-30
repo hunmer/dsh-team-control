@@ -169,7 +169,7 @@ plugin_manager(action: "install_bundle", target: "C:\\...\\agent-team-plugin\\ds
 | 交付物 | 位置 |
 |---|---|
 | sidecar 可执行体 | `bin/dsh-team.mjs`（`dsh-team up`，默认 `127.0.0.1:4317`） |
-| Web 面板 | `src/web/`（`/panel`；affectui 侧栏导航 + 主页 `AgentRun`，业务视图：**成员看板 = Trace 瀑布**/DAG/时间线/权限矩阵/审批/消息/报告；亮·暗主题） |
+| Web 面板 | `src/web/`（`/panel`；affectui 侧栏导航 + 主页 `AgentRun`，业务视图：**成员看板 = Trace 瀑布**/**审阅 = 成员改动 diff**/DAG/时间线/权限矩阵/审批/消息/报告；亮·暗主题） |
 | CLI | `bin/dsh-team.mjs`（六个子命令） |
 | 测试套件 | `tests/ac-*.mjs` + `tests/run-all.mjs`（覆盖 AC-1 ~ AC-15，含 agent 运行时 `tests/ac-15-agent-runtime.mjs`、插件侧 agent 闭环 `tests/plugin-agent.mjs`、模型路由目录 `tests/llm-catalog.mjs` 与插件路由分配 `tests/plugin-models.mjs`、Trace 上报链路 `tests/plugin-trace.mjs` 与客户端入口注册 `tests/plugin-client.mjs`） |
 | 文档 | 本文件 + [`docs/CONTRACT.md`](docs/CONTRACT.md) + [`docs/adr/`](docs/adr/) |

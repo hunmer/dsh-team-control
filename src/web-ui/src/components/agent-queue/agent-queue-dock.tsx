@@ -1,5 +1,5 @@
 /**
- * 成员队列浮窗 —— 把 affectUI Agent Queue 挂到面板右下角，展示各成员的实时状态。
+ * 成员队列 —— 顶栏右侧的按钮 + Popover，展示各成员的实时状态。
  *
  * 数据映射：
  *   workers = 团队成员（头像用模型品牌图标）
@@ -10,11 +10,11 @@
  */
 import { useMemo, useState } from 'react';
 import { usePanel } from '@/store';
-import { storeGet, storeSet } from '@/lib/format';
 import { MemberAvatarButton } from '@/components/member-info';
+import { TeamRunMenu } from '@/components/TeamRunMenu';
 import { AgentQueue, type QueueJob, type QueueWorker } from '@/components/agent-queue/agent-queue';
-
-const OPEN_KEY = 'dsh-team.panel.queue.v1';
+import { Button } from '@/components/ui/button';
+import { Popover, PopoverPopup, PopoverTrigger } from '@/components/ui/popover';
 
 const QueueGlyph = () => (
   <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -36,19 +36,7 @@ function todoStatus(status: string): QueueJob['status'] {
 export function AgentQueueDock() {
   const { state, memberName } = usePanel();
   const { teamId, team, members, todos } = state;
-  // 展开状态记住上次的选择；第一次访问时按屏宽决定默认值（窄屏默认收起）。
-  const [open, setOpen] = useState(() => {
-    const stored = storeGet(OPEN_KEY);
-    if (stored === '1') return true;
-    if (stored === '0') return false;
-    if (typeof window === 'undefined') return false;
-    return window.innerWidth >= 768;
-  });
-
-  const toggle = (next: boolean) => {
-    setOpen(next);
-    storeSet(OPEN_KEY, next ? '1' : '0');
-  };
+  const [open, setOpen] = useState(false);
 
   const workerById = useMemo(() => new Map(members.map((m) => [m.id, m])), [members]);
 
@@ -114,54 +102,59 @@ export function AgentQueueDock() {
   const running = members.filter((m) => m.status === 'running').length;
   const waiting = jobs.filter((j) => j.status === 'queued').length;
 
-  if (!open) {
-    return (
-      <button
-        type="button"
-        onClick={() => toggle(true)}
-        className="fixed bottom-4 right-4 z-40 flex items-center gap-2 rounded-full border bg-card/95 px-3 py-2 text-xs font-medium text-foreground shadow-lg backdrop-blur transition-colors hover:bg-accent"
-        aria-expanded={false}
-        title="展开成员队列"
+  return (
+    <Popover open={open} onOpenChange={setOpen} modal={false}>
+      <PopoverTrigger
+        render={
+          <Button
+            size="sm"
+            variant="ghost"
+            className="gap-1.5 px-2 text-xs"
+            aria-label="成员队列"
+            title="成员队列"
+          />
+        }
       >
         <span className="text-muted-foreground">
           <QueueGlyph />
         </span>
-        成员队列
-        <span className="rounded-full bg-muted px-1.5 py-0.5 text-[11px] tabular-nums text-muted-foreground">
-          {running} 运行
+        队列
+        <span className="tabular-nums text-muted-foreground">
+          {running}/{waiting}
         </span>
-        <span className="rounded-full bg-muted px-1.5 py-0.5 text-[11px] tabular-nums text-muted-foreground">
-          {waiting} 等待
-        </span>
-      </button>
-    );
-  }
-
-  return (
-    <div
-      className="fixed bottom-4 right-4 z-40 w-[min(760px,calc(100vw-2rem))] max-h-[calc(100vh-6rem)] overflow-y-auto rounded-xl shadow-xl"
-      onKeyDown={(event) => {
-        if (event.key === 'Escape') toggle(false);
-      }}
-    >
-      <AgentQueue
-        jobs={jobs}
-        workers={workers}
-        title="成员队列"
-        name={team?.name ?? undefined}
-      />
-      <button
-        type="button"
-        onClick={() => toggle(false)}
-        className="absolute right-2.5 top-2.5 z-10 grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10"
-        aria-label="收起成员队列"
-        title="收起（Esc）"
+      </PopoverTrigger>
+      <PopoverPopup
+        side="bottom"
+        align="end"
+        sideOffset={8}
+        className="w-[min(760px,calc(100vw-2.5rem))] [&_[data-slot=popover-viewport]]:p-0"
       >
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-          <path d="M2.5 2.5l7 7M9.5 2.5l-7 7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-        </svg>
-      </button>
-    </div>
+        <div className="relative max-h-[min(72vh,640px)] overflow-y-auto rounded-lg">
+          <AgentQueue
+            jobs={jobs}
+            workers={workers}
+            title="成员队列"
+            name={team?.name ?? undefined}
+            actions={
+              <span className="flex items-center gap-1">
+                <TeamRunMenu />
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10"
+                  aria-label="收起成员队列"
+                  title="收起（Esc）"
+                >
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                    <path d="M2.5 2.5l7 7M9.5 2.5l-7 7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                  </svg>
+                </button>
+              </span>
+            }
+          />
+        </div>
+      </PopoverPopup>
+    </Popover>
   );
 }
 

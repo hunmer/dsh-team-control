@@ -10,6 +10,7 @@ import {
   CheckCheck,
   Clock,
   Database,
+  FileDiff,
   House,
   Layers,
   LayoutDashboard,
@@ -24,6 +25,7 @@ import type { TabName } from '@/store';
 export const TAB_LABELS: Record<TabName, string> = {
   home: '主页',
   board: '成员看板',
+  review: '审阅',
   context: '上下文分析',
   dag: '依赖 DAG',
   timeline: '时间线',
@@ -36,6 +38,7 @@ export const TAB_LABELS: Record<TabName, string> = {
 const TAB_ICONS: Record<TabName, LucideIcon> = {
   home: House,
   board: LayoutDashboard,
+  review: FileDiff,
   context: Layers,
   dag: Network,
   timeline: Clock,
@@ -46,7 +49,7 @@ const TAB_ICONS: Record<TabName, LucideIcon> = {
 };
 
 /** FR-3.2：主页在前，其余沿用 TAB_NAMES 的顺序。 */
-export const TAB_ORDER: TabName[] = ['home', 'board', 'context', 'dag', 'timeline', 'models', 'permissions', 'approvals', 'messages'];
+export const TAB_ORDER: TabName[] = ['home', 'board', 'review', 'context', 'dag', 'timeline', 'models', 'permissions', 'approvals', 'messages'];
 
 export type TabBadges = Partial<Record<TabName, number | null>>;
 
@@ -74,6 +77,8 @@ export function tabFromLabel(label: string): TabName | null {
     Messages: 'messages',
     Runs: 'home',
     Board: 'board',
+    Review: 'review',
+    Changes: 'review',
     Context: 'context',
     Timeline: 'timeline',
   };

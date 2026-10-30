@@ -255,6 +255,17 @@ root(run:team)                         ← 团队整体
 
 数据来源是 Host 插件：成员调用 `team_report_task` 时，插件读取该成员的 DSH 会话——优先取 `present` 工具声明过的交付文件（`files[].path/description`），其次取 `workspace/changes` 事件记录的改动文件（经 `ctx.workspaceChanges.summary` 拿 summary），再 `POST` 到这里。采集失败不影响任务汇报。前端「实时收件箱」按 `taskId` 分组展示为产物列表。
 
+### 3.12 成员改动（审阅页）
+
+| 方法 路径 | 请求 | 响应 |
+|---|---|---|
+| `POST /api/changes` | `{teamId, taskId?, memberId?, items:[{path, kind?, diff, added?, deleted?}]}` | `{items:[change]}` |
+| `GET /api/changes?team={id}&task={id}?&member={id}?&limit={n}?` | — | `{asOf, version, items:[change]}`，按 `createdAt` 升序，`limit` 1–500 默认 200 |
+
+`change = {id, teamId, taskId, memberId, path, kind, diff, added, deleted, createdAt}`；`kind` 取 `add` / `edit`（其它值一律落为 `edit`）。单条 `diff` 超 2000 行或 400 KB 会被截断并追加省略说明；一次 `POST`最多收 50 条。
+
+数据来源是 Host 插件：成员（`runtime` 无关，只要会话已绑定成员）调用 `write`/`edit`/`apply_patch` 等文件工具时，插件在 `tools/execute` 前后各读一次磁盘算 unified diff，`POST` 到这里。只采集子成员，Lead 自己的改动不进审阅；工具失败或无内容变化不上报。上报失败不影响工具调用。
+
 ---
 
 ## 4. SSE
@@ -269,7 +280,8 @@ data: {"id":42,"type":"step.append","teamId":"t_1","memberId":"m_1","taskId":"ta
 
 - `id` 取自 `event.id`（自增，全局单调）。断线重连：浏览器 `Last-Event-ID` 请求头或 `?lastEventId=`，服务端从 `event.id > lastEventId` 回放，**不丢事件**。
 - 心跳：每 15s 发 `: ping` 注释行。
-- 载荷全集：`member.status{status,step,seq,next}`、`step.append{seq,phase,action,target,result,next}`、`task.state{taskId,status,attempts}`、`message.delivered{messageId,to,status}`、`scope.request{requestId,domain,target,memberId}`、`decision{requestId,decision,decidedBy,grantId}`、`lease.warn{memberId,leaseUntil,missed}`、`span.append{span}`（Host 工具调用上报后推送，面板据此实时刷新瀑布）。
+- 载荷全集：`member.status{status,step,seq,next}`、`step.append{seq,phase,action,target,result,next}`、`task.state{taskId,status,attempts}`、`message.delivered{messageId,to,status}`、`scope.request{requestId,domain,target,memberId}`、`decision{requestId,decision,decidedBy,grantId}`、`lease.warn{memberId,leaseUntil,missed}`、`span.append{span}`（Host 工具调用上报后推送，面板据此实时刷新瀑布）、`artifact.added{taskId,memberId,count}`、`change.added{taskId,memberId,count,last}`（成员改动落库后推送，审阅页据此刷新）、`context.update{memberId}`。
+- 合成帧（`scope.request` / `decision` / `lease.warn` / `artifact.added` / `change.added` / `context.update`）：字段在帧顶层，不是 `payload` 内。
 
 ---
 

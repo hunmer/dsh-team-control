@@ -91,6 +91,8 @@ export interface ContextMapProps {
   /** 点了某个 tile — 空闲空间是 null */
   onSelect?: (block: ContextBlock | null) => void;
   title?: string;
+  /** 标题左侧的图标（默认是品牌 mark，传了就换成调用方的图标，例如成员模型 logo） */
+  headerIcon?: ReactNode;
   className?: string;
 }
 
@@ -261,6 +263,7 @@ export function ContextMap({
   status,
   onSelect,
   title = "Context",
+  headerIcon,
   className,
 }: ContextMapProps) {
   const uid = useId();
@@ -333,10 +336,9 @@ export function ContextMap({
 
   /* ------------------------------------------------ glide animation */
 
-  const targets = new Map<string, number>([
-    ...orderRef.current.map((id) => [id, Math.max(0, shown.find((b) => b.id === id)?.tokens ?? 0)] as const),
-    [FREE_ID, freeTokens] as const,
-  ]);
+  const targets = new Map<string, number>(
+    orderRef.current.map((id) => [id, Math.max(0, shown.find((b) => b.id === id)?.tokens ?? 0)] as const),
+  );
 
   const animSizes = useRef(new Map<string, number>());
   const [, forceTick] = useState(0);
@@ -373,7 +375,7 @@ export function ContextMap({
 
   /* ------------------------------------------------------ treemap */
 
-  const layoutItems = [...orderRef.current, FREE_ID]
+  const layoutItems = orderRef.current
     .map((id) => ({ id, value: animSizes.current.get(id) ?? 0 }))
     .filter((i) => i.value > 0.5);
   const rects = new Map<string, SliceRect>();
@@ -422,9 +424,15 @@ export function ContextMap({
         {CONTEXT_MAP_CSS}
       </style>
       <header className="ui-cmc__bar">
-        <span className="ui-cmc__mark">
-          <MarkIcon />
-        </span>
+        {headerIcon ? (
+          <span className="ui-cmc__head-logo" aria-hidden="true">
+            {headerIcon}
+          </span>
+        ) : (
+          <span className="ui-cmc__mark">
+            <MarkIcon />
+          </span>
+        )}
         <span className="ui-cmc__title" id={uid}>
           {title}
         </span>
@@ -589,6 +597,14 @@ export function ContextMap({
             </div>
           );
         })}
+        <span
+          className="ui-cmc__free"
+          aria-label={`Free – ${fmtTokens(freeTokens)} tokens`}
+          title={`空闲 ${fmtTokens(freeTokens)} tokens`}
+        >
+          <span className="ui-cmc__free-label">Free</span>
+          <span className="ui-cmc__free-tokens">{fmtTokens(freeTokens)}</span>
+        </span>
         {activeBlock ? (
           <div ref={tipRef} className="ui-cmc__tip" role="tooltip">
             <span className="ui-cmc__tip-head">

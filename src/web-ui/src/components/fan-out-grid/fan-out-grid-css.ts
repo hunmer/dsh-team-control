@@ -11,4 +11,6 @@ export const FAN_OUT_GRID_CSS = `
 .ui-fogc__key .ui-fogc__tok{color:var(--ui-fogc-ink);font-variant-numeric:tabular-nums}
 .ui-fogc__key .ui-fogc__cost{color:var(--ui-fogc-muted);font-variant-numeric:tabular-nums}
 .ui-fogc__hint{font-size:11px;line-height:16px;color:var(--ui-fogc-faint)}
+/* 悬浮卡片最多 5 行（约 115px）：在面板底部预留同等空白，卡片向下展开时不会溢出并撑出滚动条 */
+.ui-fogc__panel{padding-bottom:110px}
 `;

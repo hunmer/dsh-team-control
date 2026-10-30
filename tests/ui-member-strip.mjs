@@ -14,10 +14,23 @@ const CLIENT = path.join(here, '..', 'dsh-plugin-ui', 'client.js');
 const source = fs.readFileSync(CLIENT, 'utf8');
 
 // --- stub React：hooks 立即求值，createElement 生成可遍历的普通对象 ---
+// 惰性初始值（读 store / Date.now）每次渲染都重算，等价于「无状态」；
+// 普通初始值（如选中的成员 id）按调用点（client.js 行号）持有槽位，set 后下次渲染能读到新值。
+const hookSlots = new Map();
 const React = {
   createElement: (type, props, ...children) => ({ type, props: props || {}, children: children.flat() }),
   useMemo: (fn) => fn(),
-  useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}],
+  useState: (initial) => {
+    const site = (new Error().stack || '').split(String.fromCharCode(10))[2] || '';
+    if (typeof initial === 'function') return [initial(), () => {}];
+    if (!hookSlots.has(site)) hookSlots.set(site, initial);
+    return [
+      hookSlots.get(site),
+      (next) => {
+        hookSlots.set(site, typeof next === 'function' ? next(hookSlots.get(site)) : next);
+      },
+    ];
+  },
   useEffect: (fn) => {
     fn();
   },
@@ -41,6 +54,12 @@ const STATUS = {
       status: 'weird_state', currentTaskId: null, step: null, pct: null, blockers: [],
     },
     {
+      // 复现「运行中灰显」：agent/status 的维护期 idle 已经把成员写成 idle，
+      // 但它手上的任务依然是 running —— 卡片必须按任务画成运行中。
+      id: 'm5', teamId: 'team_t1', name: 'reviewer', model: null, agentSessionId: 'c5',
+      status: 'idle', currentTaskId: 'task_3', step: null, pct: null, blockers: [],
+    },
+    {
       id: 'm3', teamId: 'team_other', name: '别人家的成员', agentSessionId: 'c-other',
       status: 'running', blockers: [],
     },
@@ -50,6 +69,7 @@ const TASKS = {
   items: [
     { id: 'task_1', teamId: 'team_t1', subject: '写大纲', assignee: 'm1', status: 'running', plan: [1, 2, 3, 4] },
     { id: 'task_2', teamId: 'team_t1', subject: '写第一章', assignee: 'm2', status: 'done', plan: [] },
+    { id: 'task_3', teamId: 'team_t1', subject: '审稿', assignee: 'm5', status: 'running', plan: [] },
   ],
 };
 const EVENTS = {
@@ -60,6 +80,14 @@ const EVENTS = {
   ],
 };
 
+// m5 的步骤清单：内置 todo → plan 同步后的样子
+const TODOS = {
+  items: [
+    { id: 'td1', teamId: 'team_t1', taskId: 'task_3', memberId: 'm5', title: '读大纲', status: 'done', orderNo: 0 },
+    { id: 'td2', teamId: 'team_t1', taskId: 'task_3', memberId: 'm5', title: '写评语', status: 'active', orderNo: 1 },
+    { id: 'td3', teamId: 'team_t1', taskId: 'task_3', memberId: 'm5', title: '改错字', status: 'open', orderNo: 2 },
+  ],
+};
 let definition;
 const requested = [];
 let serveStatus = true;
@@ -90,9 +118,11 @@ const sandbox = {
         ? { items: [TEAM] }
         : url.includes('/tasks?team=')
           ? TASKS
-          : url.includes('/events/history')
-            ? EVENTS
-            : null;
+          : url.includes('/todos?team=')
+            ? TODOS
+            : url.includes('/events/history')
+              ? EVENTS
+              : null;
     if (!body) return { ok: false, status: 404, json: async () => ({}) };
     return { ok: true, status: 200, json: async () => body };
   },
@@ -164,6 +194,7 @@ assert.equal(dock.desc.id, 'dsh-team:findings', '浮层条目 id');
 const byId = {
   c1: { id: 'c1', parentId: 's1', origin: 'subagent', running: true },
   c2: { id: 'c2', parentId: 's1', origin: 'subagent', running: false },
+  c5: { id: 'c5', parentId: 's1', origin: 'subagent', running: false },
   c9: { id: 'c9', parentId: 's9', origin: 'subagent', running: true },
   s1: { id: 's1', parentId: null, origin: 'user', running: true },
 };
@@ -201,7 +232,7 @@ const pill = strip.component({ sessionId: 's1', useSessions });
 assert.equal(pill.props['data-dsh-team-pill'], TEAM.id, 'pill 绑定团队 id');
 assert.equal(pill.props['aria-expanded'], 'true', '有运行中成员时卡片自动展开');
 assert.equal(textOf(byClass(pill, 'dsht-afc-pill-name')[0]), '小说团队', 'pill 显示团队名');
-assert.equal(textOf(byClass(pill, 'dsht-afc-pill-run')[0]), 'running_of[1,3]', '运行中 1 / 成员 3（不含他会话成员）');
+assert.equal(textOf(byClass(pill, 'dsht-afc-pill-run')[0]), 'running_of[2,4]', '运行中 2 / 成员 4（不含他会话成员；idle 但有 running 任务的也算运行中）');
 
 const sevs = byClass(pill, 'dsht-afc-pill-sev');
 assert.equal(sevs.length, 2, '严重/警告两个计数');
@@ -220,10 +251,10 @@ assert.equal(card.props.style['--dsht-dock-max'], '736px', '卡片高度上限�
 assert.equal(card.props['data-dsh-team-card'], TEAM.id);
 const afc = byClass(card, 'ui-afc')[0];
 assert.ok(afc, '卡片本体是 affectui AgentFindings');
-assert.equal(afc.props['data-dsh-team-findings'], 3, '三个团队成员行');
+assert.equal(afc.props['data-dsh-team-findings'], 4, '四个团队成员行');
 
 const agentRows = byClass(card, 'ui-afc__agent');
-assert.equal(agentRows.length, 3);
+assert.equal(agentRows.length, 4);
 assert.equal(textOf(byClass(agentRows[0], 'ui-afc__name')[0]), 'plot-designer');
 assert.equal(textOf(byClass(agentRows[0], 'ui-afc__count')[0]), '2/4', '当前任务 plan 进度 2/4');
 assert.ok(textOf(agentRows[2]).includes('未知状态'), '未知状态兜底成本地文案，不露 status_* 原始 key');
@@ -231,9 +262,38 @@ assert.ok(!textOf(agentRows[2]).includes('status_'), '卡片里不出现原始 i
 assert.equal(byClass(agentRows[0], 'ui-afc__fill')[0].props.style.width, '50%');
 assert.equal(textOf(byClass(agentRows[1], 'ui-afc__count')[0]), '1/1', '已完成任务的成员进度 1/1');
 
+// --- 运行中判定：sidecar 把成员写成 idle，但任务还在 running ⇒ 仍画成运行中（不再灰成「已完成」）---
+const m5Row = agentRows.find((row) => textOf(byClass(row, 'ui-afc__name')[0]) === 'reviewer');
+assert.ok(m5Row, 'reviewer 成员行');
+assert.equal(m5Row.props['data-status'], 'running', 'idle 成员 + running 任务 ⇒ 画成运行中');
+assert.equal(textOf(byClass(m5Row, 'ui-afc__count')[0]), '1/3', '进度按步骤清单算（1 done / 3 步）');
+assert.equal(textOf(byClass(m5Row, 'ui-afc__step')[0]), '写评语', '行内显示当前步骤');
+assert.match(byClass(m5Row, 'ui-afc__fill')[0].props.style.width, /^33\.33+%$/, '进度条按 1/3 填充');
+
+// --- 点成员行展开它的步骤清单（计划来自 sidecar 的 todo 表）---
+m5Row.props.onClick();
+const expanded = dock.component({});
+const steps = byClass(expanded, 'ui-afc__plan-step');
+assert.equal(steps.length, 3, '展开后显示三步计划');
+assert.equal(textOf(byClass(steps[0], 'ui-afc__plan-title')[0]), '读大纲');
+assert.equal(steps[0].props['data-status'], 'done');
+assert.ok(byClass(steps[0], 'ui-afc__plan-icon').length === 1, '完成的步骤用图标标记');
+assert.equal(steps[1].props['data-status'], 'active', '第二步进行中');
+assert.ok(byClass(steps[1], 'ui-afc__plan-icon').length === 1, '进行中的步骤用图标标记');
+assert.equal(textOf(byClass(expanded, 'ui-afc__plan-count')[0]), '1/3', '计划头部显示完成比');
+assert.equal(steps[2].props['data-status'], 'open');
+const chipped = byClass(expanded, 'ui-afc__chip')[0];
+chipped.props.onClick(); // 用顶部 chip 取消筛选，后续断言不受影响
+assert.equal(byClass(dock.component({}), 'ui-afc__plan-step').length, 0, '取消选中后计划清单收起');
+assert.ok(headChildren[0].textContent.includes('.ui-afc__plan-step'), '样式里含计划清单规则');
+
 const findings = byClass(card, 'ui-afc__finding');
 assert.equal(findings.length, 4, '1 条 blocker + 3 条事件 = 4 条发现');
 assert.match(textOf(byClass(card, 'ui-afc__ftitle')[0]), /npm publish/, '最新的失败事件排在最前');
+const firstBody = byClass(findings[0], 'ui-afc__body')[0];
+assert.ok(firstBody, '发现行有标题/元信息两行容器');
+assert.equal(byClass(firstBody, 'ui-afc__ftitle').length, 1, '标题在容器内');
+assert.equal(byClass(firstBody, 'ui-afc__meta').length, 1, '元信息与标题同容器、分行渲染（不再同一行叠字）');
 
 // --- 点发现：用 subagentchat 资源在右侧栏打开该成员的对话 ---
 const calls = [];
@@ -272,3 +332,5 @@ assert.equal(strip.component({ sessionId: 's-nobody', useSessions }), null, '无
 assert.equal(strip.component({ sessionId: 's1' }), null, '缺 useSessions 时安全降级');
 
 console.log('PASS ui-member-strip — 右上角团队卡片：pill 显示团队/运行中/严重·警告计数，浮层渲染 AgentFindings，点发现打开成员对话');
+process.exit(0); // 渲染用的轮询/计时器会留在事件循环里，断言全过就显式退出
+

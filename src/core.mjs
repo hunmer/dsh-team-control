@@ -540,11 +540,12 @@ export class DshTeam {
     const candidates = this.get(
       "SELECT * FROM task WHERE team_id=? AND status='ready' ORDER BY priority ASC, created_at ASC"
     ).all(teamId);
+    let settled = 0;
     for (const row of candidates) {
       const task = rowToTask(row);
       if (!this.scheduler.readiness(task, team.workspace).ready) continue;
       // 建任务后留 settle 窗口，让 Lead 有机会先声明依赖
-      if (Date.now() - Date.parse(task.createdAt) < this.scheduler.settleMs) continue;
+      if (Date.now() - Date.parse(task.createdAt) < this.scheduler.settleMs) { settled++; continue; }
       const member = this.pickIdleAgent(teamId, task.assignee || null);
       if (!member) return { dispatched: false, reason: 'no_idle_agent' };
       this.get("UPDATE task SET status='running', assignee=?, attempts=attempts+1, attempted_at=?, updated_at=? WHERE id=?")
@@ -559,7 +560,7 @@ export class DshTeam {
       try { this.sse.broadcastSynthetic('member.state', { teamId, memberId: member.id, status: 'running' }, { teamId, memberId: member.id }); } catch { /* ignore */ }
       return { dispatched: true, task: rowToTask(this.get('SELECT * FROM task WHERE id=?').get(task.id)), member: this.memberView(member.id) };
     }
-    return { dispatched: false, reason: 'no_ready_task' };
+    return { dispatched: false, reason: 'no_ready_task', ...(settled ? { settled, hint: `任务刚建好，还在 ${this.scheduler.settleMs}ms 建图窗口里（ADR-005）；稍后重试或再调 team_dispatch 即可` } : {}) };
   }
 
   /** 成员状态上报（Host 监听 agent/status 后回写）；idle/failed 且有待跑任务时兜底收尾。 */
@@ -1045,8 +1046,11 @@ export class DshTeam {
       if (seen.has(f.path)) continue;
       const abs = path.resolve(team.workspace, f.path);
       const exists = fs.existsSync(abs);
-      const actual = exists ? sha256(fs.readFileSync(abs)) : null;
-      if (actual !== f.hash) untracked.push({ target: f.path, expectedHash: f.hash, actualHash: actual, state: exists ? 'modified' : 'missing' });
+      // file_state 是全局表（path 作主键，跨团队共享）：别的团队 writes 过的文件不该算本团队的
+      // 差异。只有真实存在于本团队 workspace 里、却没有本团队审计记录的才算「漏记改动」。
+      if (!exists) continue;
+      const actual = sha256(fs.readFileSync(abs));
+      if (actual !== f.hash) untracked.push({ target: f.path, expectedHash: f.hash, actualHash: actual, state: 'modified' });
     }
     return { asOf: nowIso(), teamId, checked: rows.length + untracked.length, diffs: [...diffs, ...untracked], ok: diffs.length === 0 && untracked.length === 0 };
   }
@@ -1192,6 +1196,62 @@ export class DshTeam {
       saved.push(this.artifactView(this.get('SELECT * FROM artifact WHERE team_id=? AND path=?').get(teamId, path_)));
     }
     try { this.sse.broadcastSynthetic('artifact.added', { teamId, taskId: input.taskId ?? null, count: saved.length }, { teamId }); } catch { /* ignore */ }
+    return { items: saved };
+  }
+
+  // ---------- 成员改动（审阅） ----------
+  // Host 插件在成员的 write/edit 落盘后上报 unified diff；面板「审阅」页只读展示。
+  changeView(r) {
+    const num = (v) => (v == null ? null : Number(v));
+    return {
+      id: r.id, teamId: r.team_id, taskId: r.task_id ?? null, memberId: r.member_id ?? null,
+      path: r.path, kind: r.kind || 'edit', diff: r.diff || '',
+      added: num(r.added), deleted: num(r.deleted), createdAt: r.created_at,
+    };
+  }
+  listChanges(teamId, { taskId = null, memberId = null, limit = 200 } = {}) {
+    this.getTeam(teamId);
+    let sql = 'SELECT * FROM member_change WHERE team_id=?';
+    const args = [teamId];
+    if (taskId) { sql += ' AND task_id=?'; args.push(taskId); }
+    if (memberId) { sql += ' AND member_id=?'; args.push(memberId); }
+    sql += ' ORDER BY created_at DESC LIMIT ?';
+    args.push(Math.max(1, Math.min(500, Number(limit) || 200)));
+    return { asOf: nowIso(), version: this.scheduler.version(teamId), items: this.get(sql).all(...args).reverse().map((r) => this.changeView(r)) };
+  }
+  /** 成员的写/改：每次工具调用一条，diff 超长按行截断（保留头部，标注省略行数）。 */
+  addChanges(input = {}) {
+    const teamId = input.teamId;
+    this.getTeam(teamId);
+    if (!Array.isArray(input.items)) throw ERR.bad('items must be an array');
+    const memberId = input.memberId ?? null;
+    const t = nowIso();
+    const saved = [];
+    let taskId = input.taskId ?? null;
+    // 插件不知道任务归属时：按成员当前在跑的任务补上，审阅页才能按任务分组
+    if (!taskId && memberId) {
+      const running = this.get("SELECT id FROM task WHERE team_id=? AND assignee=? AND status='running' ORDER BY updated_at DESC LIMIT 1").get(teamId, memberId);
+      taskId = running ? running.id : null;
+    }
+    for (const item of input.items.slice(0, 50)) {
+      const p = item && typeof item.path === 'string' ? item.path.trim() : '';
+      if (!p) continue;
+      let diff = typeof item.diff === 'string' ? item.diff : '';
+      const MAX_LINES = 2000;
+      const lines = diff.split('\n');
+      if (lines.length > MAX_LINES) diff = lines.slice(0, MAX_LINES).join('\n') + `\n… （diff 过长，省略 ${lines.length - MAX_LINES} 行）`;
+      if (diff.length > 400_000) diff = diff.slice(0, 400_000) + '\n… （diff 过长已截断）';
+      const added = item.added == null || !Number.isFinite(Number(item.added)) ? null : Math.max(0, Number(item.added));
+      const deleted = item.deleted == null || !Number.isFinite(Number(item.deleted)) ? null : Math.max(0, Number(item.deleted));
+      const id = newId('chg');
+      this.get(`INSERT INTO member_change (id, team_id, task_id, member_id, path, kind, diff, added, deleted, created_at)
+                 VALUES (?,?,?,?,?,?,?,?,?,?)`)
+        .run(id, teamId, taskId, memberId, p.slice(0, 1000), item.kind === 'add' || item.kind === 'delete' ? item.kind : 'edit', diff, added, deleted, t);
+      saved.push(this.changeView(this.get('SELECT * FROM member_change WHERE id=?').get(id)));
+    }
+    if (saved.length) {
+      try { this.sse.broadcastSynthetic('change.added', { teamId, taskId, memberId, count: saved.length, last: saved[saved.length - 1] }, { teamId, memberId }); } catch { /* ignore */ }
+    }
     return { items: saved };
   }
 

@@ -18,7 +18,7 @@ import { ModelAvatar } from '@/components/ModelAvatar';
 import { brandOfModel } from '@/lib/model-brand';
 import { StatusPill } from '@/components/Bits';
 import { Button } from '@/components/ui/button';
-import { Dialog, DialogPopup, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogHeader, DialogPanel, DialogPopup, DialogTitle } from '@/components/ui/dialog';
 import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from '@/components/ui/popover';
 import { openMemberConversation } from '@/lib/dsh-bridge';
 import { fmtCost, fmtTokens } from '@/lib/format';
@@ -160,7 +160,7 @@ export function MemberAvatarButton({ member, size = 14, className }: MemberAvata
           </span>
         )}
       </PopoverTrigger>
-      <PopoverPopup side="bottom" align="start" className="w-80">
+      <PopoverPopup side="bottom" align="start" className="w-80 p-4">
         <PopoverTitle className="sr-only">{`${name} 的成员信息`}</PopoverTitle>
         <MemberInfoContent member={member} />
       </PopoverPopup>
@@ -179,8 +179,12 @@ export function MemberInfoDialog({ member, onOpenChange }: MemberInfoDialogProps
   return (
     <Dialog open={Boolean(member)} onOpenChange={onOpenChange}>
       <DialogPopup className="max-w-md">
-        <DialogTitle className="text-sm">{member ? `${member.name || member.id} · 成员信息` : '成员信息'}</DialogTitle>
-        {member ? <MemberInfoContent member={member} /> : null}
+        <DialogHeader>
+          <DialogTitle className="text-sm">{member ? `${member.name || member.id} · 成员信息` : '成员信息'}</DialogTitle>
+        </DialogHeader>
+        <DialogPanel>
+          {member ? <MemberInfoContent member={member} /> : null}
+        </DialogPanel>
       </DialogPopup>
     </Dialog>
   );

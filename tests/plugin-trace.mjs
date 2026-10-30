@@ -13,8 +13,19 @@ const mkFakeCtx = () => {
     handlers,
     disposed,
     tools: { register: (tool) => { disposed.push(tool.name); return () => { /* noop */ }; } },
+    // 插件会读若干可选服务（workspaceRegistry / sessionProjections…）：桩成「都没有」
+    get() { return undefined; },
+    getService() { return undefined; },
     effect(fn) { const cleanup = fn(); return () => { try { cleanup?.(); } catch { /* ignore */ } }; },
-    on(name, fn) { handlers.set(name, fn); return () => handlers.delete(name); },
+    // 同一事件可能有多个监听器（tools/execute 同时挂了 span 上报与 todo→plan 镜像）
+    on(name, fn) {
+      const list = handlers.get(name) || [];
+      list.push(fn);
+      handlers.set(name, list);
+      return () => { const i = list.indexOf(fn); if (i >= 0) list.splice(i, 1); };
+    },
+    /** 取该事件的第一个监听器（本测试只验 span 上报链路） */
+    first(name) { return (handlers.get(name) || [])[0]; },
   };
 };
 
@@ -27,10 +38,10 @@ const main = async () => {
 
     const ctx = mkFakeCtx();
     apply(ctx, { baseUrl: sidecar.url, autoStart: false, reportToolCalls: true });
-    assert.equal(typeof ctx.handlers.get('tools/execute'), 'function', '插件注册了 tools/execute 监听器');
+    assert.equal(typeof ctx.first('tools/execute'), 'function', '插件注册了 tools/execute 监听器');
     assert.equal(ctx.disposed.length, 12, '12 个 team_* 工具已注册（含 team_models / team_todo）');
 
-    const drive = ctx.handlers.get('tools/execute');
+    const drive = ctx.first('tools/execute');
 
     // ① 未绑定团队的非 team_* 工具：不上报
     await drive({ name: 'read', callId: 'c0', arguments: { path: 'a.txt' }, agent: { id: 'sess-probe' } }, async () => ({ value: 'x' }));
@@ -74,7 +85,7 @@ const main = async () => {
     assert.equal(session.children.length, 3, '3 次上报都进了 trace');
 
     // ⑥ LLM 调用：llm/stream 抓到 usage → 落一条带 tokens + 金额的 llm span
-    const driveLlm = ctx.handlers.get('llm/stream');
+    const driveLlm = ctx.first('llm/stream');
     assert.equal(typeof driveLlm, 'function', '插件注册了 llm/stream 监听器');
     const usage = { inputTokens: 3000, cacheReadTokens: 50000, cacheWriteTokens: 0, outputTokens: 400 };
     const chunks = [{ type: 'text', text: 'hi' }, { type: 'usage', usage }, { type: 'finish', reason: 'stop' }];

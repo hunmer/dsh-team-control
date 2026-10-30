@@ -21,10 +21,28 @@ export interface FanoutMember {
   cost: number;
   /** 头像；不传则用名字首字母 */
   icon?: ReactNode;
+  /** 悬浮时追加的一行成员明细（例如模型 + 上下文窗口占用），不同成员应不同 */
+  detail?: string;
+}
+
+/** 一次 LLM 调用的切片；按时间顺序排列时，每个切片独立成格，格子因此能读出「这一刻发生了什么」。 */
+export interface FanoutSlice {
+  memberId: string;
+  /** 本次调用消耗的 tokens（输入 + 输出），用于切分格子 */
+  tokens: number;
+  /** 发生时间（epoch ms） */
+  at?: number;
+  /** 模型名或说明 */
+  note?: string;
+  inTokens?: number;
+  outTokens?: number;
+  cost?: number;
 }
 
 export interface MemberFanoutGridProps {
   members: FanoutMember[];
+  /** 按时间顺序的调用切片；传了就按时间铺格子，不传则按成员成块铺 */
+  slices?: FanoutSlice[];
   /** 标题，默认「成员总览」 */
   title?: string;
   /** 标题右侧的说明，默认「全部成员累计」 */
@@ -63,6 +81,8 @@ const fmtTokens = (n: number): string => {
 };
 
 const fmtInt = (n: number): string => Math.round(n).toLocaleString('en-US');
+
+const fmtClock = (ms: number): string => new Date(ms).toLocaleTimeString('zh-CN', { hour12: false });
 
 /** 第 index 个成员用的图表色（coss 主题的 --chart-1..5 循环）。 */
 const colorVar = (index: number): string => `var(--chart-${(index % 5) + 1})`;
@@ -125,8 +145,20 @@ const Cell = memo(function Cell({ i, bg, edge, ink, dim, on, pinned, setRef, onE
 // MemberFanoutGrid
 // ---------------------------------------------------------------------------
 
+/** 一个格子：要么属于某次调用（slices 模式），要么属于某成员的累计用量。 */
+interface GridCell {
+  key: string;
+  memberId: string;
+  color: number;
+  /** 该成员（或该次调用）内的第几格 */
+  k: number;
+  slice?: FanoutSlice;
+  sliceCells?: number;
+}
+
 export function MemberFanoutGrid({
   members,
+  slices,
   title = '成员总览',
   job = '全部成员累计',
   quantum,
@@ -154,24 +186,47 @@ export function MemberFanoutGrid({
     };
   }, [members]);
 
+  const memberById = useMemo(() => new Map(sorted.map((m) => [m.id, m])), [sorted]);
+  const indexById = useMemo(() => new Map(sorted.map((m, i) => [m.id, i])), [sorted]);
+
+  /** slices 的总量可能和成员累计不一致（只统计到本次 trace 窗口），取大者决定每格额度。 */
+  const sliceTokens = useMemo(() => (slices ?? []).reduce((sum, s) => sum + Math.max(0, s.tokens), 0), [slices]);
+
   const step = useMemo(() => {
     if (quantum && quantum > 0) return quantum;
-    return QUANTUM_LADDER.find((q) => totalTokens / q <= Math.max(1, maxCells)) ?? QUANTUM_LADDER[QUANTUM_LADDER.length - 1];
-  }, [quantum, totalTokens, maxCells]);
+    const total = Math.max(totalTokens, sliceTokens);
+    return QUANTUM_LADDER.find((q) => total / q <= Math.max(1, maxCells)) ?? QUANTUM_LADDER[QUANTUM_LADDER.length - 1];
+  }, [quantum, totalTokens, sliceTokens, maxCells]);
 
-  /** 每个成员占的格子数：用量 > 0 至少一格；格子随 tokens 增长自动增加。 */
-  const cells = useMemo(() => {
-    const out: Array<{ key: string; memberId: string; color: number }> = [];
+  /**
+   * 格子清单：有 slices 就按时间顺序铺——每次调用独占若干格（至少一格），
+   * 不同成员的格子因此交错出现；没有 slices 则退回「一个成员一段」的累计视图。
+   */
+  const cells = useMemo<GridCell[]>(() => {
+    const out: GridCell[] = [];
+    if (slices && slices.length) {
+      slices.forEach((slice, si) => {
+        const n = Math.max(1, Math.ceil(Math.max(0, slice.tokens) / step));
+        for (let k = 0; k < n && out.length < 1200; k++) {
+          out.push({
+            key: `${slice.memberId}#${si}#${k}`,
+            memberId: slice.memberId,
+            color: indexById.get(slice.memberId) ?? 0,
+            k,
+            slice,
+            sliceCells: n,
+          });
+        }
+      });
+      return out;
+    }
     sorted.forEach((member, ci) => {
       const n = Math.max(1, Math.ceil(Math.max(0, member.tokens) / step));
       const count = member.tokens > 0 || members.length <= 24 ? n : 0;
-      for (let k = 0; k < count && out.length < 1200; k++) out.push({ key: `${member.id}#${k}`, memberId: member.id, color: ci });
+      for (let k = 0; k < count && out.length < 1200; k++) out.push({ key: `${member.id}#${k}`, memberId: member.id, color: ci, k });
     });
     return out;
-  }, [sorted, step, members.length]);
-
-  const memberById = useMemo(() => new Map(sorted.map((m) => [m.id, m])), [sorted]);
-  const indexById = useMemo(() => new Map(sorted.map((m, i) => [m.id, i])), [sorted]);
+  }, [slices, sorted, step, members.length, indexById]);
 
   const pinnedIdx = pinnedKey ? cells.findIndex((c) => c.key === pinnedKey) : -1;
   const shownIdx = pinnedIdx >= 0 ? pinnedIdx : hoverIdx;
@@ -207,8 +262,11 @@ export function MemberFanoutGrid({
     const tipH = tip.offsetHeight;
     const below = cellTop - tipH - 10 < 4;
     const left = Math.max(8, Math.min(cellCx - tipW / 2, panel.offsetWidth - tipW - 8));
+    // 纵向也夹在面板内：面板底部已预留空白，卡片向下展开时不会越界把外层撑出滚动条
+    const wanted = below ? cellBottom + 10 : cellTop - tipH - 10;
+    const top = Math.max(4, Math.min(wanted, panel.offsetHeight - tipH - 8));
     tip.style.left = `${left}px`;
-    tip.style.top = `${below ? cellBottom + 10 : cellTop - tipH - 10}px`;
+    tip.style.top = `${top}px`;
     tip.style.setProperty('--x', `${cellCx - left}px`);
     tip.dataset.side = below ? 'below' : 'above';
   });
@@ -219,7 +277,22 @@ export function MemberFanoutGrid({
     children: FAN_OUT_GRID_CSS,
   } as unknown as HTMLAttributes<HTMLStyleElement>;
 
-  const announce = `共 ${sorted.length} 个成员，累计 ${fmtInt(totalTokens)} tokens，花费 ${formatCost(totalCost)}。每格约 ${fmtInt(step)} tokens。`;
+  const announce = slices?.length
+    ? `共 ${sorted.length} 个成员、${slices.length} 次调用，按时间顺序排列，累计 ${fmtInt(totalTokens)} tokens，花费 ${formatCost(totalCost)}。每格约 ${fmtInt(step)} tokens。`
+    : `共 ${sorted.length} 个成员，累计 ${fmtInt(totalTokens)} tokens，花费 ${formatCost(totalCost)}。每格约 ${fmtInt(step)} tokens。`;
+
+  // 悬浮格子的区间信息：slices 模式下区间落在「本次调用」内部，否则落在成员的累计用量里。
+  const shownSlice = shownCell?.slice;
+  const shownName = shown?.name ?? shownCell?.memberId ?? '';
+  const shownCellCount = shownSlice
+    ? Math.max(1, shownCell?.sliceCells ?? 1)
+    : shown
+      ? Math.max(1, Math.ceil(Math.max(0, shown.tokens) / step))
+      : 0;
+  const cellFrom = shownCell ? shownCell.k * step : 0;
+  const cellTo = shownCell ? Math.min(shownSlice ? shownSlice.tokens : (shown?.tokens ?? 0), (shownCell.k + 1) * step) : 0;
+  const shownShare = shown && totalTokens > 0 ? (shown.tokens / totalTokens) * 100 : 0;
+  const callShare = shownSlice && totalTokens > 0 ? (shownSlice.tokens / totalTokens) * 100 : 0;
 
   return (
     <div className={['ui-fogc', className].filter(Boolean).join(' ')}>
@@ -300,24 +373,50 @@ export function MemberFanoutGrid({
             })}
           </div>
         </div>
-        {shown && (
+        {shownCell && (
           <div
-            key={shown.id}
+            key={shownCell.key}
             ref={tipRef}
             role="tooltip"
             className="ui-fogc__tip"
-            style={memberColorStyle(indexById.get(shown.id) ?? 0)}
+            style={memberColorStyle(indexById.get(shownCell.memberId) ?? 0)}
           >
             <span className="ui-fogc__tip-head">
               <span className="ui-fogc__tip-label" dir="auto">
-                {shown.name}
+                {shownName}
               </span>
-              <span className="ui-fogc__pill">{fmtTokens(shown.tokens)}</span>
+              <span className="ui-fogc__pill">{fmtTokens(shownSlice ? shownSlice.tokens : (shown?.tokens ?? 0))}</span>
             </span>
-            <span className="ui-fogc__tip-meta">
-              {fmtInt(shown.tokens)} tokens · {formatCost(shown.cost)} · 约{' '}
-              {Math.max(1, Math.ceil(shown.tokens / step))} 格
-            </span>
+            {shownSlice ? (
+              <>
+                <span className="ui-fogc__tip-meta">
+                  第 {shownCell.k + 1} / {shownCellCount} 格 · 本次 {fmtTokens(cellFrom)}–{fmtTokens(cellTo)} tokens
+                </span>
+                <span className="ui-fogc__tip-meta">
+                  {shownSlice.note ?? '模型未记录'} · {shownSlice.at ? fmtClock(shownSlice.at) : '时间未记录'}
+                </span>
+                <span className="ui-fogc__tip-meta">
+                  输入 {fmtInt(shownSlice.inTokens ?? 0)} · 输出 {fmtInt(shownSlice.outTokens ?? 0)} · 花费{' '}
+                  {formatCost(shownSlice.cost ?? 0)} · 占总量 {callShare.toFixed(1)}%
+                </span>
+                {shown ? (
+                  <span className="ui-fogc__tip-meta">
+                    成员累计 {fmtInt(shown.tokens)} tokens · {formatCost(shown.cost)} · 占总量 {shownShare.toFixed(1)}%
+                  </span>
+                ) : null}
+              </>
+            ) : (
+              <>
+                {shown?.detail ? <span className="ui-fogc__tip-meta">{shown.detail}</span> : null}
+                <span className="ui-fogc__tip-meta">
+                  第 {shownCell.k + 1} / {shownCellCount} 格 · {fmtTokens(cellFrom)}–{fmtTokens(cellTo)} tokens
+                </span>
+                <span className="ui-fogc__tip-meta">
+                  累计 {fmtInt(shown?.tokens ?? 0)} tokens · {formatCost(shown?.cost ?? 0)} · 占总量{' '}
+                  {shownShare.toFixed(1)}%
+                </span>
+              </>
+            )}
           </div>
         )}
       </div>
