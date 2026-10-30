@@ -12,13 +12,13 @@ import { TraceWaterfall, type TraceSpan } from '@/components/trace-waterfall/tra
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { EmptyState, MetaLine, SectionHead, StatusPill } from '@/components/Bits';
-import { ModelAvatar } from '@/components/ModelAvatar';
+import { MemberAvatarButton } from '@/components/member-info';
 
 function MemberPill({ member }: { member: Member }) {
   return (
-    <span className="flex items-center gap-1.5 rounded-full border bg-card px-2 py-0.5 text-xs">
+    <span className="flex items-center gap-1.5 rounded-full border bg-card py-0.5 pr-2 pl-2 text-xs">
       <StatusPill status={member.status} />
-      <ModelAvatar model={member.model} name={member.name} size={13} />
+      <MemberAvatarButton member={member} size={13} />
       <span className="font-medium">{member.name || member.id}</span>
       {member.model ? <span className="text-muted-foreground">{member.model}</span> : null}
       {member.step ? <span className="text-muted-foreground">{member.step}</span> : null}

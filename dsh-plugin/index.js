@@ -43,6 +43,15 @@ function resolveConfig(config) {
     // 覆盖/扩展单价表（键为 provider id，结构见 pricing.js 的 DEFAULT_PRICE_TABLES）
     pricingTables: c.pricingTables && typeof c.pricingTables === 'object' ? c.pricingTables : null,
     traceInputMax: Number(c.traceInputMax) || 1200,
+    // 把成员的上下文占用（system/tools/文件/结果/对话）上报到 sidecar（面板「上下文分析」页）
+    reportContext: c.reportContext !== false,
+    contextReportMs: Number(c.contextReportMs) || 6000,
+    // 把 DSH 工作区注册表同步到 sidecar（面板左侧「工作区」下拉）
+    reportWorkspaces: c.reportWorkspaces !== false,
+    workspaceReportMs: Number(c.workspaceReportMs) || 8000,
+    // 模型目录（provider/model 清单）：插件启动即同步，之后定时刷新，不再依赖 lead 调工具
+    reportLlmCatalog: c.reportLlmCatalog !== false,
+    llmCatalogMs: Number(c.llmCatalogMs) || 60000,
     // agent 运行时：成员在 sidecar 认领任务后，由本插件用 subagents.sendMessage 派发
     agentAutoDispatch: c.agentAutoDispatch !== false,
     agentDispatchMs: Number(c.agentDispatchMs) || 1500,
@@ -265,8 +274,217 @@ function collectArtifacts(ctx, sessionId) {
   return out.slice(-12);
 }
 
+// ---------- 成员上下文分析 ----------
+//
+// 「上下文窗口被什么占满」的唯一事实来源是 DSH 会话：
+//   tokenMeter.measure(session)      → 当前 surface 上每个事件的价格（seq → tokens）
+//   sessionProjections.snapshot(...) → system / tools / messages 三段拆分 + contextWindow
+//   session.snapshotEvents()         → 事件类型、工具名、压缩记录
+// 这里把它们折叠成面板 ContextMap 需要的 blocks；Host 只算不存，算完 POST 给 sidecar。
+const CONTEXT_FILE_TOOLS = new Set(['read', 'write', 'edit', 'present', 'glob', 'grep', 'ls', 'list', 'glob_files', 'search']);
+
+/** 一段消息的可见文本（用于 tile 的 hover 明细）。 */
+function contentText(message) {
+  const parts = Array.isArray(message?.content) ? message.content : [];
+  for (const part of parts) if (part && typeof part.text === 'string' && part.text.trim()) return part.text;
+  return '';
+}
+
+/** 第一行、压掉空白，截断到 max。 */
+function firstLine(text, max = 60) {
+  return String(text || '').replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+/**
+ * 从成员会话折出上下文快照；拿不到会话/事件时返回 null（观测功能不能影响任务）。
+ * 返回的结构与 sidecar POST /api/contexts 的 body 对齐（不含 teamId/memberId）。
+ */
+function collectContext(ctx, sessionId) {
+  const sessions = sessionsOf(ctx);
+  const session = sessions && typeof sessions.get === 'function' && sessionId ? sessions.get(String(sessionId)) : undefined;
+  if (!session) return null;
+  let events = [];
+  try { events = session.snapshotEvents(); } catch { return null; }
+  const tokenMeter = (() => { try { return ctx.get('tokenMeter'); } catch { return undefined; } })();
+  const projections = (() => { try { return ctx.get('sessionProjections'); } catch { return undefined; } })();
+
+  let measurement = null;
+  try {
+    if (tokenMeter && typeof tokenMeter.measure === 'function') measurement = tokenMeter.measure(session);
+  } catch { measurement = null; }
+  let projection = {};
+  try {
+    if (projections && typeof projections.snapshot === 'function') {
+      projection = projections.snapshot(session, ['contextBreakdown', 'contextPressure'])?.values || {};
+    }
+  } catch { projection = {}; }
+  const breakdown = projection.contextBreakdown || {};
+  const pressure = projection.contextPressure || {};
+
+  // 当前 surface 上的事件才计价：被压缩掉的事件不在 nodes 里。
+  const priceBySeq = new Map();
+  for (const node of Array.isArray(measurement?.nodes) ? measurement.nodes : []) {
+    if (!node) continue;
+    const tokens = Number(node.tokens) || Number(node.heuristicTokens) || 0;
+    priceBySeq.set(Number(node.seq), tokens);
+  }
+
+  const callInfo = new Map(); // callId → { name, target }
+  const groups = new Map(); // block id → block
+  const push = (id, kind, label, tokens, itemLabel) => {
+    let group = groups.get(id);
+    if (!group) { group = { id, kind, label, tokens: 0, items: [] }; groups.set(id, group); }
+    group.tokens += Math.max(0, Math.round(tokens || 0));
+    if (itemLabel && group.items.length < 12) group.items.push({ label: itemLabel });
+    return group;
+  };
+
+  let compaction = null;
+  let surfaceCount = 0;
+  for (const ev of events) {
+    if (!ev || !ev.type) continue;
+    const data = ev.data || {};
+    if (ev.type === 'tool/call') {
+      if (data.callId != null) {
+        let parsed = null;
+        try { parsed = JSON.parse(data.arguments || '{}'); } catch { parsed = null; }
+        const target = typeof parsed?.file_path === 'string' ? parsed.file_path
+          : typeof parsed?.path === 'string' ? parsed.path
+            : typeof parsed?.pattern === 'string' ? parsed.pattern
+              : typeof parsed?.command === 'string' ? parsed.command : '';
+        callInfo.set(String(data.callId), { name: String(data.name || 'tool'), target: firstLine(target, 80) });
+      }
+      continue;
+    }
+    if (ev.type === 'compaction/summary' || ev.type === 'compaction/prune') {
+      // 同一次压缩的 summary + prune 只记最后一次（面板只展示最近一次压缩的前后对比）
+      compaction = { atSeq: Number(ev.seq) || null, shadowedTokens: Number(data.shadowedTokenCount) || null, summary: 'summary' };
+      continue;
+    }
+    const seq = Number(ev.seq);
+    if (!priceBySeq.has(seq)) continue;
+    const tokens = priceBySeq.get(seq);
+    surfaceCount += 1;
+    if (ev.type === 'system/message') { push('system', 'system', 'System prompt', tokens); continue; }
+    if (ev.type === 'developer/message') { push('memory', 'memory', 'Memory · 开发者指令', tokens, 'developer message'); continue; }
+    if (ev.type === 'user/message') {
+      if (ev.surfaceOp && ev.surfaceOp.op === 'replace') { push('summary', 'summary', 'Compaction summary', tokens, '压缩摘要'); continue; }
+      push('chat', 'chat', 'Chat · 对话', tokens, firstLine(contentText(data.message)) || 'user message');
+      continue;
+    }
+    if (ev.type === 'assistant/message') { push('chat', 'chat', 'Chat · 对话', tokens); continue; }
+    if (ev.type === 'tool/result') {
+      const info = callInfo.get(String(data.message?.toolCallId ?? ''));
+      const name = info?.name || 'tool';
+      const isFile = CONTEXT_FILE_TOOLS.has(name);
+      push(`${isFile ? 'file' : 'result'}:${name}`, isFile ? 'file' : 'result', `${isFile ? 'File' : 'Tool result'} · ${name}`, tokens, info?.target || name);
+    }
+  }
+
+  let route = {};
+  try { route = (typeof session.requestHeader === 'function' ? session.requestHeader()?.config : null) || {}; } catch { route = {}; }
+
+  const systemTokens = groups.get('system')?.tokens || Number(breakdown.systemTokens) || 0;
+  const toolsTokens = Number(breakdown.toolsTokens) || 0;
+  const blocks = [];
+  if (systemTokens) blocks.push({ id: 'system', label: 'System prompt', kind: 'system', tokens: systemTokens, detail: '系统提示（每次请求固定随行）' });
+  if (toolsTokens) blocks.push({ id: 'tools', label: 'Tools', kind: 'tools', tokens: toolsTokens, detail: '工具 schema（每次请求固定随行）' });
+  for (const prefix of ['memory', 'file', 'result', 'chat', 'summary']) {
+    for (const group of groups.values()) {
+      if (!group.id.startsWith(prefix)) continue;
+      const detail = group.items.length ? `${group.items.length} 条` : '已进入上下文';
+      blocks.push({ id: group.id, label: group.label, kind: group.kind, tokens: group.tokens, detail, items: group.items });
+    }
+  }
+  // 没有可计价节点（tokenMeter 缺席）时退回投影的三段拆分，至少让面板有数据。
+  if (!blocks.length) {
+    if (Number(breakdown.systemTokens)) blocks.push({ id: 'system', label: 'System prompt', kind: 'system', tokens: Number(breakdown.systemTokens) });
+    if (Number(breakdown.toolsTokens)) blocks.push({ id: 'tools', label: 'Tools', kind: 'tools', tokens: Number(breakdown.toolsTokens) });
+    if (Number(breakdown.messageTokens)) blocks.push({ id: 'chat', label: 'Chat · 对话', kind: 'chat', tokens: Number(breakdown.messageTokens) });
+  }
+
+  const priced = blocks.reduce((sum, b) => sum + (Number(b.tokens) || 0), 0);
+  const used = Number(measurement?.totalTokens) || Number(pressure.pressureTokens) || priced;
+  const limit = Number(pressure.contextWindow) || 0;
+  return {
+    model: route.model ? String(route.model) : null,
+    provider: route.provider ? String(route.provider) : null,
+    limit,
+    used: Math.max(used, priced),
+    breakdown: {
+      system: systemTokens,
+      tools: toolsTokens,
+      messages: Number(breakdown.messageTokens) || Math.max(0, used - systemTokens - toolsTokens),
+    },
+    blocks,
+    compaction,
+    status: null,
+    asOfSeq: Number(session.seq) || null,
+    surfaceCount,
+  };
+}
+
+/** 上次上报时间（按会话节流：period 泵与 agent/status 事件可能同时触发）。 */
+const contextReportAt = new Map();
+
+/** 工作区注册表快照：DSH 的 ctx.workspaceRegistry.list() → sidecar，面板左侧工作区下拉用。 */
+function collectWorkspaces(ctx) {
+  const registry = ctx.get('workspaceRegistry');
+  if (!registry || typeof registry.list !== 'function') return null;
+  let list = [];
+  try { list = registry.list() || []; } catch { return null; }
+  return list.slice(0, 200).map((w, i) => ({
+    id: String(w?.id ?? ''),
+    title: String(w?.title ?? '').slice(0, 200),
+    path: String(w?.path ?? ''),
+    position: i,
+  })).filter((w) => w.id);
+}
+
+/** 工作区列表上报：POST 到 sidecar；返回是否成功（失败时调用方会快速重试）。 */
+async function reportWorkspaces(s, ctx) {
+  const items = collectWorkspaces(ctx);
+  if (!items) return false;
+  try {
+    const res = await fetch(s.baseUrl + '/api/workspaces', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(s.token ? { authorization: `Bearer ${s.token}` } : {}) },
+      body: JSON.stringify({ items }),
+      signal: AbortSignal.timeout(1500),
+    });
+    return res.ok;
+  } catch { return false; }
+}
+
 /** 子会话 label：`name: description`，上限 200 字符。 */
 const memberLabel = (name, description) => `${name}: ${description}`.slice(0, 200);
+
+/** 上下文快照上报：后台 POST，失败即弃。 */
+function reportContextSnapshot(s, ctx, sessionId, { status = null, force = false } = {}) {
+  const key = String(sessionId);
+  const binding = sessionMember.get(key);
+  if (!binding) return;
+  const nowMs = Date.now();
+  if (!force && nowMs - (contextReportAt.get(key) || 0) < 2000) return;
+  contextReportAt.set(key, nowMs);
+  const snapshot = collectContext(ctx, key);
+  if (!snapshot) return;
+  const { surfaceCount, ...payload } = snapshot;
+  void fetch(s.baseUrl + '/api/contexts', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...(s.token ? { authorization: `Bearer ${s.token}` } : {}) },
+    body: JSON.stringify({
+      ...payload,
+      teamId: binding.teamId,
+      memberId: binding.memberId,
+      sessionId: key,
+      status: status || binding.status || null,
+    }),
+    signal: AbortSignal.timeout(1500),
+  }).catch(() => { /* ignore */ });
+}
+
+/** 子会话 label：`name: description`，上限 200 字符。 */
 
 /** spawnTeammate 需要 provider 名：优先配置值，未注册时退回已注册的第一个可用 provider。 */
 function providerFor(ctx, s, context) {
@@ -284,16 +502,14 @@ function providerFor(ctx, s, context) {
 // 启用项。本插件不代理 LLM 请求、不保存任何凭据。
 const llmOf = (ctx) => { try { return ctx.get('llm'); } catch { return undefined; } };
 
-let llmSyncAt = 0;
 let llmSyncInFlight = null;
 
-/** 同步一次模型目录（30s 节流；force 用于 team_models / 适配器变更后）。 */
-async function syncLlmCatalog(s, ctx, { force = false } = {}) {
+/** 同步一次模型目录（并发去重；由插件启动泵与 adapters-updated 事件驱动，不再由工具触发）。 */
+async function syncLlmCatalog(s, ctx) {
   const llm = llmOf(ctx);
   if (!llm || typeof llm.listProviders !== 'function' || typeof llm.listModels !== 'function') {
     return { ok: false, reason: 'llm-unavailable' };
   }
-  if (!force && llmSyncAt && Date.now() - llmSyncAt < 30000) return { ok: true, cached: true };
   if (llmSyncInFlight) return llmSyncInFlight;
   llmSyncInFlight = (async () => {
     const seen = new Set();
@@ -325,7 +541,6 @@ async function syncLlmCatalog(s, ctx, { force = false } = {}) {
     const withModels = providers.filter((p) => models.some((m) => m.provider === p.id));
     if (!withModels.length) return { ok: true, providers: 0, models: 0, empty: true };
     await request(s, '/api/llm/catalog', { method: 'POST', body: { providers: withModels, models, partial } });
-    llmSyncAt = Date.now();
     return { ok: true, providers: withModels.length, models: models.length, partial };
   })().finally(() => { llmSyncInFlight = null; });
   return llmSyncInFlight;
@@ -344,7 +559,6 @@ function leadRouteOf(caller) {
 /** 指定 route 必须在用户启用的子集里；目录尚未同步（为空）时不限制，保持向后兼容。 */
 async function assertRouteEnabled(s, ctx, provider, model) {
   if (!provider && !model) return;
-  try { await syncLlmCatalog(s, ctx); } catch { return; }
   let cat;
   try { cat = await request(s, '/api/llm/catalog'); } catch { return; }
   const all = (cat.providers || []).flatMap((p) => p.models || []);
@@ -556,6 +770,7 @@ function buildTools(s, ctx) {
           ...(args.maxConcurrency !== undefined ? { maxConcurrency: args.maxConcurrency } : {}),
           ...(args.failurePolicy !== undefined ? { failurePolicy: args.failurePolicy } : {}),
           ...(args.maxAttempts !== undefined ? { maxAttempts: args.maxAttempts } : {}),
+          ...(exec?.agent && exec.agent.id != null ? { leadSessionId: String(exec.agent.id) } : {}),
         },
       });
       runtimeByTeam.set(team.id, team.runtime || 'worker');
@@ -679,15 +894,11 @@ function buildTools(s, ctx) {
     parameters: {
       type: 'object',
       additionalProperties: false,
-      properties: {
-        refresh: { type: 'boolean', description: 'Re-read the host model catalog before listing. Default true.' },
-      },
+      properties: {},
     },
     output: jsonOutput('{ asOf, total, models: [{ provider, model, name, description, note, modalities }], hint? }'),
     isConcurrencySafe: () => true,
-    async execute(args) {
-      const sync = await syncLlmCatalog(s, ctx, { force: args.refresh !== false })
-        .catch((e) => ({ ok: false, error: String(e?.message || e) }));
+    async execute() {
       let cat = null;
       try { cat = await request(s, '/api/llm/catalog'); } catch { /* catalog unavailable */ }
       const all = cat ? (cat.providers || []).flatMap((p) => p.models || []) : [];
@@ -707,7 +918,6 @@ function buildTools(s, ctx) {
         total: models.length,
         models,
         hint,
-        ...(sync.ok === false ? { catalogError: sync.error || sync.reason } : {}),
       };
     },
   });
@@ -1271,7 +1481,7 @@ export function apply(ctx, config) {
     const disposers = buildTools(s, ctx).map((tool) => ctx.tools.register(tool));
     return () => {
       for (const dispose of disposers.reverse()) { try { dispose(); } catch { /* ignore */ } }
-      leadByTeam.clear(); runtimeByTeam.clear(); sessionMember.clear(); dispatching.clear(); teamBySession.clear();
+      leadByTeam.clear(); runtimeByTeam.clear(); sessionMember.clear(); dispatching.clear(); teamBySession.clear(); contextReportAt.clear();
       const spawned = s.spawned;
       if (spawned?.child && spawned.child.exitCode === null) {
         try { spawned.child.kill(); } catch { /* ignore */ }
@@ -1288,8 +1498,10 @@ export function apply(ctx, config) {
     ctx.on('llm/stream', (options, next) => traceLlmCall(s, options, next));
   }
 
-  // 模型目录变化（provider 配置/适配器注册变化）→ 下次工具调用重新同步
-  ctx.on('llm/adapters-updated', () => { llmSyncAt = 0; });
+  // 模型目录变化（provider 配置/适配器注册变化）→ 立刻重新同步（force + in-flight 去重）
+  ctx.on('llm/adapters-updated', () => {
+    if (s.reportLlmCatalog) void syncLlmCatalog(s, ctx).catch(() => { /* ignore */ });
+  });
 
   // 成员 sub-agent 的 running/idle 回写 sidecar：面板实时、idle 兜底收尾在途任务。
   ctx.on('agent/status', ({ agent, status } = {}) => {
@@ -1302,6 +1514,61 @@ export function apply(ctx, config) {
       void dispatchLoop(s, ctx, binding.teamId).catch(() => { /* ignore */ });
     }
   });
+
+  // 成员上下文快照：面板「上下文分析」页的数据来源。周期泵覆盖进行中的回合，
+  // agent/status 变化时补报一次（回合结束/中断后上下文占用才定型）。
+  if (s.reportContext) {
+    ctx.on('agent/status', ({ agent } = {}) => {
+      const sessionId = agent?.id != null ? String(agent.id) : null;
+      if (sessionId && sessionMember.has(sessionId)) reportContextSnapshot(s, ctx, sessionId, { force: true });
+    });
+    ctx.effect(() => {
+      const timer = setInterval(() => {
+        for (const sessionId of sessionMember.keys()) reportContextSnapshot(s, ctx, sessionId);
+      }, Math.max(2000, s.contextReportMs));
+      timer.unref?.();
+      return () => clearInterval(timer);
+    }, 'dsh-team.context-pump()');
+  }
+
+  // 工作区注册表 → sidecar：插件一启动就推一次；sidecar 可能还没监听（同一个 apply 里刚 spawn），
+  // 失败就 1.5s 后重试，成功后再转入低频轮询。
+  if (s.reportWorkspaces) {
+    ctx.effect(() => {
+      let stopped = false;
+      let timer = null;
+      const run = async () => {
+        const ok = await reportWorkspaces(s, ctx);
+        if (stopped) return;
+        timer = setTimeout(run, ok ? Math.max(5000, s.workspaceReportMs) : 1500);
+        timer.unref?.();
+      };
+      void run();
+      return () => { stopped = true; if (timer) clearTimeout(timer); };
+    }, 'dsh-team.workspace-pump()');
+  }
+
+  // 模型目录泵：面板「模型路由」页不再依赖 lead 调 team_models。
+  // 启动即同步（sidecar 可能刚 spawn，失败 2s 重试），成功后按 llmCatalogMs 定时刷新。
+  if (s.reportLlmCatalog) {
+    ctx.effect(() => {
+      let stopped = false;
+      let timer = null;
+      const run = async () => {
+        let delay = 2000;
+        try {
+          const r = await syncLlmCatalog(s, ctx);
+          // adapter 还没注册完时目录是空的：10s 后再试（adapters-updated 事件也会立刻补一次）
+          delay = r?.ok ? (r.empty ? 10000 : Math.max(10000, s.llmCatalogMs)) : 2000;
+        } catch { delay = 2000; }
+        if (stopped) return;
+        timer = setTimeout(run, delay);
+        timer.unref?.();
+      };
+      void run();
+      return () => { stopped = true; if (timer) clearTimeout(timer); };
+    }, 'dsh-team.llm-catalog-pump()');
+  }
 
   // 保底泵：负责 lead 不在工具调用栈里时（例如成员直接回报）把 ready 任务继续发出去。
   if (s.agentAutoDispatch) {

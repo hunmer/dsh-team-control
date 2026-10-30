@@ -61,7 +61,7 @@ export class DshTeam {
   }
 
   // ---------- 团队 ----------
-  createTeam({ name, workspace, maxMembers = 64, maxConcurrency = 8, failurePolicy = 'continue', maxAttempts = 3, autoApprove = null, runtime = 'worker' }) {
+  createTeam({ name, workspace, maxMembers = 64, maxConcurrency = 8, failurePolicy = 'continue', maxAttempts = 3, autoApprove = null, runtime = 'worker', leadSessionId = null }) {
     if (!name) throw ERR.bad('name required');
     if (!workspace) throw ERR.bad('workspace required');
     if (!RUNTIMES.includes(runtime)) throw ERR.bad(`runtime must be one of ${RUNTIMES.join('|')}`);
@@ -70,11 +70,21 @@ export class DshTeam {
     const id = newId('team');
     const t = nowIso();
     this.get(
-      `INSERT INTO team (id, name, workspace, max_members, max_concurrency, failure_policy, max_attempts, auto_approve_json, runtime, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
-    ).run(id, name, abs, Number(maxMembers), Number(maxConcurrency), failurePolicy, Number(maxAttempts), autoApprove ? json(autoApprove) : null, runtime, t, t);
+      `INSERT INTO team (id, name, workspace, max_members, max_concurrency, failure_policy, max_attempts, auto_approve_json, runtime, lead_session_id, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+    ).run(id, name, abs, Number(maxMembers), Number(maxConcurrency), failurePolicy, Number(maxAttempts), autoApprove ? json(autoApprove) : null, runtime, leadSessionId ? String(leadSessionId) : null, t, t);
     this.seedDefaultPolicies(id);
     return this.teamView(this.get('SELECT * FROM team WHERE id=?').get(id));
+  }
+
+  /** 会话（Lead）→ 团队：面板据此在「本会话刚创建团队」时把编排页推出来。 */
+  teamByLead(sessionId) {
+    const sid = sessionId ? String(sessionId) : '';
+    if (!sid) return null;
+    const row = this.get(
+      'SELECT * FROM team WHERE lead_session_id=? AND archived_at IS NULL ORDER BY created_at DESC LIMIT 1'
+    ).get(sid);
+    return row ? this.teamView(row) : null;
   }
 
   /** 默认策略：工作区读允许、写默认拒绝；deny 规则展示 deny>allow（PRD FR-3 表） */
@@ -98,6 +108,7 @@ export class DshTeam {
     if (!t) return null;
     return {
       id: t.id, name: t.name, workspace: t.workspace,
+      leadSessionId: t.lead_session_id || null,
       maxMembers: Number(t.max_members), maxConcurrency: Number(t.max_concurrency),
       failurePolicy: t.failure_policy, maxAttempts: Number(t.max_attempts),
       autoApprove: parseJson(t.auto_approve_json, null),
@@ -1182,6 +1193,148 @@ export class DshTeam {
     }
     try { this.sse.broadcastSynthetic('artifact.added', { teamId, taskId: input.taskId ?? null, count: saved.length }, { teamId }); } catch { /* ignore */ }
     return { items: saved };
+  }
+
+  // ---------- 成员上下文分析 ----------
+  // Host 插件从成员 DSH 会话里算出「上下文窗口被什么占满」推过来，面板「上下文分析」页按成员展示。
+  contextView(r) {
+    if (!r) return null;
+    const num = (v) => (v == null ? null : Number(v));
+    return {
+      teamId: r.team_id, memberId: r.member_id, sessionId: r.session_id ?? null,
+      model: r.model ?? null, provider: r.provider ?? null,
+      limit: num(r.limit_tokens), used: num(r.used_tokens),
+      breakdown: parseJson(r.breakdown_json, {}),
+      blocks: parseJson(r.blocks_json, []),
+      compaction: parseJson(r.compaction_json, null),
+      status: r.status ?? null,
+      asOfSeq: num(r.as_of_seq),
+      updatedAt: r.updated_at,
+    };
+  }
+  listContexts(teamId, { memberId = null } = {}) {
+    this.getTeam(teamId);
+    let sql = 'SELECT * FROM context_snapshot WHERE team_id=?';
+    const args = [teamId];
+    if (memberId) { sql += ' AND member_id=?'; args.push(memberId); }
+    sql += ' ORDER BY updated_at DESC LIMIT 200';
+    // 排行用的用量口径：LLM 跨度里累计的输入/输出 token 与花费（Host 侧按会话上报）。
+    // 没有成员归属的跨度就是 Lead 会话（与 trace 视图把 session 节点标成 lead 的口径一致）。
+    const usage = new Map();
+    const rows = this.get(`SELECT COALESCE(member_id,'lead') AS owner, SUM(COALESCE(tokens_in,0)) AS ti, SUM(COALESCE(tokens_out,0)) AS tout, SUM(COALESCE(cost,0)) AS cost
+                           FROM span WHERE team_id=? AND kind='llm' GROUP BY COALESCE(member_id,'lead')`).all(teamId);
+    for (const r of rows) {
+      const input = Number(r.ti) || 0;
+      const output = Number(r.tout) || 0;
+      usage.set(String(r.owner), { input, output, total: input + output, cost: Number(r.cost) || 0 });
+    }
+    const zero = { input: 0, output: 0, total: 0, cost: 0 };
+    return {
+      asOf: nowIso(),
+      items: this.get(sql).all(...args).map((r) => ({ ...this.contextView(r), usage: usage.get(r.member_id) ?? zero })),
+      // Lead 没有上下文快照（Host 只上报成员），但用量要一起参与排行。
+      lead: usage.get('lead') ?? zero,
+    };
+  }
+  /**
+   * 写入一条成员上下文快照。
+   * compaction 的 before 侧来自**上一条快照的 blocks**：成员在被压缩之前的样子，
+   * 就是压缩前最后一次上报的样子。同一次 compaction 反复上报时沿用已还原的 before。
+   */
+  reportContext(input = {}) {
+    const teamId = input.teamId;
+    this.getTeam(teamId);
+    if (!input.memberId) throw ERR.bad('memberId required');
+    const memberId = String(input.memberId);
+    const num = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Number(v));
+    const t = nowIso();
+    const prev = this.get('SELECT * FROM context_snapshot WHERE team_id=? AND member_id=?').get(teamId, memberId);
+    const normalizeBlock = (b) => {
+      if (!b || typeof b !== 'object') return null;
+      const id = b.id == null ? '' : String(b.id).slice(0, 120);
+      if (!id) return null;
+      return {
+        id,
+        label: String(b.label ?? id).slice(0, 160),
+        kind: String(b.kind ?? 'chat').slice(0, 20),
+        tokens: Math.max(0, Math.round(Number(b.tokens) || 0)),
+        ...(b.detail ? { detail: String(b.detail).slice(0, 300) } : {}),
+        ...(Array.isArray(b.items) && b.items.length
+          ? { items: b.items.slice(0, 12).map((i) => ({ label: String(i?.label ?? '').slice(0, 120) })).filter((i) => i.label) }
+          : {}),
+      };
+    };
+    const blocks = (Array.isArray(input.blocks) ? input.blocks.slice(0, 40).map(normalizeBlock) : []).filter(Boolean);
+    const asOfSeq = num(input.asOfSeq);
+    let compaction = null;
+    const raw = input.compaction;
+    if (raw && typeof raw === 'object') {
+      const prevCompaction = prev ? parseJson(prev.compaction_json, null) : null;
+      const atSeq = num(raw.atSeq);
+      const sameCompaction = atSeq != null && prevCompaction && Number(prevCompaction.atSeq) === atSeq;
+      const before = sameCompaction
+        ? (Array.isArray(prevCompaction.before) ? prevCompaction.before : [])
+        : (prev ? parseJson(prev.blocks_json, []).filter((b) => b && b.kind !== 'summary') : []);
+      compaction = {
+        atSeq,
+        summary: raw.summary || 'summary',
+        shadowedTokens: num(raw.shadowedTokens),
+        before,
+        // 系统提示与工具 schema 不会被压缩进去，其余（记忆/文件/工具结果/对话）都会折进摘要
+        summarized: before.filter((b) => b.kind !== 'system' && b.kind !== 'tools').map((b) => b.id),
+        dropped: [],
+        at: raw.at || t,
+      };
+    }
+    this.get(`INSERT INTO context_snapshot (team_id, member_id, session_id, model, provider, limit_tokens, used_tokens, breakdown_json, blocks_json, compaction_json, status, as_of_seq, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(team_id, member_id) DO UPDATE SET session_id=excluded.session_id, model=excluded.model, provider=excluded.provider,
+                 limit_tokens=excluded.limit_tokens, used_tokens=excluded.used_tokens, breakdown_json=excluded.breakdown_json,
+                 blocks_json=excluded.blocks_json, compaction_json=excluded.compaction_json, status=excluded.status,
+                 as_of_seq=excluded.as_of_seq, updated_at=excluded.updated_at`)
+      .run(teamId, memberId, input.sessionId == null ? null : String(input.sessionId), input.model ?? null, input.provider ?? null,
+        num(input.limit), num(input.used), json(input.breakdown && typeof input.breakdown === 'object' ? input.breakdown : {}),
+        json(blocks), compaction ? json(compaction) : null, input.status ?? null, asOfSeq, t);
+    const saved = this.contextView(this.get('SELECT * FROM context_snapshot WHERE team_id=? AND member_id=?').get(teamId, memberId));
+    try { this.sse.broadcastSynthetic('context.update', { teamId, memberId, used: saved.used, limit: saved.limit }, { teamId, memberId }); } catch { /* ignore */ }
+    return { item: saved };
+  }
+
+  // ---------- DSH 工作区 ----------
+  // Host 插件把 ctx.workspaceRegistry.list() 整表推过来；面板左侧按工作区切换，团队列表按工作区过滤。
+  workspaceView(r) {
+    if (!r) return null;
+    return { id: r.id, title: r.title ?? '', path: r.path ?? '', position: Number(r.position) || 0, updatedAt: r.updated_at ?? null };
+  }
+
+  listWorkspaces() {
+    const rows = this.get('SELECT * FROM workspace ORDER BY position ASC, title ASC').all();
+    return { asOf: new Date().toISOString(), items: rows.map((r) => this.workspaceView(r)) };
+  }
+
+  reportWorkspaces(input = {}) {
+    const items = Array.isArray(input.items) ? input.items : [];
+    const t = new Date().toISOString();
+    tx(this.db, () => {
+      const keep = new Set();
+      items.slice(0, 200).forEach((item, i) => {
+        const id = String(item?.id ?? '').trim();
+        if (!id) return;
+        keep.add(id);
+        const title = String(item?.title ?? '').trim().slice(0, 200) || id;
+        const path = String(item?.path ?? '').trim().slice(0, 1000);
+        this.get(`INSERT INTO workspace (id, title, path, position, updated_at) VALUES (?,?,?,?,?)
+          ON CONFLICT(id) DO UPDATE SET title=excluded.title, path=excluded.path, position=excluded.position, updated_at=excluded.updated_at`)
+          .run(id, title, path, i, t);
+      });
+      // 注册表里已删除的工作区：本地同步删掉，避免下拉里留幽灵项
+      for (const row of this.get('SELECT id FROM workspace').all()) {
+        if (!keep.has(row.id)) this.get('DELETE FROM workspace WHERE id=?').run(row.id);
+      }
+    });
+    const saved = this.get('SELECT * FROM workspace ORDER BY position ASC, title ASC').all().map((r) => this.workspaceView(r));
+    try { this.sse.broadcastSynthetic('workspace.update', { count: saved.length }, {}); } catch { /* ignore */ }
+    return { asOf: t, items: saved };
   }
 
   // ---------- 待办 ----------

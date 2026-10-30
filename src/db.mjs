@@ -169,6 +169,32 @@ CREATE TABLE IF NOT EXISTS artifact (
 );
 CREATE INDEX IF NOT EXISTS idx_artifact_team ON artifact(team_id, created_at);
 
+-- 成员上下文快照：Host 插件从 DSH 会话（token 计量 + 上下文投影 + 会话事件）算出
+-- 「上下文窗口被什么占满」，面板「上下文分析」页按成员展示。每个成员只留最新一条；
+-- compaction 的 before 侧在写入时从前一条快照里取，因此历史只在这一次切换中用到。
+CREATE TABLE IF NOT EXISTS context_snapshot (
+  team_id TEXT NOT NULL, member_id TEXT NOT NULL,
+  session_id TEXT, model TEXT, provider TEXT,
+  limit_tokens INTEGER, used_tokens INTEGER,
+  breakdown_json TEXT NOT NULL DEFAULT '{}',
+  blocks_json TEXT NOT NULL DEFAULT '[]',
+  compaction_json TEXT,
+  status TEXT, as_of_seq INTEGER,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (team_id, member_id)
+);
+CREATE INDEX IF NOT EXISTS idx_context_team ON context_snapshot(team_id, updated_at);
+
+-- DSH 工作区注册表快照：Host 插件把 ctx.workspaceRegistry.list() 整表推过来，
+-- 面板左侧「工作区」下拉据此切换，团队成员选择器只显示当前工作区下的团队。
+CREATE TABLE IF NOT EXISTS workspace (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL DEFAULT '',
+  path TEXT NOT NULL DEFAULT '',
+  position INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
+
 -- fs.write 的版本基线（C3/FR-3.6 乐观并发）
 CREATE TABLE IF NOT EXISTS file_state (
   path TEXT PRIMARY KEY, version INTEGER NOT NULL DEFAULT 0,
@@ -219,6 +245,7 @@ export function openDb(file) {
   ensureColumn(db, 'team', 'auto_takeover', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'team', 'runtime', "TEXT NOT NULL DEFAULT 'worker'");
   ensureColumn(db, 'team', 'archived_at', 'TEXT');
+  ensureColumn(db, 'team', 'lead_session_id', 'TEXT');
   ensureColumn(db, 'member', 'agent_session_id', 'TEXT');
   ensureColumn(db, 'todo', 'task_id', 'TEXT');
   ensureColumn(db, 'artifact', 'added', 'INTEGER');

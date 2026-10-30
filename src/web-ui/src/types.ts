@@ -28,6 +28,8 @@ export interface Member {
   blockers?: Blocker[];
   /** member.created_at，列表按它排序 */
   createdAt?: string;
+  /** 成员在 DSH 里的会话 id（agent runtime 才有；可据此打开该成员的对话） */
+  agentSessionId?: string | null;
 }
 
 export interface DagEdge {
@@ -141,6 +143,8 @@ export type TeamRunStatus = 'running' | 'blocked' | 'idle' | 'empty';
 export interface Team {
   id: string;
   name?: string;
+  /** 团队绑定的工作区绝对路径（DSH 工作区注册表里的 path） */
+  workspace?: string;
   /** 运行状态汇总（GET /api/teams 由 member_state 聚合） */
   status?: TeamRunStatus;
   memberCount?: number;
@@ -148,6 +152,17 @@ export interface Team {
   blockedCount?: number;
   /** 封存时间（null/undefined 表示未封存） */
   archivedAt?: string | null;
+  /** 创建该团队的 lead 会话 id（面板据此把成员会话的父会话带给 DSH） */
+  leadSessionId?: string | null;
+}
+
+/** DSH 工作区注册表里的一项（/api/workspaces，Host 插件从 ctx.workspaceRegistry 同步）。 */
+export interface Workspace {
+  id: string;
+  title: string;
+  path: string;
+  position?: number;
+  updatedAt?: string | null;
 }
 
 /** 面板全局设置（GET/PATCH /api/settings） */
@@ -232,4 +247,60 @@ export interface TaskArtifact {
   added?: number | null;
   deleted?: number | null;
   createdAt?: string;
+}
+
+/* ------------------------------------------------------------ 上下文分析 */
+
+/** 上下文块类型：决定 treemap tile 的配色（与 components/context-map 对齐）。 */
+export type ContextBlockKind = 'system' | 'tools' | 'memory' | 'file' | 'chat' | 'result' | 'summary';
+
+export interface ContextBlockItem {
+  label: string;
+}
+
+/** 上下文窗口里的一块占用（Host 插件从成员会话折算后上报）。 */
+export interface ContextBlock {
+  id: string;
+  label: string;
+  kind: ContextBlockKind;
+  tokens: number;
+  detail?: string;
+  items?: ContextBlockItem[];
+}
+
+/** 最近一次压缩：before 是压缩前的 blocks，summarized / dropped 是其中被折叠 / 丢弃的 id。 */
+export interface ContextCompaction {
+  before: ContextBlock[];
+  summarized?: string[];
+  dropped?: string[];
+  summary?: string;
+  atSeq?: number | null;
+  shadowedTokens?: number | null;
+}
+
+/** 该成员整段会话的 LLM 用量（侧车从 span 汇总：排行用的输入/输出/花费口径）。 */
+export interface ContextUsage {
+  input: number;
+  output: number;
+  total: number;
+  cost: number;
+}
+
+/** 某个成员当前的上下文快照（/api/contexts）。 */
+export interface ContextSnapshot {
+  teamId: string;
+  memberId: string;
+  sessionId?: string | null;
+  model?: string | null;
+  provider?: string | null;
+  limit?: number | null;
+  used?: number | null;
+  breakdown?: { system?: number; tools?: number; messages?: number } | null;
+  blocks: ContextBlock[];
+  compaction?: ContextCompaction | null;
+  status?: string | null;
+  asOfSeq?: number | null;
+  updatedAt?: string;
+  /** 累计 LLM 用量；后端无法汇总时为 0。 */
+  usage?: ContextUsage;
 }
