@@ -62,6 +62,17 @@ export interface TraceWaterfallProps {
   markSlowest?: boolean;
   /** shortest time the axis shows, ms - grows in round steps */
   minRange?: number;
+  /**
+   * 直接铺开的最近时间窗，ms。更早的记录按同样宽度分段，每组头下方给一个「展开」入口，
+   * 点一次插一段，避免一次性渲染大量行把 UI 拖死。
+   */
+  recentMs?: number;
+  /** 服务端还有更早的记录没拉回来：本地翻到底后，组内入口变成「加载更早的记录」 */
+  hasOlder?: boolean;
+  /** 正在拉更早的一批 */
+  loadingOlder?: boolean;
+  /** 点「加载更早的记录」：拉回数据后组件会接着展开一段 */
+  onLoadOlder?: () => void | Promise<void>;
   formatCost?: (amount: number) => string;
   title?: string;
   className?: string;
@@ -117,6 +128,10 @@ const TICK_STEPS = [1, 2, 3, 5, 10, 15, 20, 30, 60, 120, 300, 600, 900, 1800, 36
 const RANGE_GLIDE_MS = 720;
 /** stagger between rows entering, ms */
 const ENTER_STAGGER = 36;
+/** 一次铺的行超过这个数就关掉入场动画：几百行动画排队会卡，也看不出层次 */
+const QUIET_ROWS = 40;
+/** 只铺最近这么多时间的记录；更早的记录按同样大小分段，点组内「展开」临时插入 */
+const RECENT_MS = 10 * 60 * SEC;
 
 const CURRENCY_SYMBOL: Record<string, string> = { CNY: `¥`, USD: `$`, EUR: `€` };
 
@@ -350,6 +365,8 @@ interface RowProps {
   now?: number;
   range: number;
   trackW: number;
+  /** 时间轴左端对应的时间（ms 相对运行起点）：比它更早的条形左对齐剪掉 */
+  from: number;
   delay: number;
   formatCost: (v: number) => string;
   on: RowHandlers;
@@ -369,6 +386,7 @@ const Row = memo(function Row({
   now,
   range,
   trackW,
+  from,
   delay,
   formatCost,
   on,
@@ -389,13 +407,16 @@ const Row = memo(function Row({
   const label = `${fmtMs(dur)}${showCost ? ` \u00b7 ${formatCost(cost)}` : ``}`;
 
   const toX = (ms: number) => (ms / range) * trackW;
+  // 时间轴左端是 from：跨过左端的条形剪掉超出的部分，整条都更早的只在左边缘留一个短线
+  const x0 = Math.max(0, span.start - from);
+  const barDur = Math.max(0, dur - (from - span.start));
   const tagW = label.length * 6.4 + (slowest ? 58 : 0) + 8;
   const side =
-    !trackW || toX(span.start + dur) + 6 + tagW <= trackW
+    !trackW || toX(x0 + barDur) + 6 + tagW <= trackW
       ? (`after` as const)
-      : toX(dur) >= tagW + 10
+      : toX(barDur) >= tagW + 10
         ? (`inside` as const)
-        : toX(span.start) >= tagW + 6
+        : toX(x0) >= tagW + 6
           ? (`before` as const)
           : (`inside` as const);
 
@@ -406,7 +427,7 @@ const Row = memo(function Row({
       ? flatten(span).slice(1).filter((s) => s.kind === `llm` || s.kind === `tool`)
       : [];
 
-  const barStyle = { "--s": span.start, "--d": dur } as CSSProperties;
+  const barStyle = { "--s": x0, "--d": barDur } as CSSProperties;
 
   return (
     <div
@@ -518,7 +539,13 @@ const Row = memo(function Row({
           style={{ ...barStyle, animationDelay: `${delay + 60}ms` } as CSSProperties}
         />
         {marks.map((m) => (
-          <FoldMark key={m.id} kind={m.kind} status={m.status} start={m.start} dur={durOf(m)} />
+          <FoldMark
+            key={m.id}
+            kind={m.kind}
+            status={m.status}
+            start={Math.max(0, m.start - from)}
+            dur={durOf(m)}
+          />
         ))}
         <span className="ui-twc__tag" data-side={side} style={barStyle}>
           <span className="ui-twc__amount" data-live={span.status === `running` ? `` : void 0}>
@@ -537,6 +564,77 @@ interface RowEntry {
   parentId?: string;
   hidden: boolean;
   leaving?: number;
+  /** 用户临时展开的更早的行：它们决定时间轴左端 */
+  older?: boolean;
+}
+
+/** 组内比最近窗口更早的记录：点一次往前插一段，收起回到只铺最近一段 */
+function OlderRow({
+  depth,
+  minutes,
+  nextCount,
+  shownCount,
+  shownPages,
+  canLoad,
+  loading,
+  onReveal,
+  onCollapse,
+  onLoad,
+}: {
+  depth: number;
+  minutes: number;
+  nextCount: number;
+  shownCount: number;
+  shownPages: number;
+  /** 服务端还有更早的记录没拉回来 */
+  canLoad: boolean;
+  loading: boolean;
+  onReveal: () => void;
+  onCollapse: () => void;
+  onLoad: () => void;
+}) {
+  const canReveal = nextCount > 0;
+  // 本地这一段翻完了，但服务端还有更早的：改成「去拉一批」，不再是一次性全量
+  const loadable = !canReveal && canLoad;
+  return (
+    <div
+      className="ui-twc__more"
+      style={{
+        paddingInlineStart: `calc(var(--ui-twc-pad) + ${depth} * var(--ui-twc-indent) + 20px)`,
+      }}
+    >
+      <button
+        type="button"
+        className="ui-twc__more-btn"
+        disabled={canReveal ? false : !loadable || loading}
+        title={
+          canReveal
+            ? `临时插入更早的 ${minutes} 分钟记录`
+            : loadable
+              ? `从服务端再拉一批更早的记录`
+              : `更早的记录已经全部展开`
+        }
+        onClick={canReveal ? onReveal : loadable ? onLoad : void 0}
+      >
+        <ChevronDown />
+        <span>
+          {canReveal
+            ? `展开前 ${minutes} 分钟`
+            : loadable
+              ? loading
+                ? `正在加载更早的记录…`
+                : `加载更早的记录`
+              : `更早的记录已全部展开`}
+          {canReveal && <span className="ui-twc__more-count">{` \u00b7 +${nextCount} 行`}</span>}
+        </span>
+      </button>
+      {shownPages > 0 && (
+        <button type="button" className="ui-twc__more-collapse" onClick={onCollapse}>
+          {`收起 \u00b7 已展开 ${shownCount} 行`}
+        </button>
+      )}
+    </div>
+  );
 }
 
 export function TraceWaterfall({
@@ -551,6 +649,10 @@ export function TraceWaterfall({
   onOpenChange,
   markSlowest = true,
   minRange = 10 * SEC,
+  hasOlder = false,
+  loadingOlder = false,
+  onLoadOlder,
+  recentMs = RECENT_MS,
   formatCost: fmtCostProp,
   title = `Trace`,
   className,
@@ -576,6 +678,20 @@ export function TraceWaterfall({
 
   const [unopen, setUnopen] = useState(defaultOpenId);
   const [toolFilter, setToolFilter] = useState<string[]>([]);
+  // 每个成员组临时插入了多少段更早的记录（键是组头 span id）
+  const [revealed, setRevealed] = useState<Record<string, number>>({});
+  useEffect(() => setRevealed({}), [root.id]);
+  /** 只插这一段及其之前的所有段，避免中间有空段时点了没反应 */
+  const revealMore = (id: string, page: number) =>
+    setRevealed((prev) => ({ ...prev, [id]: Math.max(prev[id] ?? 0, page) }));
+  const collapseMore = (id: string) => setRevealed((prev) => ({ ...prev, [id]: 0 }));
+  /** 点了「加载更早的记录」的组：数据回来后自动展开它新多出来的那一段 */
+  const pendingOlder = useRef<string | null>(null);
+  const loadOlderFor = (id: string) => {
+    if (!onLoadOlder || loadingOlder) return;
+    pendingOlder.current = id || null;
+    void Promise.resolve(onLoadOlder()).catch(() => { pendingOlder.current = null; });
+  };
   const flat = flatten(root);
 
   // 候选工具：当前瀑布里真实出现过的工具（按出现次数排序），没有数据时为空
@@ -612,9 +728,67 @@ export function TraceWaterfall({
     s.end ?? (s.status === `running` ? Math.max(nowMs, s.start) : s.start);
   const durOf = (s: TraceSpan) => Math.max(0, endOf(s) - s.start);
 
+  // 行收集：只铺最近 `recent` 这段；每组更早的行按同样宽度分页计数，点组内「展开」临时插入
+  const recent = Math.max(SEC, recentMs);
+  const recentFrom = Math.max(0, nowMs - recent);
+  /** 这一行的结束时间属于第几段，0 = 最近一段 */
+  const pageOf = (s: TraceSpan) => Math.max(0, Math.ceil((recentFrom - endOf(s)) / recent));
+  const visible: RowEntry[] = [];
+  /** 组头 id → 第几段（从 1 起）→ 这一段里没渲染的行数 */
+  const olderPages = new Map<string, Map<number, number>>();
+  const keepRow = (span: TraceSpan) =>
+    toolFilter.length === 0 || span.kind !== `tool` || toolFilter.includes(toolNameOf(span));
+  const collect = (
+    span: TraceSpan,
+    depth: number,
+    parentId: string | undefined,
+    hidden: boolean,
+    headId: string,
+    skipped: boolean,
+  ) => {
+    // LLM calls stay in the tree (their cost/tokens roll up into the member row) but never get a row
+    if (span.kind === `llm`) {
+      for (const c of span.children ?? []) collect(c, depth, parentId, hidden, headId, skipped);
+      return;
+    }
+    if (!keepRow(span)) return;
+    const head = depth <= 1 ? span.id : headId;
+    const page = pageOf(span);
+    // 组头（depth 1）始终留着当锚点：整组都在窗口外时，靠它下面那个「展开」入口把老记录找回来
+    if (page > 0 && depth > 1) {
+      const slot = olderPages.get(head) ?? new Map<number, number>();
+      slot.set(page, (slot.get(page) ?? 0) + 1);
+      olderPages.set(head, slot);
+      if (page > (revealed[head] ?? 0)) skipped = true;
+    }
+    // 跳过的行照样计数（展开入口要报行数），只是不渲染
+    if (!skipped) visible.push({ span, depth, parentId, hidden, older: page > 0 && depth > 1 });
+    const nowHidden = hidden || collapsedList.includes(span.id);
+    for (const c of span.children ?? []) collect(c, depth + 1, span.id, nowHidden, head, skipped);
+  };
+  collect(root, 0, void 0, false, root.id, false);
+  const visibleIds = new Set(visible.map((r) => r.span.id));
+  /** 拉回来一批更早的数据后，接着把发起这次加载的那一组再展开一段 */
+  useEffect(() => {
+    const id = pendingOlder.current;
+    if (!id || loadingOlder) return;
+    pendingOlder.current = null;
+    const slot = olderPages.get(id);
+    const shown = revealed[id] ?? 0;
+    const next = [...(slot?.keys() ?? [])].filter((p) => p > shown).sort((a, b) => a - b)[0];
+    if (next) revealMore(id, next);
+    // 只在「加载结束」的那一帧取最新数据，其余依赖故意不列
+  }, [loadingOlder]);
+
   const [trackW, setTrackW] = useState(0);
-  const maxEnd = Math.max(anyRunning ? nowMs : 0, ...flat.map(endOf));
-  const wanted = Math.max(minRange, maxEnd * 1.2);
+  // 时间轴默认只覆盖最近这段（更早的行条形容器左对齐剪掉）；用户展开更早的记录时左端跟着长出去
+  let olderFirst = Infinity;
+  for (const r of visible) if (r.older && r.span.start < olderFirst) olderFirst = r.span.start;
+  const viewFrom = Math.max(
+    0,
+    Math.min(nowMs - minRange, nowMs - recent, Number.isFinite(olderFirst) ? olderFirst : Infinity),
+  );
+  const wanted = Math.max(minRange, (nowMs - viewFrom) * 1.2);
   const range = RANGE_STEPS.find((s) => s >= wanted) ?? Math.ceil(wanted / 36e5) * 36e5;
   const maxTicks = Math.min(8, Math.max(3, Math.round((trackW || 600) / 96)));
   const tickStep = TICK_STEPS.find((s) => range / s <= maxTicks) ?? range / maxTicks;
@@ -680,24 +854,6 @@ export function TraceWaterfall({
     return () => ro.disconnect();
   }, []);
 
-  // rows to render: the tree with folded branches hidden, plus leaving ghosts
-  const visible: RowEntry[] = [];
-  const keepRow = (span: TraceSpan) =>
-    toolFilter.length === 0 || span.kind !== `tool` || toolFilter.includes(toolNameOf(span));
-  const collect = (span: TraceSpan, depth: number, parentId: string | undefined, hidden: boolean) => {
-    // LLM calls stay in the tree (their cost/tokens roll up into the member row) but never get a row
-    if (span.kind === `llm`) {
-      for (const c of span.children ?? []) collect(c, depth, parentId, hidden);
-      return;
-    }
-    if (!keepRow(span)) return;
-    visible.push({ span, depth, parentId, hidden });
-    const nowHidden = hidden || collapsedList.includes(span.id);
-    for (const c of span.children ?? []) collect(c, depth + 1, span.id, nowHidden);
-  };
-  collect(root, 0, void 0, false);
-  const visibleIds = new Set(visible.map((r) => r.span.id));
-
   // rows that left (a new run, removed data, folded parents) close up bottom first
   const [leavingRows, setLeavingRows] = useState<{ row: RowEntry; index: number }[]>([]);
   const prevRows = useRef<RowEntry[]>([]);
@@ -731,6 +887,9 @@ export function TraceWaterfall({
     if (rootLeaving) allRows.push(g.row);
     else allRows.splice(Math.min(g.index, allRows.length), 0, g.row);
   }
+
+  // 一次性铺太多行时不做入场动画（数据量大时动画排队反而卡顿）
+  const quiet = allRows.length > QUIET_ROWS;
 
   // 顶层子树（每个成员）各包一层，组头就是成员行：滚动时它吸顶，滚到下一组时被顶走
   const rowById = new Map(allRows.map((r) => [r.span.id, r]));
@@ -1015,7 +1174,8 @@ export function TraceWaterfall({
       ref={rootRef}
       className={[`ui-twc`, className].filter(Boolean).join(` `)}
       data-live={runState === `running` ? `` : void 0}
-      style={{ "--ui-twc-at": nowMs } as CSSProperties}
+      data-quiet={quiet ? `` : void 0}
+      style={{ "--ui-twc-at": nowMs - viewFrom } as CSSProperties}
     >
       <style href="ui-trace-waterfall-clean" precedence="default">
         {TRACE_WATERFALL_CSS}
@@ -1107,7 +1267,7 @@ export function TraceWaterfall({
                 data-leaving={leaving ? `` : void 0}
                 style={{ "--v": v } as CSSProperties}
               >
-                <span>{fmtTick(v)}</span>
+                <span>{fmtTick(v + viewFrom)}</span>
               </span>
             ))}
             {runState === `running` && <span className="ui-twc__now" />}
@@ -1116,34 +1276,92 @@ export function TraceWaterfall({
             <span>Span</span>
           </div>
           <div ref={rowsRef} className="ui-twc__rows" role="tree" aria-label={title}>
-            {groups.map((group) => (
-              <div
-                key={`${group.head.span.id}:${group.rows[0].span.id}`}
-                className="ui-twc__group"
-                role="none"
-              >
-                {group.rows.map((r) => (
-                  <Row
-                    key={r.leaving === void 0 ? r.span.id : `${r.span.id}~out`}
-                    span={r.span}
-                    depth={r.depth}
-                    hidden={r.hidden}
-                    leaving={r.leaving}
-                    sticky={r === group.head && r.leaving === void 0 && group.head.depth > 0}
-                    folded={(r.span.children ?? []).length > 0 && collapsedList.includes(r.span.id)}
-                    open={open === r.span.id}
-                    focusable={!r.hidden && r.leaving === void 0 && activeId === r.span.id}
-                    slowest={slowest?.id === r.span.id}
-                    now={liveIds.has(r.span.id) ? nowMs : void 0}
-                    range={range}
-                    trackW={trackW}
-                    delay={enterDelays.current.get(r.span.id) ?? 0}
-                    formatCost={fmtCost}
-                    on={on}
-                  />
-                ))}
-              </div>
-            ))}
+            {groups.map((group) => {
+              const headId = group.head.span.id;
+              // 组内更早的记录按段折叠：只留一个「展开」入口，点一次插一段
+              const pages = olderPages.get(headId);
+              const shownPages = revealed[headId] ?? 0;
+              let shownCount = 0;
+              let nextPage = 0;
+              let nextCount = 0;
+              for (const [page, count] of pages ?? []) {
+                if (page <= shownPages) shownCount += count;
+                else if (!nextPage || page < nextPage) {
+                  nextPage = page;
+                  nextCount = count;
+                }
+              }
+              const more =
+                group.head.leaving === void 0 &&
+                !collapsedList.includes(headId) &&
+                (nextPage > 0 || shownPages > 0)
+                  ? { shownPages, shownCount, nextPage, nextCount, canLoad: hasOlder }
+                  : null;
+              return (
+                <div
+                  key={`${headId}:${group.rows[0].span.id}`}
+                  className="ui-twc__group"
+                  role="none"
+                >
+                  {group.rows.flatMap((r, i) => {
+                    const row = (
+                      <Row
+                        key={r.leaving === void 0 ? r.span.id : `${r.span.id}~out`}
+                        span={r.span}
+                        depth={r.depth}
+                        hidden={r.hidden}
+                        leaving={r.leaving}
+                        sticky={r === group.head && r.leaving === void 0 && group.head.depth > 0}
+                        folded={(r.span.children ?? []).length > 0 && collapsedList.includes(r.span.id)}
+                        open={open === r.span.id}
+                        focusable={!r.hidden && r.leaving === void 0 && activeId === r.span.id}
+                        slowest={slowest?.id === r.span.id}
+                        now={liveIds.has(r.span.id) ? nowMs : void 0}
+                        range={range}
+                        trackW={trackW}
+                        from={viewFrom}
+                        delay={quiet ? 0 : enterDelays.current.get(r.span.id) ?? 0}
+                        formatCost={fmtCost}
+                        on={on}
+                      />
+                    );
+                    if (i > 0 || !more) return [row];
+                    return [
+                      row,
+                      <OlderRow
+                        key={`${headId}~more`}
+                        depth={group.head.depth + 1}
+                        minutes={Math.max(1, Math.round(recent / 60e3))}
+                        nextCount={more.nextCount}
+                        shownCount={more.shownCount}
+                        shownPages={more.shownPages}
+                        canLoad={more.canLoad}
+                        loading={loadingOlder}
+                        onReveal={() => revealMore(headId, more.nextPage)}
+                        onCollapse={() => collapseMore(headId)}
+                        onLoad={() => loadOlderFor(headId)}
+                      />,
+                    ];
+                  })}
+                </div>
+              );
+            })}
+            {/* 组内没有本地更早分页、但服务端还有更早记录时的兜底入口 */}
+            {hasOlder && (
+              <OlderRow
+                key="~more-orphan"
+                depth={1}
+                minutes={Math.max(1, Math.round(recent / 60e3))}
+                nextCount={0}
+                shownCount={0}
+                shownPages={0}
+                canLoad
+                loading={loadingOlder}
+                onReveal={() => undefined}
+                onCollapse={() => undefined}
+                onLoad={() => loadOlderFor("")}
+              />
+            )}
           </div>
           {shownSpan && details(shownSpan)}
         </div>

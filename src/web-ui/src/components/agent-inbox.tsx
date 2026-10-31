@@ -1,8 +1,8 @@
 /**
  * 实时收件箱（coss ui 版，取代 affectui/agent-inbox）。
  *
- * 三列看板：需要你（waiting/failed）/ 进行中 / 已完成；
- * 卡片由 Card + Badge + Button + Collapsible 组成，动作由 Home 传入。
+ * 单区网格：所有成员卡片按「等待中 → 进行中 → 已完成」排序，一行铺多张、按容器宽度自动换列；
+ * 卡片由 Card + Badge + Button 组成，动作由 Home 传入。
  */
 import { useEffect, useState, type ReactNode } from 'react';
 import { CircleCheck, CircleX, FileText, LoaderCircle, Sparkles, TriangleAlert } from 'lucide-react';
@@ -232,44 +232,46 @@ function TaskCard({ task, onApprove, onReject, onRetry, onOpen, onOpenArtifact, 
   );
 }
 
+const LANE_ORDER: Record<LaneId, number> = { needs: 0, running: 1, done: 2 };
+
 export function AgentInbox({ tasks, onApprove, onReject, onRetry, onOpen, onOpenArtifact, onOpenChat, title = '实时收件箱', className }: AgentInboxProps) {
+  // 等待决策的排前面，其次进行中，最后已完成；同组内保持传入顺序
+  const sorted = [...tasks].sort((a, b) => LANE_ORDER[laneOf(a.status)] - LANE_ORDER[laneOf(b.status)]);
   return (
     <div className={cn('flex min-h-0 flex-col gap-3', className)}>
-      <div className="flex shrink-0 items-center gap-2">
+      <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-x-2 gap-y-1">
         <span className="font-semibold text-sm">{title}</span>
         <span className="text-muted-foreground text-xs">{tasks.length} 张卡</span>
+        <span className="ms-auto flex flex-wrap items-center gap-2">
+          {LANES.map((lane) => (
+            <span className="flex items-center gap-1" key={lane.id}>
+              <span className={`size-1.5 shrink-0 rounded-full ${LANE_TONE[lane.tone].dot}`} />
+              <span className={`font-medium text-xs ${LANE_TONE[lane.tone].text}`}>{lane.label}</span>
+              <span className="font-medium text-xs tabular-nums">{tasks.filter((task) => laneOf(task.status) === lane.id).length}</span>
+            </span>
+          ))}
+        </span>
       </div>
-      <div className="flex min-h-0 flex-1 flex-col gap-3 md:flex-row">
-        {LANES.map((lane) => {
-          const items = tasks.filter((task) => laneOf(task.status) === lane.id);
-          return (
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2" key={lane.id}>
-              <div className="flex items-center gap-1.5 px-1">
-                <span className={`size-1.5 shrink-0 rounded-full ${LANE_TONE[lane.tone].dot}`} />
-                <span className={`font-medium text-xs ${LANE_TONE[lane.tone].text}`}>{lane.label}</span>
-                <Badge size="sm" variant={lane.tone}>{items.length}</Badge>
-              </div>
-              <div className="max-h-[420px] min-h-0 flex-1 space-y-2 overflow-y-auto pr-0.5 xl:max-h-none">
-                {items.length ? (
-                  items.map((task) => (
-                    <TaskCard
-                      key={task.id}
-                      onApprove={onApprove}
-                      onOpen={onOpen}
-                      onOpenArtifact={onOpenArtifact}
-                      onOpenChat={onOpenChat}
-                      onReject={onReject}
-                      onRetry={onRetry}
-                      task={task}
-                    />
-                  ))
-                ) : (
-                  <p className="rounded-lg border border-dashed px-2 py-4 text-center text-muted-foreground text-xs">暂无</p>
-                )}
-              </div>
-            </div>
-          );
-        })}
+      {/* 一行铺多张卡：按容器实际宽度自动决定列数（最小 15rem 一列），窄屏自动变单列 */}
+      <div className="min-h-0 flex-1 overflow-y-auto pr-0.5">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(15rem,1fr))] items-start gap-2">
+          {sorted.length ? (
+            sorted.map((task) => (
+              <TaskCard
+                key={task.id}
+                onApprove={onApprove}
+                onOpen={onOpen}
+                onOpenArtifact={onOpenArtifact}
+                onOpenChat={onOpenChat}
+                onReject={onReject}
+                onRetry={onRetry}
+                task={task}
+              />
+            ))
+          ) : (
+            <p className="col-span-full rounded-lg border border-dashed px-2 py-4 text-center text-muted-foreground text-xs">暂无</p>
+          )}
+        </div>
       </div>
     </div>
   );

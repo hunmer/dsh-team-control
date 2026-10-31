@@ -32,19 +32,20 @@ function MemberPill({ member }: { member: Member }) {
 }
 
 const WINDOWS: Array<[number, string]> = [
-  [0, '全部历史'],
   [5, '近 5 分钟'],
+  [10, '近 10 分钟'],
   [30, '近 30 分钟'],
   [60, '近 1 小时'],
   [360, '近 6 小时'],
+  [0, '全部历史'],
 ];
 
 /** Base UI Select 需要 items 才能把 value 映射回显示文案，否则触发器直接显示原始值（0/5/30…） */
 const WINDOW_ITEMS = WINDOWS.map(([value, label]) => ({ value: String(value), label }));
 
 export function BoardView() {
-  const { state, refreshTrace, setTraceWindow } = usePanel();
-  const { teamId, members, trace, errors, traceWindow } = state;
+  const { state, refreshTrace, setTraceWindow, loadOlderTrace } = usePanel();
+  const { teamId, members, trace, errors, traceWindow, traceHasOlder, traceLoadingOlder } = state;
   const [busy, setBusy] = useState(false);
 
   const refresh = () => {
@@ -78,6 +79,9 @@ export function BoardView() {
         startedAt={trace.originMs}
         title="Trace 瀑布"
         markSlowest
+        hasOlder={traceHasOlder}
+        loadingOlder={traceLoadingOlder}
+        onLoadOlder={loadOlderTrace}
       />
     );
   }

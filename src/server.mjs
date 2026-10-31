@@ -144,6 +144,8 @@ export function createRoutes(core) {
     ['GET', /^\/api\/trace$/, async (ctx) => C.trace(need(qs(ctx.url).get('team'), 'team'), {
       limit: qs(ctx.url).get('limit') || 4000,
       windowMs: (Number(qs(ctx.url).get('window')) || 0) * 60000,
+      // 往前翻页：until 是 epoch 毫秒上界，只取这段时间之前的记录
+      untilMs: Number(qs(ctx.url).get('until')) || 0,
     })],
     ['GET', /^\/api\/verify$/, async (ctx) => C.verify(qs(ctx.url).get('team'))],
     ['GET', /^\/api\/reconcile$/, async (ctx) => C.reconcile(need(qs(ctx.url).get('team'), 'team'))],

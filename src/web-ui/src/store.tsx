@@ -9,7 +9,7 @@ import {
 import { API_BASE, api, ApiError, EMBEDDED, enc, getToken, initUrlToken, pickItems, setToken } from './lib/api';
 import { fmtClock, storeGet, storeSet } from './lib/format';
 import { workspaceMatches } from './lib/workspace';
-import type { ContextSnapshot, ContextUsage, DagData, MatrixRow, Member, MemberChange, Policy, ScopeRequest, Task, TaskArtifact, Team, TeamMessage, TimelineEntry, Todo, TraceData, Workspace } from './types';
+import type { ContextSnapshot, ContextUsage, DagData, MatrixRow, Member, MemberChange, Policy, ScopeRequest, Task, TaskArtifact, Team, TeamMessage, TimelineEntry, Todo, TraceData, TraceNode, Workspace } from './types';
 
 export const TAB_NAMES = ['board', 'review', 'context', 'dag', 'timeline', 'models', 'permissions', 'approvals', 'messages'] as const;
 /**
@@ -60,8 +60,12 @@ interface PanelState {
   /** Lead 会话的累计 LLM 用量（同一接口返回，仅参与排行，没有上下文快照） */
   contextLead: ContextUsage | null;
   trace: TraceData | null;
-  /** Trace 时间窗（分钟，0 = 全部历史）；默认只看最近 30 分钟，避免长期闲置团队的横轴被拉爆 */
+  /** Trace 拉取窗口（分钟，0 = 全部历史）；默认只看最近 30 分钟，避免长期闲置团队的横轴被拉爆 */
   traceWindow: number;
+  /** 服务端还有更早的记录可拉（「全部历史」按需往前翻，不再一次性拉全量） */
+  traceHasOlder: boolean;
+  /** 正在拉更早一批 */
+  traceLoadingOlder: boolean;
   matrix: MatrixRow[];
   policies: Policy[];
   scopeRequests: ScopeRequest[];
@@ -80,7 +84,7 @@ interface PanelState {
 const initialState: PanelState = {
   teamId: null, team: null, teams: [], workspaces: [], workspaceId: null, noTeams: false,
   members: [], staleMembers: new Set(), degraded: false, snapshot: null,
-  dag: null, tasks: [], todos: [], artifacts: [], changes: [], contexts: [], contextLead: null, trace: null, traceWindow: 0, matrix: [], policies: [], scopeRequests: [], messages: [],
+  dag: null, tasks: [], todos: [], artifacts: [], changes: [], contexts: [], contextLead: null, trace: null, traceWindow: 30, traceHasOlder: false, traceLoadingOlder: false, matrix: [], policies: [], scopeRequests: [], messages: [],
   errors: {}, timeline: [], paused: false, speed: 1,
   tab: 'home', filters: { member: '', phase: '' }, conn: 'connecting', reviewFocus: null,
 };
@@ -118,6 +122,8 @@ export interface PanelActions {
   /** 可选窗口覆盖（分钟）；不传则用当前 state.traceWindow */
   refreshTrace(windowMinutes?: number): Promise<void>;
   setTraceWindow(minutes: number): void;
+  /** 再往前拉一批更早的 Trace 记录（「全部历史」按需分页，不一次性全量拉取） */
+  loadOlderTrace(): Promise<void>;
   setTab(tab: TabName): void;
   /** 跳到「审阅」并选中某个文件（收件箱产物点击）；Review 选中后清空。 */
   focusReview(path: string, memberId?: string): void;
@@ -243,6 +249,9 @@ export function PanelProvider({ children }: { children: ReactNode }) {
   const playbackTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const refreshTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const bootedRef = useRef(false);
+  /** 已拉到的 Trace 分页（每页各自带 originMs）；翻页时累积合并，点刷新才重置 */
+  const tracePages = useRef<TraceData[]>([]);
+  const olderBusy = useRef(false);
 
   const toast = useCallback((message: string, kind: ToastItem['kind'] = 'info', ttl?: number) => {
     const id = Date.now() + Math.random();
@@ -357,6 +366,39 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     });
   }, [patchUi]);
 
+  /**
+   * 多批 Trace 拼成一条时间轴：每批的 start/end 相对自己的 originMs，统一右移到最早那批的原点，
+   * 再按节点 id 并集合并（翻页时同一节点可能出现在相邻两批里）。
+   */
+  const mergeTracePages = (pages: TraceData[]): TraceData => {
+    const first = pages[0];
+    if (pages.length === 1) return first;
+    const origin = Math.min(...pages.map((p) => p.originMs));
+    const shift = (n: TraceNode, delta: number): TraceNode => {
+      const start = Math.max(0, n.start + delta);
+      const end = n.end === void 0 ? void 0 : Math.max(start, n.end + delta);
+      return { ...n, start, end, children: (n.children ?? []).map((c) => shift(c, delta)) };
+    };
+    const merge = (base: TraceNode, add: TraceNode): TraceNode => {
+      const kids = new Map<string, TraceNode>();
+      for (const c of base.children ?? []) kids.set(c.id, c);
+      for (const c of add.children ?? []) {
+        const hit = kids.get(c.id);
+        kids.set(c.id, hit ? merge(hit, c) : c);
+      }
+      return {
+        ...base,
+        end: base.end ?? add.end,
+        children: [...kids.values()].sort((a, b) => a.start - b.start),
+      };
+    };
+    let root = shift(first.root, first.originMs - origin);
+    for (let i = 1; i < pages.length; i += 1) {
+      root = merge(root, shift(pages[i].root, pages[i].originMs - origin));
+    }
+    return { ...first, originMs: origin, root: { ...root, start: 0 } };
+  };
+
   const refreshTrace = useCallback(async (windowMinutes?: number) => {
     const teamId = stateRef.current.teamId;
     if (!teamId) return;
@@ -364,7 +406,44 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     const q = '/api/trace?team=' + enc(teamId) + (win > 0 ? '&window=' + win : '');
     const trace = await api<TraceData>(q, { onUnauthorized });
     if (stateRef.current.teamId !== teamId) return; // 团队已切换：丢弃过期响应
-    setState((prev) => ({ ...prev, trace, errors: { ...prev.errors, trace: null } }));
+    tracePages.current = [trace];
+    setState((prev) => ({
+      ...prev,
+      trace,
+      traceHasOlder: !!trace.hasOlder,
+      traceLoadingOlder: false,
+      errors: { ...prev.errors, trace: null },
+    }));
+  }, [onUnauthorized]);
+
+  /** 往前翻一页：以当前最早的时间点为上界再拉一批，合并进现有树（不再一次拉全量）。 */
+  const loadOlderTrace = useCallback(async () => {
+    const teamId = stateRef.current.teamId;
+    const pages = tracePages.current;
+    if (!teamId || !pages.length || olderBusy.current) return;
+    const oldest = Math.min(...pages.map((p) => p.originMs));
+    olderBusy.current = true;
+    setState((prev) => ({ ...prev, traceLoadingOlder: true }));
+    try {
+      const page = await api<TraceData>(`/api/trace?team=${enc(teamId)}&until=${oldest}`, { onUnauthorized });
+      if (stateRef.current.teamId !== teamId) return; // 团队已切换
+      // 没有更早的记录（空批 / 原点没有前移）：标记到底，别让按钮一直转
+      if (!(page.root.children ?? []).length || page.originMs >= oldest) {
+        tracePages.current = pages.map((p, i) => (i === 0 ? { ...p, hasOlder: false } : p));
+        setState((prev) => ({ ...prev, traceHasOlder: false }));
+        return;
+      }
+      const next = [...pages, page];
+      tracePages.current = next;
+      setState((prev) => ({
+        ...prev,
+        trace: mergeTracePages(next),
+        traceHasOlder: !!page.hasOlder,
+      }));
+    } finally {
+      olderBusy.current = false;
+      setState((prev) => (prev.traceLoadingOlder ? { ...prev, traceLoadingOlder: false } : prev));
+    }
   }, [onUnauthorized]);
 
   const setTraceWindow = useCallback((minutes: number) => {
@@ -991,11 +1070,11 @@ export function PanelProvider({ children }: { children: ReactNode }) {
 
   const actions = useMemo<PanelActions>(() => ({
     state, toasts, authOverlay, bootError, memberName, toast,
-    selectTeam, refreshTeams, selectWorkspace, refreshWorkspaces, teamsInWorkspace, stopTeam, archiveTeam, deleteTeam, refreshAll, decideScope, refreshPermissions, refreshMessages, refreshChanges, refreshContexts, refreshStatus, refreshTrace, setTraceWindow,
+    selectTeam, refreshTeams, selectWorkspace, refreshWorkspaces, teamsInWorkspace, stopTeam, archiveTeam, deleteTeam, refreshAll, decideScope, refreshPermissions, refreshMessages, refreshChanges, refreshContexts, refreshStatus, refreshTrace, setTraceWindow, loadOlderTrace,
     setTab, setPaused, setSpeed, setFilterMember, setFilterPhase, exportReport,
     focusReview, clearReviewFocus,
     retryBoot, submitToken,
-  }), [state, toasts, authOverlay, bootError, memberName, toast, selectTeam, refreshTeams, selectWorkspace, refreshWorkspaces, teamsInWorkspace, stopTeam, archiveTeam, deleteTeam, refreshAll, decideScope, refreshPermissions, refreshMessages, refreshChanges, refreshContexts, refreshStatus, refreshTrace, setTraceWindow, setTab, setPaused, setSpeed, setFilterMember, setFilterPhase, exportReport, focusReview, clearReviewFocus, retryBoot, submitToken]);
+  }), [state, toasts, authOverlay, bootError, memberName, toast, selectTeam, refreshTeams, selectWorkspace, refreshWorkspaces, teamsInWorkspace, stopTeam, archiveTeam, deleteTeam, refreshAll, decideScope, refreshPermissions, refreshMessages, refreshChanges, refreshContexts, refreshStatus, refreshTrace, setTraceWindow, loadOlderTrace, setTab, setPaused, setSpeed, setFilterMember, setFilterPhase, exportReport, focusReview, clearReviewFocus, retryBoot, submitToken]);
 
   return <PanelContext.Provider value={actions}>{children}</PanelContext.Provider>;
 }

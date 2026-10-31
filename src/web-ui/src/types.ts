@@ -217,6 +217,10 @@ export interface TraceData {
   /** 生效的时间窗（ms，0 表示全量）与窗口起点（epoch ms） */
   windowMs?: number;
   cutoffMs?: number | null;
+  /** 上界（epoch ms）：往前翻页时只取这段时间之前的记录 */
+  untilMs?: number | null;
+  /** 还有比本批更早的记录（组件据此显示「加载更早」） */
+  hasOlder?: boolean;
   root: TraceNode;
   stats: TraceStats;
 }

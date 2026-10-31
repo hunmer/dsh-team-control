@@ -1,6 +1,6 @@
 /**
  * 团队运行操作菜单：停止 / 封存 / 删除 / 停止并删除。
- * 原在顶栏，现在挂在成员队列弹层的头部右上角。
+ * 原在顶栏，现在挂在计划队列弹层的头部右上角。
  */
 import { Archive, ChevronDown, Square, Trash2 } from 'lucide-react';
 import { usePanel } from '@/store';
