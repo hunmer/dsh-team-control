@@ -849,7 +849,7 @@ export class DshTeam {
    * Trace 瀑布树：把「Worker 计划步骤事件 + 显式上报 span」拼成 ui-trace-waterfall 的输入。
    * 返回的 start/end 均为相对 originMs 的毫秒数；running 节点不带 end，客户端按 now 拉长。
    */
-  trace(teamId, { limit = 4000, windowMs = 0 } = {}) {
+  trace(teamId, { limit = 4000, windowMs = 0, untilMs = 0 } = {}) {
     const team = this.getTeam(teamId);
     const members = this.listMembers(teamId);
     // agent 成员的 span 只带 sessionId：先建 session → member 映射，把它们的工具调用挂到成员节点下
@@ -859,6 +859,8 @@ export class DshTeam {
     const nowMs = now();
     const windowSize = Math.max(0, Number(windowMs) || 0);
     const cutoff = windowSize > 0 ? nowMs - windowSize : 0;
+    // 上界（往前翻页）：只取这段时间之前的记录；0 = 不设上界，一路到最早
+    const until = Number(untilMs) > 0 ? Math.round(Number(untilMs)) : 0;
     const all = [];
     const byId = new Map();
     const add = (n) => {
@@ -870,15 +872,15 @@ export class DshTeam {
     };
 
     // 1) Worker 计划步骤：同一 (member, stepIndex) 首条 RUNNING 起算，末条终态收尾
-    const evRows = (cutoff
-      ? this.get(
-        `SELECT member_id, task_id, seq, ts, phase, action, target, result, meta_json
-           FROM event WHERE team_id=? AND ts >= ? ORDER BY id DESC LIMIT ?`,
-      ).all(teamId, new Date(cutoff).toISOString(), maxRows)
-      : this.get(
-        `SELECT member_id, task_id, seq, ts, phase, action, target, result, meta_json
-           FROM event WHERE team_id=? ORDER BY id DESC LIMIT ?`,
-      ).all(teamId, maxRows)).reverse();
+    // 统一先取「最晚的一批」再翻成升序：翻页（until）和窗口都只是加一个上下界条件
+    const evWhere = ['team_id=?'];
+    const evArgs = [teamId];
+    if (cutoff) { evWhere.push('ts >= ?'); evArgs.push(new Date(cutoff).toISOString()); }
+    if (until) { evWhere.push('ts <= ?'); evArgs.push(new Date(until).toISOString()); }
+    const evRows = this.get(
+      `SELECT member_id, task_id, seq, ts, phase, action, target, result, meta_json
+         FROM event WHERE ${evWhere.join(' AND ')} ORDER BY id DESC LIMIT ?`,
+    ).all(...evArgs, maxRows).reverse();
     const stepKey = (memberId, taskId, idx) => memberId + '\u0000' + (taskId || '') + '\u0000' + idx;
     const stepMap = new Map();
     for (const r of evRows) {
@@ -912,11 +914,39 @@ export class DshTeam {
     }
 
     // 2) 显式 span（工具调用等）
-    const spans = cutoff
-      ? this.get('SELECT * FROM span WHERE team_id=? AND COALESCE(end_ms, start_ms) >= ? ORDER BY start_ms ASC LIMIT ?')
-        .all(teamId, cutoff, clamp(maxRows, 1, 20000))
-      : this.get('SELECT * FROM span WHERE team_id=? ORDER BY start_ms ASC LIMIT ?')
-        .all(teamId, clamp(maxRows, 1, 20000));
+    // 方向必须和事件侧一致：先取最晚的一批再翻转。原先按 start_ms 升序截断，跨度一多就只剩最老的
+    // 那批、最新调用反而丢失，翻页也会从最老的一端开始。
+    const spanLimit = clamp(maxRows, 1, 20000);
+    const spanWhere = ['team_id=?'];
+    const spanArgs = [teamId];
+    if (cutoff) { spanWhere.push('COALESCE(end_ms, start_ms) >= ?'); spanArgs.push(cutoff); }
+    if (until) { spanWhere.push('start_ms <= ?'); spanArgs.push(until); }
+    const spans = this.get(
+      `SELECT * FROM span WHERE ${spanWhere.join(' AND ')} ORDER BY start_ms DESC LIMIT ?`,
+    ).all(...spanArgs, spanLimit).reverse();
+    // 父节点可能落在更早的一批里（翻页），或干脆被 limit 截断：沿 parent_id 向上补齐祖先，
+    // 保证每一批都能自成一棵完整的树。否则同一批里子节点会被兜底挂到 root 上，和前一批的
+    // 结构对不上，前端合并后会重复渲染。
+    const structural = new Set();
+    {
+      const known = new Set(spans.map((r) => r.span_id));
+      const queue = spans.slice();
+      const extra = [];
+      while (queue.length && extra.length < 2000) {
+        const pid = String(queue.pop().parent_id || '').replace(/^span:/, '');
+        // member:/session: 是虚拟节点（总是全量创建），不需要补
+        if (!pid || known.has(pid) || pid.startsWith('member:') || pid.startsWith('session:')) continue;
+        const parent = this.get('SELECT * FROM span WHERE team_id=? AND span_id=?').get(teamId, pid);
+        if (!parent) continue;
+        known.add(pid);
+        extra.push(parent);
+        queue.push(parent);
+      }
+      // 只为补结构带上来的祖先，不参与 originMs 的计算：否则一个横跨全过程的 agent span
+      // 会把每一批的原点都拽到最早，翻页就一次跳到头、分不出来「还有更早的」了
+      for (const r of extra) structural.add(`span:${r.span_id}`);
+      spans.push(...extra);
+    }
     for (const row of spans) {
       const v = this.spanView(row);
       const sid = v.sessionId ? String(v.sessionId) : null;
@@ -938,7 +968,8 @@ export class DshTeam {
     const sessionIds = [...new Set(spans.map((r) => r.session_id).filter(Boolean))]
       .filter((sid) => !sessionToMember.has(String(sid)));
     for (const sid of sessionIds) {
-      const mine = spans.filter((r) => r.session_id === sid);
+      // 只为补结构带上来的祖先行不算进去：否则会话节点的时间范围会被拽到很早
+      const mine = spans.filter((r) => r.session_id === sid && !structural.has(`span:${r.span_id}`));
       const startMs = Math.min(...mine.map((r) => Number(r.start_ms)));
       const running = mine.some((r) => r.status === 'running');
       const endMs = running ? null : Math.max(...mine.map((r) => (r.end_ms == null ? Number(r.start_ms) : Number(r.end_ms))));
@@ -972,22 +1003,27 @@ export class DshTeam {
     }
     for (const [mid, n] of memberNodes) {
       const kids = n.children;
+      // 补结构用的祖先不参与时间范围：否则成员会被拽到很早，分页原点失效、一次就翻到头
+      const realKids = kids.filter((k) => !structural.has(k.id));
+      // 只剩「补结构」的祖先时，宁可不给范围（下面兜底到原点），也不要把它当成本批的真实跨度
+      const rangeKids = realKids;
       const live = members.find((m) => m.id === mid);
       if (live && live.status !== 'running') {
         for (const k of kids) {
           if (k.status === 'running') { k.status = live.status === 'failed' ? 'failed' : 'done'; if (k.endMs == null) k.endMs = k.startMs; }
         }
       }
-      const starts = kids.map((k) => k.startMs).filter((v) => Number.isFinite(v));
-      const ends = kids.map((k) => k.endMs).filter((v) => Number.isFinite(v));
-      const anyRunning = kids.some((k) => k.status === 'running');
+      const starts = rangeKids.map((k) => k.startMs).filter((v) => Number.isFinite(v));
+      const ends = rangeKids.map((k) => k.endMs).filter((v) => Number.isFinite(v));
+      const anyRunning = rangeKids.some((k) => k.status === 'running');
       n.startMs = starts.length ? Math.min(...starts) : null;
       n.endMs = anyRunning ? null : (ends.length ? Math.max(...ends) : null);
       if (n.startMs == null) { n.startMs = null; n.endMs = null; }
     }
 
     // 6) 相对时间轴 + 根节点
-    const starts = all.map((n) => n.startMs).filter((v) => Number.isFinite(v));
+    const realStarts = all.filter((n) => !structural.has(n.id)).map((n) => n.startMs).filter((v) => Number.isFinite(v));
+    const starts = realStarts.length ? realStarts : all.map((n) => n.startMs).filter((v) => Number.isFinite(v));
     const minStart = starts.length ? Math.min(...starts) : nowMs;
     const originMs = cutoff > 0 ? Math.max(cutoff, Math.min(minStart, nowMs)) : minStart;
     const running = all.some((n) => n.status === 'running');
@@ -1024,9 +1060,15 @@ export class DshTeam {
     };
     const rootSpan = toSpan(root);
     const count = (n) => 1 + n.children.reduce((acc, c) => acc + count(c), 0);
+    // 还有比本批原点更早的记录吗？翻页入口据此决定「还能往前拉」还是「已经到底」。
+    // 用 originMs（已排除补结构用的祖先），不能再用 until：直到最后一批，until 之前总有更早的行
+    const edgeMs = originMs;
+    const hasOlder = !!(this.get('SELECT 1 AS x FROM span WHERE team_id=? AND start_ms < ? LIMIT 1').get(teamId, edgeMs)
+      || this.get('SELECT 1 AS x FROM event WHERE team_id=? AND ts < ? LIMIT 1').get(teamId, new Date(edgeMs).toISOString()));
     return {
       asOf: nowIso(), version: this.scheduler.version(teamId),
       teamId, originMs, now: nowMs, windowMs: windowSize, cutoffMs: cutoff || null,
+      untilMs: until || null, hasOlder,
       root: rootSpan,
       stats: {
         members: members.length, steps: stepMap.size, spans: spans.length,

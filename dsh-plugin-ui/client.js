@@ -26,6 +26,7 @@ window.__ModuleLoader__.load({
         card_open: '展开团队卡片',
         card_close: '收起团队卡片',
         card_stop: '停止团队',
+        card_browser: '在默认浏览器中打开面板',
         card_stop_title: '停止团队：中断所有运行中成员，并把运行中的任务退回待派发',
         card_stop_confirm_title: '停止团队?',
         card_stop_confirm_text: '将中断所有运行中成员，并把运行中的任务退回待派发。',
@@ -65,6 +66,7 @@ window.__ModuleLoader__.load({
         card_open: 'Show team card',
         card_close: 'Hide team card',
         card_stop: 'Stop team',
+        card_browser: 'Open the panel in your browser',
         card_stop_title: 'Stop the team: interrupt running members and return running tasks to the queue',
         card_stop_confirm_title: 'Stop team?',
         card_stop_confirm_text: 'Running members will be interrupted and their running tasks returned to the queue.',
@@ -142,6 +144,8 @@ window.__ModuleLoader__.load({
 .dsht-afc-dock-close:hover { color:var(--dsw-alias-label-primary); border-color:var(--dsw-alias-brand-primary); }
 /* 停止团队：图标按钮与 × 并列在最右；点击只开二次确认弹窗，不直接执行 */
 .dsht-afc-dock-actions { margin-left:auto; display:inline-flex; align-items:center; gap:4px; }
+.dsht-afc-dock-open { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border:1px solid var(--dsw-alias-border-l1); border-radius:6px; background:color-mix(in srgb, var(--dsw-alias-bg-layer-2) 65%, transparent); color:var(--dsw-alias-label-secondary); cursor:pointer; text-decoration:none; }
+.dsht-afc-dock-open:hover { color:var(--dsw-alias-brand-primary); border-color:var(--dsw-alias-brand-primary); }
 .dsht-afc-dock-stop { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border:1px solid var(--dsw-alias-border-l1); border-radius:6px; background:color-mix(in srgb, var(--dsw-alias-bg-layer-2) 65%, transparent); color:var(--dsw-alias-label-secondary); cursor:pointer; }
 .dsht-afc-dock-stop:hover { color:var(--dsw-alias-state-error-primary); border-color:var(--dsw-alias-state-error-primary); }
 .dsht-afc-dock-stop:disabled { cursor:default; opacity:.55; }
@@ -156,7 +160,7 @@ window.__ModuleLoader__.load({
 .dsht-afc-modal-btn:hover { border-color:var(--dsw-alias-brand-primary); }
 .dsht-afc-modal-btn.is-danger { border-color:color-mix(in srgb, var(--dsw-alias-state-error-primary) 55%, transparent); background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent); color:var(--dsw-alias-state-error-primary); }
 .dsht-afc-modal-btn:disabled { opacity:.55; cursor:default; }
-.dsht-afc-dock-card { max-height:var(--dsht-dock-max, calc(100vh - 140px)); overflow:auto; border-radius:12px; }
+.dsht-afc-dock-card { max-height:var(--dsht-dock-max, 80vh); overflow:auto; overscroll-behavior:contain; border-radius:12px; }
 .dsht-afc-dock-card .ui-afc { max-width:none; }
 .dsht-afc-dock-empty { padding:12px 14px; border-radius:10px; background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-secondary); font-size:12px; }
 
@@ -286,6 +290,11 @@ window.__ModuleLoader__.load({
 
     // ---------- 会话右上角：当前会话的运行中成员（点击在右侧栏内嵌该成员对话） ----------
     const SIDECAR_BASE = '/dsh-team-api';
+    /** 独立面板地址：浏览器里直接开 sidecar 自带的 /panel（不经过 Host 代理，可脱离 GUI 用）。 */
+    const PANEL_ORIGIN = 'http://127.0.0.1:4317';
+    function panelBrowserUrl(teamId) {
+      return PANEL_ORIGIN + '/?team=' + encodeURIComponent(teamId || '');
+    }
 
     /** 成员名缓存：agentSessionId → {name, teamId, status}；15s 内复用，避免每次渲染都打 sidecar。 */
     const memberCache = { at: 0, bySession: {}, loading: null };
@@ -1049,19 +1058,23 @@ window.__ModuleLoader__.load({
       const horizontal = rect.right < DOCK_WIDTH + 24
         ? { left: Math.max(12, Math.round(rect.left)) }
         : { right: Math.max(12, Math.round(viewportWidth - rect.right)) };
-      if (viewportHeight && viewportHeight - rect.bottom < 300) {
+      // 成员列表最多占视口 80%，多出来的内容自己滚；上下放不下就挑空间更大的一侧
+      const cap = viewportHeight ? Math.max(200, Math.round(viewportHeight * 0.8)) : null;
+      const below = viewportHeight ? Math.round(viewportHeight - rect.bottom - 24) : 0;
+      const above = Math.round(rect.top - 24);
+      if (viewportHeight && above > below) {
         return {
           placement: 'above',
           ...horizontal,
           bottom: Math.max(12, Math.round(viewportHeight - rect.top + 8)),
-          maxHeight: Math.max(180, Math.round(rect.top - 24)),
+          maxHeight: Math.min(cap, Math.max(200, above)),
         };
       }
       return {
         placement: 'below',
         ...horizontal,
         top: Math.round(rect.bottom + 8),
-        maxHeight: viewportHeight ? Math.max(180, Math.round(viewportHeight - rect.bottom - 24)) : null,
+        maxHeight: cap ? Math.min(cap, Math.max(200, below)) : null,
       };
     }
 
@@ -1166,6 +1179,17 @@ window.__ModuleLoader__.load({
             h('span', {}, t('running_of', { n: card.running, m: card.memberCount })),
             card.error ? h('span', { title: card.error }, '⚠') : null,
             h('span', { className: 'dsht-afc-dock-actions' },
+              // 在系统浏览器里打开独立面板（带上当前团队），方便和 GUI 并排看
+              h('a', {
+                className: 'dsht-afc-dock-open',
+                href: panelBrowserUrl(card.teamId),
+                target: '_blank',
+                rel: 'noopener noreferrer',
+                title: t('card_browser'),
+                'aria-label': t('card_browser'),
+              }, h('svg', { width: 10, height: 10, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': 'true' },
+                h('path', { d: 'M8.1 2.4h3.5v3.5M11.6 2.4 6.7 7.3', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' }),
+                h('path', { d: 'M10.8 8.3v2.3a1 1 0 0 1-1 1H3.6a1 1 0 0 1-1-1V4.4a1 1 0 0 1 1-1h2.3', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' }))),
               h('button', {
                 type: 'button',
                 className: 'dsht-afc-dock-stop',

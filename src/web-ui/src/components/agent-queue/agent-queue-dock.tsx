@@ -1,5 +1,5 @@
 /**
- * 成员队列 —— 顶栏右侧的按钮 + Popover，展示各成员的实时状态。
+ * 计划队列 —— 顶栏右侧的按钮 + Popover，展示执行计划和各成员的实时状态。
  *
  * 数据映射：
  *   workers = 团队成员（头像用模型品牌图标）
@@ -110,8 +110,8 @@ export function AgentQueueDock() {
             size="sm"
             variant="ghost"
             className="gap-1.5 px-2 text-xs"
-            aria-label="成员队列"
-            title="成员队列"
+            aria-label="计划队列"
+            title="计划队列"
           />
         }
       >
@@ -133,7 +133,7 @@ export function AgentQueueDock() {
           <AgentQueue
             jobs={jobs}
             workers={workers}
-            title="成员队列"
+            title="计划队列"
             name={team?.name ?? undefined}
             actions={
               <span className="flex items-center gap-1">
@@ -142,7 +142,7 @@ export function AgentQueueDock() {
                   type="button"
                   onClick={() => setOpen(false)}
                   className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10"
-                  aria-label="收起成员队列"
+                  aria-label="收起计划队列"
                   title="收起（Esc）"
                 >
                   <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
