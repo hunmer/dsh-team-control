@@ -260,7 +260,11 @@ window.__ModuleLoader__.load({
     const sessionTeamStore = (() => {
       const byId = new Map();
       const listeners = new Set();
+      // 最近一次看到的团队也落 sessionStorage：整页刷新后编排页不会先空一屏跳到第一个工作区
+      const LAST_TEAM_KEY = 'dsh-team:last-team';
       let active = null;
+      let lastTeamId = null;
+      try { lastTeamId = window.sessionStorage.getItem(LAST_TEAM_KEY) || null; } catch { /* ignore */ }
       const emit = () => {
         for (const fn of listeners) { try { fn(); } catch { /* 单个订阅出错不影响其他 */ } }
       };
@@ -276,13 +280,24 @@ window.__ModuleLoader__.load({
           if (!sessionId) return;
           const prev = byId.get(sessionId);
           const nextTeam = teamId || null;
-          if (prev && prev.teamId === nextTeam) return;
+          const teamChanged = !prev || prev.teamId !== nextTeam;
+          const lastChanged = !!nextTeam && nextTeam !== lastTeamId;
+          if (lastChanged) {
+            lastTeamId = nextTeam;
+            try { window.sessionStorage.setItem(LAST_TEAM_KEY, nextTeam); } catch { /* ignore */ }
+          }
+          if (!teamChanged && !lastChanged) return;
           byId.set(sessionId, { teamId: nextTeam });
           emit();
         },
         get(sessionId) { return (sessionId && byId.get(sessionId)) || null; },
         subscribe(fn) { listeners.add(fn); return () => { listeners.delete(fn); }; },
-        snapshot() { return { sessionId: active, info: (active && byId.get(active)) || null }; },
+        /**
+         * lastTeamId：最近一次解析到的团队。侧栏还能开「子 agent 聊天」这类没有自己团队的
+         * 页签，它会把 active 切成子会话；这时编排页沿用上一次的团队，而不是空等或跳回
+         * 第一个工作区。
+         */
+        snapshot() { return { sessionId: active, info: (active && byId.get(active)) || null, lastTeamId }; },
       };
     })();
 
@@ -294,13 +309,12 @@ window.__ModuleLoader__.load({
         sync();
         return sessionTeamStore.subscribe(sync);
       }, []);
-      // 知道会话时只认这个会话自己的团队（没有团队就是空，不能退回上一个会话的团队）
-      const teamParam = sessionTeam.sessionId
-        ? ((sessionTeam.info && sessionTeam.info.teamId) || '')
-        : (pendingTeamId || '');
-      // 知道是哪个会话、但团队还没查出来时先不挂 iframe：否则会先用空 team 加载一屏
-      // 别的团队的看板，等查到了再整页重载一次。
-      const waitingTeam = !!sessionTeam.sessionId && !sessionTeam.info;
+      // 当前会话自己的团队优先；没有（子 agent 聊天页签、还没查完）就沿用最近一次的团队，
+      // 再没有才回落到 pendingTeamId。绝不能退回「空 team」——那会让面板跳去第一个工作区。
+      const ownTeam = (sessionTeam.info && sessionTeam.info.teamId) || '';
+      const teamParam = ownTeam || sessionTeam.lastTeamId || pendingTeamId || '';
+      // 一个团队都还不知道、但已经在等查询结果时才显示占位，避免先用空 team 加载一屏再重载。
+      const waitingTeam = !teamParam && !!sessionTeam.sessionId && !sessionTeam.info;
       const frameSrc = '/dsh-team-api/panel?api=/dsh-team-api&embed=1'
         + (teamParam ? '&team=' + encodeURIComponent(teamParam) : '');
       const frameRef = React.useRef(null);
