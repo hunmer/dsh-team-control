@@ -1,8 +1,8 @@
 /**
  * 实时收件箱（coss ui 版，取代 affectui/agent-inbox）。
  *
- * 单区网格：所有成员卡片按「等待中 → 进行中 → 已完成」排序，一行铺多张、按容器宽度自动换列；
- * 卡片由 Card + Badge + Button 组成，动作由 Home 传入。
+ * 瀑布流：所有成员卡片按「等待中 → 进行中 → 已完成」排序后进多列布局，列宽随容器宽度自动
+ * 增减，卡片各按内容高度排列（非等高）；卡片由 Card + Badge + Button 组成，动作由 Home 传入。
  */
 import { useEffect, useState, type ReactNode } from 'react';
 import { CircleCheck, CircleX, FileText, LoaderCircle, Sparkles, TriangleAlert } from 'lucide-react';
@@ -252,13 +252,13 @@ export function AgentInbox({ tasks, onApprove, onReject, onRetry, onOpen, onOpen
           ))}
         </span>
       </div>
-      {/* 一行铺多张卡：按容器实际宽度自动决定列数（最小 15rem 一列），窄屏自动变单列 */}
-      <div className="min-h-0 flex-1 overflow-y-auto pr-0.5">
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(15rem,1fr))] items-start gap-2">
-          {sorted.length ? (
-            sorted.map((task) => (
+      {/* 瀑布流：多列布局（列宽最小 15rem，按容器宽度自动增减），卡片各按自己的内容高度
+          排列、互不拉平；break-inside-avoid 保证一张卡不会被拆到两列。 */}
+      <div className={cn('min-h-0 flex-1 overflow-y-auto pr-0.5', sorted.length && 'columns-[15rem] gap-x-2')}>
+        {sorted.length ? (
+          sorted.map((task) => (
+            <div className="mb-2 break-inside-avoid" key={task.id}>
               <TaskCard
-                key={task.id}
                 onApprove={onApprove}
                 onOpen={onOpen}
                 onOpenArtifact={onOpenArtifact}
@@ -267,11 +267,11 @@ export function AgentInbox({ tasks, onApprove, onReject, onRetry, onOpen, onOpen
                 onRetry={onRetry}
                 task={task}
               />
-            ))
-          ) : (
-            <p className="col-span-full rounded-lg border border-dashed px-2 py-4 text-center text-muted-foreground text-xs">暂无</p>
-          )}
-        </div>
+            </div>
+          ))
+        ) : (
+          <p className="rounded-lg border border-dashed px-2 py-4 text-center text-muted-foreground text-xs">暂无</p>
+        )}
       </div>
     </div>
   );
