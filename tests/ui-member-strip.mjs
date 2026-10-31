@@ -31,6 +31,7 @@ const React = {
       },
     ];
   },
+  useRef: (initial) => ({ current: initial }),
   useEffect: (fn) => {
     fn();
   },
@@ -90,6 +91,7 @@ const TODOS = {
 };
 let definition;
 const requested = [];
+const calls = [];
 let serveStatus = true;
 // 假 document：ensureStyles() 应把「全局唯一一份」样式挂到 head（不在组件树里）
 const headChildren = [];
@@ -109,8 +111,12 @@ const sandbox = {
       : null),
   },
   console,
-  fetch: async (url) => {
+  fetch: async (url, opts) => {
     requested.push(url);
+    if (String(url).includes('/stop')) {
+      calls.push({ url: String(url), method: (opts && opts.method) || 'GET', body: opts && opts.body });
+      return { ok: true, status: 200, json: async () => ({ item: { id: TEAM.id } }) };
+    }
     if (url.endsWith('/status') && !serveStatus) return { ok: false, status: 503, json: async () => ({}) };
     const body = url.endsWith('/status')
       ? STATUS
@@ -275,6 +281,24 @@ assert.equal(textOf(byClass(m5Row, 'ui-afc__count')[0]), '1/3', '进度按步骤
 assert.equal(textOf(byClass(m5Row, 'ui-afc__step')[0]), '写评语', '行内显示当前步骤');
 assert.match(byClass(m5Row, 'ui-afc__fill')[0].props.style.width, /^33\.33+%$/, '进度条按 1/3 填充');
 
+// --- 两行布局：第一行 状态圆点 + 图标 + 名称 + 消息图标；第二行 当前任务（单行截断）+ 进度 + 完成比 ---
+assert.equal(byClass(m5Row, 'ui-afc__dot').length, 1, '成员行有状态圆点');
+assert.equal(byClass(m5Row, 'ui-afc__task').length, 1, '任务信息落在第二行容器');
+const taskLine = byClass(m5Row, 'ui-afc__task')[0];
+for (const cls of ['ui-afc__step', 'ui-afc__track', 'ui-afc__count']) {
+  assert.equal(byClass(taskLine, cls).length, 1, '第二行包含 ' + cls);
+}
+const topLineClasses = m5Row.children.map((c) => (c && c.props && c.props.className) || '');
+assert.deepEqual(topLineClasses, ['ui-afc__dot', 'ui-afc__avatar', 'ui-afc__who', 'ui-afc__chat', 'ui-afc__task'],
+  '第一行圆点/图标/名称/消息图标，第二行任务');
+// 卡片宽度收窄时也不能回退成 affectui 的单行网格：追加样式覆盖了容器查询
+assert.ok(headChildren[0].textContent.includes('.ui-afc__dot'), '样式里含状态圆点规则');
+assert.ok(headChildren[0].textContent.includes('grid-template-areas:"dot avatar who chat"'), '两行网格在追加样式里');
+assert.ok(headChildren[0].textContent.includes('.ui-afc__agent .ui-afc__step{grid-area:auto;min-width:0'), '任务行覆盖旧 grid-area');
+// 图标列宽度贴合内容（logo 只有 14px），不能留 24px 空列；头像也不再加灰底
+assert.ok(headChildren[0].textContent.includes('grid-template-columns:8px auto minmax(0,1fr) auto'), '图标列按内容收缩');
+assert.ok(!/\.ui-afc__avatar\s*\{[^}]*background/.test(headChildren[0].textContent), '头像不再有背景色');
+
 // --- 计划清单常驻展开（不点选、无折叠），成员行不可点 ---
 assert.equal(typeof m5Row.props.onClick, 'undefined', '成员行不再可点选（计划常驻展开）');
 assert.equal(m5Row.props['aria-pressed'], undefined, '成员行不再是折叠按钮');
@@ -301,6 +325,43 @@ assert.equal(opened.length, 1, '点「查看对话」调用 sidebarRight.openRes
 assert.equal(opened[0].opts.kind, 'subagentchat', '按子会话聊天面板打开');
 assert.match(opened[0].url, /c5/, '打开的是该成员自己的会话');
 assert.ok(headChildren[0].textContent.includes('.ui-afc__chat'), '样式里有对话按钮规则');
+assert.ok(/\.dsht-afc-modal \{[^}]*position:fixed/.test(headChildren[0].textContent), '停止确认弹窗是固定定位遮罩');
+assert.ok(/\.dsht-afc-dock-stop \{[^}]*width:20px/.test(headChildren[0].textContent), '停止按钮是 20×20 图标按钮');
+
+// --- 停止团队：图标按钮在最右、点击弹二次确认弹窗；弹窗里点「停止」才 POST /api/teams/{id}/stop ---
+const stopBtn = byClass(card, 'dsht-afc-dock-stop')[0];
+assert.ok(stopBtn, '停靠栏有「停止团队」图标按钮');
+assert.equal(textOf(stopBtn), '', '按钮只有图标，没有文字');
+assert.ok(byClass(stopBtn, 'svg').length >= 0 && stopBtn.children.length === 1, '图标按钮内含一个 SVG');
+const actions = byClass(card, 'dsht-afc-dock-actions')[0];
+assert.deepEqual(actions.children.map((c) => c.props.className), ['dsht-afc-dock-stop', 'dsht-afc-dock-close'],
+  '停止图标与 × 并排、都在最右侧');
+assert.equal(stopBtn.props.disabled, false, '有成员在跑时可停止');
+stopBtn.props.onClick();
+const modal = byClass(dock.component({}), 'dsht-afc-modal')[0];
+assert.ok(modal, '点击图标弹出二次确认弹窗');
+assert.ok(textOf(modal).includes('停止团队?'), '弹窗标题');
+assert.ok(textOf(modal).includes('将中断所有运行中成员'), '弹窗说明会中断成员');
+assert.equal(calls.length, 0, '弹窗确认前不发请求');
+// 取消：弹窗关闭、不发请求
+const modalBtns = () => byClass(dock.component({}), 'dsht-afc-modal-btn');
+modalBtns()[0].props.onClick();
+assert.equal(byClass(dock.component({}), 'dsht-afc-modal').length, 0, '取消后弹窗关闭');
+assert.equal(calls.length, 0, '取消不发请求');
+// 再来一次：点危险按钮才真正停止
+byClass(dock.component({}), 'dsht-afc-dock-stop')[0].props.onClick();
+const okBtn = modalBtns()[1];
+assert.match(okBtn.props.className, /is-danger/, '确认按钮是危险样式');
+okBtn.props.onClick();
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(calls.length, 1, '弹窗确认后发出停止请求');
+assert.match(calls[0].url, /\/api\/teams\/team_t1\/stop$/, '打到团队的 stop 路由');
+assert.equal(calls[0].method, 'POST', '用 POST');
+assert.match(String(calls[0].body), /reason/, '带停止原因');
+assert.equal(byClass(dock.component({}), 'dsht-afc-modal').length, 0, '成功后弹窗自动关闭');
+const doneBtn = byClass(dock.component({}), 'dsht-afc-dock-stop')[0];
+assert.equal(doneBtn.props.disabled, true, '已停止后按钮短暂禁用');
+assert.equal(doneBtn.props.title, '已停止', 'tooltip 提示已停止');
 
 // --- 收起后再渲染：pill 变窄，浮层不渲染 ---
 pill.props.onClick();

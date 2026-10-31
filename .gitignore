@@ -19,8 +19,8 @@ src/web-ui/.tmp-build/
 .tmp-token
 # 面板构建产物：只提交 panel.html 当前引用的那两份，旧 hash 的构建忽略
 src/web/assets/*
-!src/web/assets/app-Ug3Xz1nB.js
-!src/web/assets/panel-CZOJAlre.css
+!src/web/assets/app-NH2I6mvb.js
+!src/web/assets/panel-CUqmeZEw.css
 
 # 端到端建团测试的产物目录（team_create 的 workspace，如 team-e2e-1030/）
 # 约定：测试产物一律落在 team-e2e-*/ 下，不进版本库

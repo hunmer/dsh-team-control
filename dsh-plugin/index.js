@@ -153,7 +153,9 @@ async function request(s, pathname, { method = 'GET', body, raw = false } = {}) 
   if (!res.ok) {
     let detail = text.slice(0, 400);
     try { const j = JSON.parse(text); detail = `${j.error?.code || ''} ${j.error?.message || ''}`.trim() || detail; } catch { /* keep text */ }
-    throw new Error(`dsh-team API ${res.status} on ${method} ${pathname}: ${detail}`);
+    const err = new Error(`dsh-team API ${res.status} on ${method} ${pathname}: ${detail}`);
+    err.status = res.status; // 调用方据此区分「团队不存在(404)」与服务/网络侧故障
+    throw err;
   }
   if (raw) return text;
   try { return JSON.parse(text); } catch { return text; }
@@ -529,6 +531,56 @@ const llmOf = (ctx) => { try { return ctx.get('llm'); } catch { return undefined
 
 let llmSyncInFlight = null;
 
+/**
+ * 一条 route 的思考强度元数据（适配器声明）：数组 = 已知（可能为空），undefined = 取不到。
+ * resolveModel 对 pi-ai 是内存目录查询；对其他适配器可能触网，所以并发受限 + 超时兜底，
+ * 取不到就不上报（sidecar 保留上一次的值），不让 effort 能力拖垮整个目录同步。
+ */
+async function effortsOfRoute(llm, provider, model) {
+  // llm 服务暴露的是 resolveModelInfo（带校验的精确模型元数据）；resolveModel 是适配器基类方法，
+  // 部分环境/旧版本才直接挂在服务上。两个都试，优先服务公开面。
+  const resolve = typeof llm.resolveModelInfo === 'function'
+    ? (p, m, signal) => llm.resolveModelInfo(p, m, signal)
+    : typeof llm.resolveModel === 'function'
+      ? (p, m, signal) => llm.resolveModel(p, m, signal)
+      : null;
+  if (!resolve) return undefined;
+  const call = Promise.resolve()
+    .then(() => resolve(provider, model, AbortSignal.timeout(3000)))
+    .catch(() => undefined);
+  const info = await Promise.race([
+    call,
+    new Promise((resolve) => setTimeout(() => resolve(undefined), 3000)),
+  ]);
+  const reasoning = info && info.reasoning;
+  if (!reasoning || !Array.isArray(reasoning.efforts)) return undefined;
+  // 「off」等于关思考，不是可派发的强度：既不进面板胶囊，也不进 team_models，
+  // 否则用户能「允许派发 off」而实际语义相反。
+  const efforts = reasoning.efforts
+    .filter((e) => e && e.id && String(e.id) !== 'off')
+    .map((e) => ({ id: String(e.id), name: String(e.name || e.id), ...(e.description ? { description: String(e.description) } : {}) }));
+  if (!efforts.length) return undefined;
+  const defaultEffort = reasoning.defaultEffort ? String(reasoning.defaultEffort) : null;
+  return {
+    efforts,
+    defaultEffort: defaultEffort && defaultEffort !== 'off' && efforts.some((e) => e.id === defaultEffort) ? defaultEffort : null,
+  };
+}
+
+/** 小并发 map：effort 解析最多同时 4 条，避免一次同步打爆适配器。 */
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
 /** 同步一次模型目录（并发去重；由插件启动泵与 adapters-updated 事件驱动，不再由工具触发）。 */
 async function syncLlmCatalog(s, ctx) {
   const llm = llmOf(ctx);
@@ -548,13 +600,17 @@ async function syncLlmCatalog(s, ctx) {
     let partial = false;
     for (const p of providers) {
       try {
-        for (const m of await llm.listModels(p.id)) {
-          if (!m || !m.id) continue;
-          models.push({
+        const listed = await llm.listModels(p.id);
+        const withEfforts = await mapLimit(listed, 4, async (m) => {
+          if (!m || !m.id) return null;
+          const meta = await effortsOfRoute(llm, p.id, String(m.id));
+          return {
             provider: p.id, model: String(m.id), name: m.name || String(m.id),
             description: m.description || null, modalities: m.inputModalities || null,
-          });
-        }
+            ...(meta ? { efforts: meta.efforts, ...(meta.defaultEffort ? { defaultEffort: meta.defaultEffort } : {}) } : {}),
+          };
+        });
+        for (const row of withEfforts) if (row) models.push(row);
       } catch (e) {
         // 单个提供商读取失败：标记 partial，让 sidecar 保留该 provider 已有的勾选
         p.error = clip(String(e?.message || e), 300);
@@ -581,8 +637,8 @@ function leadRouteOf(caller) {
   return { provider: o.provider ?? null, model: o.model ?? null, reasoningEffort: o.reasoningEffort ?? null };
 }
 
-/** 指定 route 必须在用户启用的子集里；目录尚未同步（为空）时不限制，保持向后兼容。 */
-async function assertRouteEnabled(s, ctx, provider, model) {
+/** 指定 route 必须在用户启用的子集里，且 effort 在该 route 允许的集合里；目录尚未同步（为空）时不限制。 */
+async function assertRouteEnabled(s, ctx, provider, model, effort = null) {
   if (!provider && !model) return;
   let cat;
   try { cat = await request(s, '/api/llm/catalog'); } catch { return; }
@@ -594,9 +650,22 @@ async function assertRouteEnabled(s, ctx, provider, model) {
   if (!known.length) return;
   const enabled = all.filter((m) => m.enabled);
   if (!enabled.length) throw new Error('所有模型路由都已停用：请先在面板「模型路由」页启用，或调用 team_models 查看。');
-  if (known.some((m) => m.enabled)) return;
-  const sample = enabled.slice(0, 8).map((m) => `${m.provider}/${m.model}`).join(', ');
-  throw new Error(`模型路由未启用：${[provider, model].filter(Boolean).join('/')}。可用（前 8 条）：${sample}。完整列表见 team_models，或在面板「模型路由」页启用。`);
+  if (!known.some((m) => m.enabled)) {
+    const sample = enabled.slice(0, 8).map((m) => `${m.provider}/${m.model}`).join(', ');
+    throw new Error(`模型路由未启用：${[provider, model].filter(Boolean).join('/')}。可用（前 8 条）：${sample}。完整列表见 team_models，或在面板「模型路由」页启用。`);
+  }
+  // effort 闸门：只有该 route 声明了 efforts 才校验；allowedEfforts=null 表示全部允许。
+  if (!effort) return;
+  const declared = known.filter((m) => Array.isArray(m.efforts) && m.efforts.length > 0);
+  if (!declared.length) return;
+  const ids = [...new Set(declared.flatMap((m) => m.efforts.map((e) => e.id)))];
+  const allowed = [...new Set(declared.flatMap((m) => (Array.isArray(m.allowedEfforts) ? m.allowedEfforts : ids)))];
+  if (!ids.includes(String(effort))) {
+    throw new Error(`模型路由 ${[provider, model].filter(Boolean).join('/')} 不支持 reasoningEffort「${effort}」：可用 ${ids.join(', ')}。`);
+  }
+  if (!allowed.includes(String(effort))) {
+    throw new Error(`模型路由 ${[provider, model].filter(Boolean).join('/')} 已禁止 reasoningEffort「${effort}」：面板「模型路由」页允许的为 ${allowed.join(', ') || '（无，省略该参数使用模型默认）'}。`);
+  }
 }
 
 function rememberMember(sessionId, teamId, memberId, cwd) {
@@ -609,13 +678,26 @@ function rememberMember(sessionId, teamId, memberId, cwd) {
 }
 
 async function runtimeOfTeam(s, teamId) {
-  const cached = runtimeByTeam.get(teamId);
+  // 模型偶尔会漏掉必填的 teamId。旧实现会把 undefined 拼进 URL（/api/teams/undefined），
+  // 再被下面的 catch 静默回退成 worker，于是错误被拖到 POST /api/teams/undefined/members
+  // 才爆成「team not found」，看不出真正原因是参数缺失。这里先显式挡住。
+  if (teamId == null || String(teamId).trim() === '' || String(teamId) === 'undefined' || String(teamId) === 'null') {
+    throw new Error('缺少 teamId：请把 team_create 返回的团队 id（形如 team_xxx）作为 teamId 参数传入后重试。');
+  }
+  const key = String(teamId);
+  const cached = runtimeByTeam.get(key);
   if (cached) return cached;
   try {
-    const team = await request(s, `/api/teams/${encodeURIComponent(teamId)}`);
-    runtimeByTeam.set(teamId, team.runtime || 'worker');
+    const team = await request(s, `/api/teams/${encodeURIComponent(key)}`);
+    runtimeByTeam.set(key, team.runtime || 'worker');
     return team.runtime || 'worker';
-  } catch { return 'worker'; }
+  } catch (err) {
+    // 404 = 团队不存在（id 打错/已删除）：明确报错，不能伪装成 worker 团队继续往下走。
+    if (err && err.status === 404) {
+      throw new Error(`团队不存在或 teamId 无效: ${key}（teamId 来自 team_create 返回值，请核对后重试）`);
+    }
+    return 'worker'; // sidecar 不可达等其余情况保留原兜底，后续调用会报出真实错误
+  }
 }
 
 const clip = (text, max) => {
@@ -1033,8 +1115,8 @@ function buildTools(s, ctx) {
       const route = { provider: args.agentProvider || leadRoute.provider, model: args.model || leadRoute.model };
       const routeChanged = route.provider !== leadRoute.provider || route.model !== leadRoute.model;
       route.reasoningEffort = args.reasoningEffort || (routeChanged ? null : leadRoute.reasoningEffort);
-      // 继承 Lead 的 route 也要过启用闸门：停用项不该被成员继续使用。
-      await assertRouteEnabled(s, ctx, route.provider, route.model);
+      // 继承 Lead 的 route 也要过启用闸门：停用项不该被成员继续使用；effort 同理。
+      await assertRouteEnabled(s, ctx, route.provider, route.model, route.reasoningEffort);
       const agentOptions = {};
       if (args.agentProvider) agentOptions.provider = String(args.agentProvider);
       if (args.model) agentOptions.model = String(args.model);
@@ -1069,6 +1151,8 @@ function buildTools(s, ctx) {
           role: args.role || 'teammate',
           model: args.model || spawned.member.model || null,
           contextMode: context,
+          // 实际生效的思考强度（含从 Lead 继承的值）：面板成员卡片据此展示，之后不可变
+          reasoningEffort: route.reasoningEffort || null,
         },
       });
       rememberMember(sessionId, args.teamId, registered.member.id, team?.workspace);
@@ -1099,22 +1183,28 @@ function buildTools(s, ctx) {
       additionalProperties: false,
       properties: {},
     },
-    output: jsonOutput('{ asOf, total, models: [{ provider, model, name, description, note, modalities }], hint? }'),
+    output: jsonOutput('{ asOf, total, models: [{ provider, model, name, description, note, modalities, efforts?, defaultEffort? }], hint? }'),
     isConcurrencySafe: () => true,
     async execute() {
       let cat = null;
       try { cat = await request(s, '/api/llm/catalog'); } catch { /* catalog unavailable */ }
       const all = cat ? (cat.providers || []).flatMap((p) => p.models || []) : [];
-      const models = all.filter((m) => m.enabled).map((m) => ({
-        provider: m.provider,
-        model: m.model,
-        name: m.name,
-        ...(m.description ? { description: m.description } : {}),
-        ...(m.note ? { note: m.note } : {}),
-        ...(m.modalities ? { modalities: m.modalities } : {}),
-      }));
+      const models = all.filter((m) => m.enabled).map((m) => {
+        // 只报用户允许的 effort；allowedEfforts=null 表示全部允许。未声明 efforts 的 route 不报该字段。
+        const effortIds = Array.isArray(m.efforts) ? m.efforts.map((e) => e.id) : [];
+        const allowed = Array.isArray(m.allowedEfforts) ? effortIds.filter((id) => m.allowedEfforts.includes(id)) : effortIds;
+        return {
+          provider: m.provider,
+          model: m.model,
+          name: m.name,
+          ...(m.description ? { description: m.description } : {}),
+          ...(m.note ? { note: m.note } : {}),
+          ...(m.modalities ? { modalities: m.modalities } : {}),
+          ...(effortIds.length ? { efforts: allowed, ...(m.defaultEffort ? { defaultEffort: m.defaultEffort } : {}) } : {}),
+        };
+      });
       const hint = models.length
-        ? '在 team_spawn 里用 agentProvider + model；reasoningEffort 由模型适配器定义，省略时只在 route 不变时继承 Lead 的 effort。'
+        ? '在 team_spawn 里用 agentProvider + model；efforts 是该 route 允许派发的 reasoningEffort 列表（省略时只在 route 不变时继承 Lead 的 effort，被禁止的 effort 会被拒绝）。'
         : '没有启用的模型路由：请让用户在面板「模型路由」页勾选需要的 provider/model。';
       return {
         asOf: cat?.asOf || new Date().toISOString(),
@@ -1152,6 +1242,8 @@ function buildTools(s, ctx) {
         runtime: st.runtime || runtimeByTeam.get(args.teamId) || 'worker',
         members: (st.members || []).map((m) => ({
           name: m.name,
+          model: m.model || null,
+          reasoningEffort: m.reasoningEffort || null,
           status: m.status,
           step: m.step,
           seq: m.seq,

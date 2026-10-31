@@ -11,6 +11,29 @@ const clip = (v, max) => {
   return s ? s.slice(0, max) : null;
 };
 
+/** 适配器声明的 effort 列表 → 去重后的 [{id,name,description?}]（顺序即适配器的强弱顺序）。 */
+const normalizeEfforts = (list) => {
+  const out = [];
+  const seen = new Set();
+  for (const e of Array.isArray(list) ? list : []) {
+    if (!e || typeof e !== 'object') continue;
+    const id = clip(e.id, 64);
+    // 「off」是关思考而非可派发强度：插件已过滤，这里再兜一层防止旧数据/其他来源写进来。
+    if (!id || id === 'off' || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, name: clip(e.name, 120) || id, ...(e.description ? { description: clip(e.description, 300) } : {}) });
+  }
+  return out;
+};
+const parseEfforts = (json) => {
+  if (!json) return null;
+  try { const v = JSON.parse(json); return Array.isArray(v) ? normalizeEfforts(v) : null; } catch { return null; }
+};
+const parseAllowed = (json) => {
+  if (!json) return null;
+  try { const v = JSON.parse(json); return Array.isArray(v) ? [...new Set(v.map(String))].filter((id) => id !== 'off') : null; } catch { return null; }
+};
+
 export class LlmCatalog {
   constructor(db, get) {
     this.db = db;
@@ -47,17 +70,35 @@ export class LlmCatalog {
         const provider = String(m.provider);
         const model = String(m.model);
         keepM.add(provider + '\u0000' + model);
+        // 适配器声明的 effort：数组 = 本次已知（可为空数组），undefined = 本次没取到 → 保留旧值。
+        const efforts = Array.isArray(m.efforts) ? normalizeEfforts(m.efforts) : null;
+        const prev = this.get('SELECT efforts_json, default_effort, allowed_efforts_json FROM llm_route WHERE provider=? AND model=?').get(provider, model);
+        const knownEfforts = efforts === null ? parseEfforts(prev?.efforts_json) : efforts;
+        const defaultEffort = m.defaultEffort ? String(m.defaultEffort) : (efforts === null ? (prev?.default_effort || null) : null);
+        // 用户允许的子集随 effort 列表收缩；列表全允许时折回 NULL，减少无意义差异。
+        let allowed = parseAllowed(prev?.allowed_efforts_json);
+        if (allowed !== null && knownEfforts) {
+          const ids = new Set(knownEfforts.map((e) => e.id));
+          allowed = allowed.filter((id) => ids.has(id));
+          if (allowed.length === knownEfforts.length) allowed = null;
+        }
         this.get(
-          `INSERT INTO llm_route (provider, model, name, description, modalities_json, context_window, source, enabled, note, synced_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,1,NULL,?,?)
+          `INSERT INTO llm_route (provider, model, name, description, modalities_json, context_window, source, efforts_json, default_effort, allowed_efforts_json, enabled, note, synced_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,1,NULL,?,?)
            ON CONFLICT(provider, model) DO UPDATE SET name=excluded.name, description=excluded.description,
              modalities_json=excluded.modalities_json, context_window=excluded.context_window,
-             source=excluded.source, synced_at=excluded.synced_at, updated_at=excluded.updated_at`
+             source=excluded.source, efforts_json=excluded.efforts_json, default_effort=excluded.default_effort,
+             allowed_efforts_json=excluded.allowed_efforts_json,
+             synced_at=excluded.synced_at, updated_at=excluded.updated_at`
         ).run(
           provider, model, clip(m.name, 200) || model, clip(m.description, 1000),
           m.modalities ? JSON.stringify(m.modalities) : null,
           Number.isFinite(Number(m.contextWindow)) ? Number(m.contextWindow) : null,
-          m.source === 'dormant' ? 'dormant' : 'live', t, t,
+          m.source === 'dormant' ? 'dormant' : 'live',
+          efforts === null ? (prev?.efforts_json ?? null) : JSON.stringify(efforts),
+          defaultEffort,
+          allowed === null ? null : JSON.stringify(allowed),
+          t, t,
         );
       }
       for (const row of this.get('SELECT provider, model FROM llm_route').all()) {
@@ -97,6 +138,10 @@ export class LlmCatalog {
       source: r.source,
       enabled: Number(r.enabled) === 1,
       note: r.note || null,
+      // 适配器声明的思考强度（null = 未知/不支持）；allowedEfforts = null 表示全部允许
+      efforts: parseEfforts(r.efforts_json),
+      defaultEffort: r.default_effort || null,
+      allowedEfforts: parseAllowed(r.allowed_efforts_json),
     };
   }
 
@@ -128,12 +173,18 @@ export class LlmCatalog {
     return r ? this.rowToModel(r) : null;
   }
 
-  /** 勾选启用 / 写注释（面板调用）；未知 route 404，避免静默写丢。 */
-  setRoute(provider, model, { enabled, note } = {}) {
+  /**
+   * 勾选启用 / 写注释 / 限定可派发的 effort 子集（面板调用）；未知 route 404，避免静默写丢。
+   * allowedEfforts：字符串数组，null = 全部允许；只接受该 route 已声明的 effort id。
+   */
+  setRoute(provider, model, { enabled, note, allowedEfforts } = {}) {
     const row = this.getRoute(provider, model);
     if (!row) throw ERR.notFound('llm route');
     if (enabled !== undefined && typeof enabled !== 'boolean') throw ERR.bad('enabled must be boolean');
     if (note !== undefined && note !== null && typeof note !== 'string') throw ERR.bad('note must be string');
+    if (allowedEfforts !== undefined && allowedEfforts !== null && !Array.isArray(allowedEfforts)) {
+      throw ERR.bad('allowedEfforts must be an array of effort ids or null');
+    }
     if (enabled !== undefined) {
       this.get('UPDATE llm_route SET enabled=?, updated_at=? WHERE provider=? AND model=?')
         .run(enabled ? 1 : 0, nowIso(), row.provider, row.model);
@@ -141,6 +192,17 @@ export class LlmCatalog {
     if (note !== undefined) {
       this.get('UPDATE llm_route SET note=?, updated_at=? WHERE provider=? AND model=?')
         .run(clip(note, 240), nowIso(), row.provider, row.model);
+    }
+    if (allowedEfforts !== undefined) {
+      const declared = (row.efforts || []).map((e) => e.id);
+      if (!declared.length) throw ERR.bad('该 route 未声明 reasoning effort，无法设置 effort 开关');
+      let next = allowedEfforts === null ? null : [...new Set(allowedEfforts.map(String))];
+      if (next) {
+        for (const id of next) if (!declared.includes(id)) throw ERR.bad(`未知 effort: ${id}（可用：${declared.join(', ')}）`);
+        if (next.length === declared.length) next = null; // 全选等价于不限
+      }
+      this.get('UPDATE llm_route SET allowed_efforts_json=?, updated_at=? WHERE provider=? AND model=?')
+        .run(next === null ? null : JSON.stringify(next), nowIso(), row.provider, row.model);
     }
     return this.getRoute(row.provider, row.model);
   }

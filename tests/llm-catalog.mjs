@@ -24,7 +24,7 @@ try {
     ],
     models: [
       { provider: 'deepseek', model: 'deepseek-chat', name: 'DeepSeek Chat', description: 'fast', modalities: ['text', 'image'] },
-      { provider: 'deepseek', model: 'deepseek-reasoner', name: 'DeepSeek Reasoner' },
+      { provider: 'deepseek', model: 'deepseek-reasoner', name: 'DeepSeek Reasoner', efforts: [{ id: 'off', name: 'Off' }, { id: 'low', name: 'Low' }, { id: 'medium', name: 'Medium' }, { id: 'high', name: 'High', description: '深推理' }], defaultEffort: 'medium' },
       { provider: 'openai', model: 'gpt-5', name: 'GPT-5' },
     ],
   });
@@ -49,6 +49,42 @@ try {
   assert(!list.items.some((m) => m.model === 'deepseek-chat'), '停用项必须隐藏');
   const all = await s.api.get('/api/llm/models?all=1');
   assertEqual(all.total, 3, 'all=1 返回全部');
+
+  // reasoning effort 元数据与「允许派发的子集」
+  cat = await s.api.get('/api/llm/catalog');
+  const reasoner0 = cat.providers.flatMap((p) => p.models).find((m) => m.model === 'deepseek-reasoner');
+  assertEqual(reasoner0.efforts.map((e) => e.id).join(','), 'low,medium,high', 'efforts 按声明顺序落库');
+  assertEqual(reasoner0.efforts[2].description, '深推理', 'effort description 保留');
+  assertEqual(reasoner0.defaultEffort, 'medium', 'defaultEffort 落库');
+  assertEqual(reasoner0.allowedEfforts, null, '默认 allowedEfforts=null（不限）');
+
+  const narrowed = await s.api.patch('/api/llm/routes', { provider: 'deepseek', model: 'deepseek-reasoner', allowedEfforts: ['low', 'high'] });
+  assertEqual(narrowed.allowedEfforts.join(','), 'low,high', 'allowedEfforts 写入');
+  const folded = await s.api.patch('/api/llm/routes', { provider: 'deepseek', model: 'deepseek-reasoner', allowedEfforts: ['low', 'medium', 'high'] });
+  assertEqual(folded.allowedEfforts, null, '全选折回 null（不限）');
+
+  const rejectsPatch = async (body, status, label) => {
+    let err = null;
+    try { await s.api.patch('/api/llm/routes', body); } catch (e) { err = e; }
+    assert(err && err.status === status, `${label}: expected ${status}, got ${err ? err.status : 'no error'}`);
+  };
+  await rejectsPatch({ provider: 'deepseek', model: 'deepseek-reasoner', allowedEfforts: ['ultra'] }, 400, '未知 effort');
+  await rejectsPatch({ provider: 'deepseek', model: 'deepseek-chat', allowedEfforts: ['low'] }, 400, '未声明 effort 的 route 不能设 allowedEfforts');
+  await s.api.patch('/api/llm/routes', { provider: 'deepseek', model: 'deepseek-reasoner', allowedEfforts: ['high'] });
+
+  // 重新同步：声明没变时保留 allowedEfforts；声明里没有的 id 自动剔除
+  await s.api.post('/api/llm/catalog', {
+    providers: [{ id: 'deepseek', name: 'DeepSeek' }],
+    models: [{
+      provider: 'deepseek', model: 'deepseek-reasoner', name: 'DeepSeek Reasoner',
+      efforts: [{ id: 'high', name: 'High' }, { id: 'xhigh', name: 'Extra High' }], defaultEffort: 'high',
+    }],
+    partial: true,
+  });
+  cat = await s.api.get('/api/llm/catalog');
+  const reasoner1 = cat.providers.flatMap((p) => p.models).find((m) => m.model === 'deepseek-reasoner');
+  assertEqual(reasoner1.allowedEfforts.join(','), 'high', '重同步保留 allowedEfforts 并与新声明求交');
+  assertEqual(reasoner1.defaultEffort, 'high', 'defaultEffort 跟着声明更新');
 
   // 再次同步：保留 enabled/note，更新元数据，删除快照里消失的 route
   await s.api.post('/api/llm/catalog', {

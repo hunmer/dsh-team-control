@@ -94,6 +94,11 @@ try {
   const dep = (await hit('POST /api/deps (cycle 应 400)', 'POST', '/api/deps', { from: b.id, to: a.id }, 400));
   assert(dep.json.error.code === 'E_CYCLE', '反向依赖必须报 E_CYCLE');
   await hit('GET /api/status', 'GET', `/api/status?team=${team.id}`);
+  // 停止团队：把 running/provisioning/blocked 成员中断，并把 running 任务退回 ready
+  const stopped = (await hit('POST /api/teams/{id}/stop', 'POST', `/api/teams/${team.id}/stop`, { reason: 'smoke' })).json;
+  assert(Array.isArray(stopped.stopped), 'stop 返回被中断的成员列表');
+  assert(stopped.id === team.id, 'stop 返回团队视图');
+  await hit('POST /api/teams/{id}/stop 已停止再停', 'POST', `/api/teams/${team.id}/stop`, {});
   await hit('GET /api/steps', 'GET', `/api/steps?member=${m1.id}`);
   await hit('GET /api/blockers', 'GET', `/api/blockers?team=${team.id}`);
   await hit('GET /api/metrics', 'GET', `/api/metrics?team=${team.id}`);

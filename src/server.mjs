@@ -183,7 +183,7 @@ export function createRoutes(core) {
     }],
     ['PATCH', /^\/api\/llm\/routes$/, async (ctx) => C.llm.setRoute(
       need(ctx.body.provider, 'provider'), need(ctx.body.model, 'model'),
-      { enabled: ctx.body.enabled, note: ctx.body.note },
+      { enabled: ctx.body.enabled, note: ctx.body.note, allowedEfforts: ctx.body.allowedEfforts },
     )],
 
     // audit / report

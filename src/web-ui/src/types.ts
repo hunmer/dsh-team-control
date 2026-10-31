@@ -16,6 +16,8 @@ export interface Member {
   name?: string;
   role?: string;
   model?: string;
+  /** 派发时确定的思考强度（agent 成员才有，worker 为 null；之后不随任务变化） */
+  reasoningEffort?: string | null;
   status: MemberStatus;
   step?: string;
   seq?: number;

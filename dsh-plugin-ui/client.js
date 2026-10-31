@@ -25,6 +25,14 @@ window.__ModuleLoader__.load({
         // ---- 右上角团队卡片（affectui AgentFindings 移植）----
         card_open: '展开团队卡片',
         card_close: '收起团队卡片',
+        card_stop: '停止团队',
+        card_stop_title: '停止团队：中断所有运行中成员，并把运行中的任务退回待派发',
+        card_stop_confirm_title: '停止团队?',
+        card_stop_confirm_text: '将中断所有运行中成员，并把运行中的任务退回待派发。',
+        card_stop_confirm: '停止',
+        card_cancel: '取消',
+        card_stop_running: '停止中…',
+        card_stop_done: '已停止',
         card_title: '团队校验',
         sev_critical: '严重',
         sev_warning: '警告',
@@ -56,6 +64,14 @@ window.__ModuleLoader__.load({
         members_running_count: '{n} running',
         card_open: 'Show team card',
         card_close: 'Hide team card',
+        card_stop: 'Stop team',
+        card_stop_title: 'Stop the team: interrupt running members and return running tasks to the queue',
+        card_stop_confirm_title: 'Stop team?',
+        card_stop_confirm_text: 'Running members will be interrupted and their running tasks returned to the queue.',
+        card_stop_confirm: 'Stop',
+        card_cancel: 'Cancel',
+        card_stop_running: 'Stopping…',
+        card_stop_done: 'Stopped',
         card_title: 'Team verification',
         sev_critical: 'critical',
         sev_warning: 'warning',
@@ -122,8 +138,24 @@ window.__ModuleLoader__.load({
 .dsht-afc-dock { position:fixed; top:56px; right:20px; width:368px; max-width:calc(100vw - 40px); z-index:80; pointer-events:auto; display:flex; flex-direction:column; gap:6px; }
 .dsht-afc-dock-bar { display:flex; align-items:center; gap:6px; padding:4px 8px; border-radius:9px; font-size:11px; color:var(--dsw-alias-label-secondary); background:color-mix(in srgb, var(--dsw-alias-bg-overlay) 62%, transparent); border:1px solid color-mix(in srgb, var(--dsw-alias-border-l1) 55%, transparent); -webkit-backdrop-filter:blur(14px) saturate(150%); backdrop-filter:blur(14px) saturate(150%); }
 .dsht-afc-dock-name { font-weight:600; color:var(--dsw-alias-label-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.dsht-afc-dock-close { margin-left:auto; display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border:1px solid var(--dsw-alias-border-l1); border-radius:6px; background:color-mix(in srgb, var(--dsw-alias-bg-layer-2) 65%, transparent); color:var(--dsw-alias-label-secondary); cursor:pointer; }
+.dsht-afc-dock-close { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border:1px solid var(--dsw-alias-border-l1); border-radius:6px; background:color-mix(in srgb, var(--dsw-alias-bg-layer-2) 65%, transparent); color:var(--dsw-alias-label-secondary); cursor:pointer; }
 .dsht-afc-dock-close:hover { color:var(--dsw-alias-label-primary); border-color:var(--dsw-alias-brand-primary); }
+/* 停止团队：图标按钮与 × 并列在最右；点击只开二次确认弹窗，不直接执行 */
+.dsht-afc-dock-actions { margin-left:auto; display:inline-flex; align-items:center; gap:4px; }
+.dsht-afc-dock-stop { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border:1px solid var(--dsw-alias-border-l1); border-radius:6px; background:color-mix(in srgb, var(--dsw-alias-bg-layer-2) 65%, transparent); color:var(--dsw-alias-label-secondary); cursor:pointer; }
+.dsht-afc-dock-stop:hover { color:var(--dsw-alias-state-error-primary); border-color:var(--dsw-alias-state-error-primary); }
+.dsht-afc-dock-stop:disabled { cursor:default; opacity:.55; }
+.dsht-afc-dock-stop:disabled:hover { color:var(--dsw-alias-label-secondary); border-color:var(--dsw-alias-border-l1); }
+/* 停止确认弹窗：盖住整帧，点遮罩/取消/Esc 关闭 */
+.dsht-afc-modal { position:fixed; inset:0; z-index:90; display:grid; place-items:center; padding:16px; background:color-mix(in srgb, #000 32%, transparent); pointer-events:auto; }
+.dsht-afc-modal-card { width:min(320px, 100%); display:grid; gap:10px; padding:14px 16px; border-radius:12px; background:var(--dsw-alias-bg-overlay); border:1px solid var(--dsw-alias-border-l1); box-shadow:0 18px 44px -26px color-mix(in srgb, #000 55%, transparent); color:var(--dsw-alias-label-secondary); font-size:12px; line-height:18px; }
+.dsht-afc-modal-title { font-size:13px; font-weight:600; color:var(--dsw-alias-label-primary); }
+.dsht-afc-modal-error { color:var(--dsw-alias-state-error-primary); }
+.dsht-afc-modal-actions { display:flex; justify-content:flex-end; gap:8px; }
+.dsht-afc-modal-btn { height:26px; padding:0 12px; border-radius:6px; border:1px solid var(--dsw-alias-border-l1); background:transparent; color:var(--dsw-alias-label-primary); font-size:12px; cursor:pointer; }
+.dsht-afc-modal-btn:hover { border-color:var(--dsw-alias-brand-primary); }
+.dsht-afc-modal-btn.is-danger { border-color:color-mix(in srgb, var(--dsw-alias-state-error-primary) 55%, transparent); background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent); color:var(--dsw-alias-state-error-primary); }
+.dsht-afc-modal-btn:disabled { opacity:.55; cursor:default; }
 .dsht-afc-dock-card { max-height:var(--dsht-dock-max, calc(100vh - 140px)); overflow:auto; border-radius:12px; }
 .dsht-afc-dock-card .ui-afc { max-width:none; }
 .dsht-afc-dock-empty { padding:12px 14px; border-radius:10px; background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-secondary); font-size:12px; }
@@ -167,7 +199,6 @@ window.__ModuleLoader__.load({
   .dsht-afc-dock-bar { background:var(--dsw-alias-bg-layer-2); }
 }
 .dsht-afc-dock .ui-afc__spark { color:var(--dsw-alias-brand-primary); }
-.dsht-afc-dock .ui-afc__avatar { background:color-mix(in srgb, var(--dsw-alias-label-primary) 10%, transparent); }
 .dsht-afc-dock .ui-afc__agent[data-status="running"] .ui-afc__fill::before {
   background:linear-gradient(90deg, transparent, color-mix(in srgb, var(--dsw-alias-label-primary) 14%, transparent), transparent);
 }
@@ -567,6 +598,7 @@ window.__ModuleLoader__.load({
           id: member.id,
           name: member.name || member.id,
           model: member.model || '',
+          effort: member.reasoningEffort || '',
           step: member.step || '',
           planStep: activeStep ? activeStep.title : '',
           plan,
@@ -806,6 +838,7 @@ window.__ModuleLoader__.load({
             ? Math.round(percent) + '%'
             : (agent.done || 0) + '/' + (agent.total || 0);
           const logo = modelLogo(agent.model, agent.name);
+          const taskText = statusText(agent);
           const planTotal = agent.plan.length;
           const planDone = agent.plan.filter((step) => step.status === 'done').length;
           const planPercent = planTotal ? Math.round((planDone / planTotal) * 100) : 0;
@@ -814,17 +847,11 @@ window.__ModuleLoader__.load({
               className: 'ui-afc__agent',
               'data-status': agent.status || 'running',
             },
+            // 第一行：状态圆点 + 图标 + 名称，右侧「查看对话」
+            h('span', { className: 'ui-afc__dot', 'aria-hidden': 'true' }),
             h('span', { className: 'ui-afc__avatar', 'data-logo': logo ? '' : undefined }, logo || initials(agent.name)),
             h('span', { className: 'ui-afc__who' },
-              h('span', { className: 'ui-afc__name' }, agent.name),
-              h('span', { className: 'ui-afc__step' }, statusText(agent))),
-            h('span', { className: 'ui-afc__track' },
-              h('span', { className: 'ui-afc__fill', style: { width: percent + '%' } })),
-            h('span', {
-              className: 'ui-afc__count',
-              title: t('card_plan') + ' ' + (agent.done || 0) + '/' + (agent.total || 0) + (agent.model ? ' · ' + agent.model : ''),
-            }, progressLabel),
-            // 成员行右侧：有 DSH 会话才给「查看对话」（worker 成员没有会话）
+              h('span', { className: 'ui-afc__name', title: agent.name }, agent.name)),
             typeof props.onOpenMember === 'function' && agent.agentSessionId
               ? h('button', {
                 type: 'button',
@@ -840,7 +867,18 @@ window.__ModuleLoader__.load({
                   d: 'M2.4 3.2h9.2v5.9H7.3L4.6 11.2V9.1H2.4z',
                   stroke: 'currentColor', strokeWidth: 1.2, strokeLinejoin: 'round',
                 })))
-              : null),
+              : null,
+            // 第二行：当前正在做的事（单行截断）+ 进度条与完成比
+            h('span', { className: 'ui-afc__task' },
+              h('span', { className: 'ui-afc__step', title: taskText }, taskText),
+              h('span', { className: 'ui-afc__track' },
+                h('span', { className: 'ui-afc__fill', style: { width: percent + '%' } })),
+              h('span', {
+                className: 'ui-afc__count',
+                title: t('card_plan') + ' ' + (agent.done || 0) + '/' + (agent.total || 0)
+                  + (agent.model ? ' · ' + agent.model : '')
+                  + (agent.effort ? ' · effort ' + agent.effort : ''),
+              }, progressLabel))),
 
             // 计划清单：全部展开，不再按选中折叠（成员自报的 todo / team_todo 步骤）
             planTotal > 0
@@ -1058,11 +1096,59 @@ window.__ModuleLoader__.load({
             window.removeEventListener('scroll', sync, true);
           };
         }, [teamId]);
+        // 停止团队：图标按钮 + 二次确认弹窗（弹窗里再点「停止」才发请求）。
+        // 状态带 teamId 归属：卡片换团队时自然回到 idle，不依赖 reset effect。
+        const [stopUi, setStopUi] = React.useState({ teamId: null, state: 'idle', open: false, error: null });
+        const stopView = stopUi.teamId === teamId ? stopUi : { teamId, state: 'idle', open: false, error: null };
+        const stopState = stopView.state;
+        const patchStop = (patch) => {
+          setStopUi((prev) => Object.assign({}, prev && prev.teamId === teamId ? prev : { teamId }, { teamId }, patch));
+        };
+        const stopTimerRef = React.useRef(null);
+        React.useEffect(() => () => { if (stopTimerRef.current) clearTimeout(stopTimerRef.current); }, []);
+        const closeConfirm = () => {
+          if (stopState === 'busy') return;
+          patchStop({ open: false, error: null });
+        };
+        const confirmStop = () => {
+          if (!teamId || stopState === 'busy') return;
+          patchStop({ state: 'busy', error: null, open: true });
+          fetch(API_BASE + '/teams/' + encodeURIComponent(teamId) + '/stop', {
+            method: 'POST',
+            headers: { accept: 'application/json', 'content-type': 'application/json' },
+            body: JSON.stringify({ reason: 'team card stop' }),
+          }).then((res) => {
+            if (!res || !res.ok) throw new Error('E_HTTP ' + (res ? res.status : 'no-response'));
+            patchStop({ state: 'done', open: false, error: null });
+            // 2.5s 后回到可点状态：团队可能又被派发新任务，不该永久锁死这个按钮
+            stopTimerRef.current = setTimeout(() => patchStop({ state: 'idle' }), 2500);
+            // 乐观更新；下一轮轮询（≤4s）再对齐真实状态
+            if (active.sessionId) cardStore.set(active.sessionId, { running: 0 });
+          }).catch((err) => {
+            patchStop({ state: 'idle', error: String((err && err.message) || err || '停止团队失败') });
+          });
+        };
+        // 弹窗打开时把按键事件接过来：Esc 关闭 / Enter 确认，避免只能鼠标点
+        React.useEffect(() => {
+          if (!stopView.open) return () => {};
+          if (typeof window === 'undefined' || !window || typeof window.addEventListener !== 'function') return () => {};
+          const onKey = (event) => {
+            const key = event && event.key;
+            if (key === 'Escape') closeConfirm();
+            if (key === 'Enter') confirmStop();
+          };
+          window.addEventListener('keydown', onKey);
+          return () => { window.removeEventListener('keydown', onKey); };
+        }, [stopView.open, stopState]);
         if (!card || !card.open || !card.teamId) return null;
         const openMember = (agent) => {
           if (agent && agent.agentSessionId && active.sessionId) {
             openMemberAside(getService, active.sessionId, agent.agentSessionId);
           }
+        };
+        const openConfirm = () => {
+          if (!teamId || stopState === 'busy') return;
+          patchStop({ open: true, error: null });
         };
         const dockStyle = anchor
           ? {
@@ -1079,19 +1165,55 @@ window.__ModuleLoader__.load({
             h('span', { className: 'dsht-afc-dock-name' }, card.teamName || t('members_title')),
             h('span', {}, t('running_of', { n: card.running, m: card.memberCount })),
             card.error ? h('span', { title: card.error }, '⚠') : null,
-            h('button', {
-              type: 'button',
-              className: 'dsht-afc-dock-close',
-              title: t('card_close'),
-              'aria-label': t('card_close'),
-              onClick: () => cardStore.close(active.sessionId),
-            }, '×')),
+            h('span', { className: 'dsht-afc-dock-actions' },
+              h('button', {
+                type: 'button',
+                className: 'dsht-afc-dock-stop',
+                disabled: stopState === 'busy' || stopState === 'done',
+                title: stopState === 'done' ? t('card_stop_done') : t('card_stop_title'),
+                'aria-label': t('card_stop'),
+                onClick: openConfirm,
+              }, h('svg', { width: 10, height: 10, viewBox: '0 0 14 14', 'aria-hidden': 'true' },
+                h('rect', { x: 3.2, y: 3.2, width: 7.6, height: 7.6, rx: 1.4, fill: 'currentColor' }))),
+              h('button', {
+                type: 'button',
+                className: 'dsht-afc-dock-close',
+                title: t('card_close'),
+                'aria-label': t('card_close'),
+                onClick: () => cardStore.close(active.sessionId),
+              }, '×'))),
           h('div', { className: 'dsht-afc-dock-card' },
             h(AgentFindings, {
               t,
               agents: card.agents,
               onOpenMember: openMember,
-            })));
+            })),
+          stopView.open
+            ? h('div', {
+              className: 'dsht-afc-modal',
+              role: 'dialog',
+              'aria-modal': 'true',
+              'aria-label': t('card_stop_confirm_title'),
+              onClick: (event) => { if (event && event.target === event.currentTarget) closeConfirm(); },
+            },
+            h('div', { className: 'dsht-afc-modal-card' },
+              h('div', { className: 'dsht-afc-modal-title' }, t('card_stop_confirm_title')),
+              h('div', null, t('card_stop_confirm_text')),
+              stopView.error ? h('div', { className: 'dsht-afc-modal-error' }, stopView.error) : null,
+              h('div', { className: 'dsht-afc-modal-actions' },
+                h('button', {
+                  type: 'button',
+                  className: 'dsht-afc-modal-btn',
+                  disabled: stopState === 'busy',
+                  onClick: closeConfirm,
+                }, t('card_cancel')),
+                h('button', {
+                  type: 'button',
+                  className: 'dsht-afc-modal-btn is-danger',
+                  disabled: stopState === 'busy',
+                  onClick: confirmStop,
+                }, stopState === 'busy' ? t('card_stop_running') : t('card_stop_confirm')))))
+            : null);
       };
     }
 
@@ -1123,12 +1245,33 @@ window.__ModuleLoader__.load({
       };
     }
 
+    /**
+     * 成员行两行布局（覆盖 affectui 的单行网格）：
+     * 第一行 状态圆点 + 图标 + 名称 … 右侧「查看对话」；第二行 当前任务（单行截断）+ 进度条 + 完成比。
+     * 放在 PLAN_CSS 之后写，同权重规则按源码顺序取胜，容器查询里的旧网格也会被覆盖。
+     */
+    const CARD_LAYOUT_CSS = `.ui-afc__agent{display:grid;grid-template-columns:8px auto minmax(0,1fr) auto;grid-template-areas:"dot avatar who chat" "task task task task";align-items:center;column-gap:6px;row-gap:3px;padding:8px 10px}
+.ui-afc__dot{grid-area:dot;justify-self:center;width:6px;height:6px;border-radius:50%;background:var(--ui-afc-faint)}
+.ui-afc__agent[data-status="running"] .ui-afc__dot{background:var(--ui-afc-note);box-shadow:0 0 0 3px color-mix(in srgb, var(--ui-afc-note) 16%, transparent)}
+.ui-afc__agent[data-status="failed"] .ui-afc__dot{background:var(--ui-afc-crit)}
+.ui-afc__agent .ui-afc__avatar{grid-area:avatar;display:flex;align-items:center;line-height:1;font-size:12px}
+.ui-afc__agent .ui-afc__avatar img{display:block}
+.ui-afc__agent .ui-afc__who{grid-area:who;display:block;min-width:0;max-width:none}
+.ui-afc__agent .ui-afc__name{display:block;max-width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.ui-afc__agent .ui-afc__chat{grid-area:chat;justify-self:end}
+.ui-afc__task{grid-area:task;display:grid;grid-template-columns:minmax(0,1fr) 48px auto;align-items:center;gap:8px;min-width:0;padding-left:16px}
+.ui-afc__agent .ui-afc__step{grid-area:auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:12px;line-height:16px;color:var(--ui-afc-muted)}
+.ui-afc__agent .ui-afc__track{grid-area:auto;display:block;width:48px;height:3px;border-radius:2px;background:var(--ui-afc-fill);overflow:hidden}
+.ui-afc__agent .ui-afc__fill{display:block;height:100%;border-radius:2px;background:var(--ui-afc-note);transition:width 600ms var(--ui-afc-ease)}
+.ui-afc__agent .ui-afc__count{grid-area:auto;font-variant-numeric:tabular-nums;font-size:11px;line-height:14px;color:var(--ui-afc-muted)}
+`;
+
     function ensureStyles() {
       if (typeof document === 'undefined' || !document || !document.head) return;
       if (document.getElementById('dsh-team-ui-styles')) return;
       const node = document.createElement('style');
       node.id = 'dsh-team-ui-styles';
-      node.textContent = CSS + '\n' + AGENT_FINDINGS_CSS + '\n' + PLAN_CSS;
+      node.textContent = CSS + '\n' + AGENT_FINDINGS_CSS + '\n' + PLAN_CSS + '\n' + CARD_LAYOUT_CSS;
       document.head.appendChild(node);
     }
 
