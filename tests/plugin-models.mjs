@@ -33,6 +33,26 @@ const mkFakeCtx = () => {
       if (provider === 'empty') return [];
       return [{ provider, id: 'gpt-5', name: 'GPT-5', description: 'strong reasoning' }];
     },
+    // 只有 reasoner 声明了 reasoning efforts（模拟 DSH llm 服务公开的 resolveModelInfo）
+    async resolveModelInfo(provider, model) {
+      if (model === 'deepseek-reasoner') {
+        return {
+          provider,
+          model,
+          reasoning: {
+            efforts: [
+              // off = 关思考，插件必须在同步时剔除，不进面板也不进 team_models
+              { id: 'off', name: 'Off' },
+              { id: 'low', name: 'Low' },
+              { id: 'medium', name: 'Medium' },
+              { id: 'high', name: 'High', description: '深推理' },
+            ],
+            defaultEffort: 'medium',
+          },
+        };
+      }
+      return { provider, model };
+    },
   };
   const ctx = {
     tools: { register: (t) => { registry.set(t.name, t); return () => registry.delete(t.name); }, get: (n) => registry.get(n) },
@@ -105,6 +125,49 @@ const main = async () => {
     assert.equal(specD.request.agentOptions, undefined, '省略 route 时不写 agentOptions');
     assert.deepEqual(dave.agent.route, { provider: 'deepseek', model: 'deepseek-chat', reasoningEffort: 'low' }, '继承 Lead route');
 
+    // effort 元数据：适配器声明了 efforts 才会出现在 team_models
+    const reasoner = models.models.find((m) => m.model === 'deepseek-reasoner');
+    assert.deepEqual(reasoner.efforts, ['low', 'medium', 'high'], 'team_models 报出全部 effort id（剔除 off）');
+    assert.equal(reasoner.defaultEffort, 'medium', 'defaultEffort 透传');
+    assert.equal(models.models.find((m) => m.model === 'deepseek-chat').efforts, undefined, '未声明 efforts 的 route 不报该字段');
+
+    // PATCH allowedEfforts：只放行子集；非法 id 400
+    let badEffort = null;
+    try { await api.patch('/api/llm/routes', { provider: 'deepseek', model: 'deepseek-reasoner', allowedEfforts: ['ultra'] }); } catch (e) { badEffort = e; }
+    assert(badEffort && badEffort.status === 400, `未知 effort 必须 400，实际 ${badEffort && badEffort.status}`);
+    let offEffort = null;
+    try { await api.patch('/api/llm/routes', { provider: 'deepseek', model: 'deepseek-reasoner', allowedEfforts: ['off'] }); } catch (e) { offEffort = e; }
+    assert(offEffort && offEffort.status === 400, `off 不是可派发强度，必须 400，实际 ${offEffort && offEffort.status}`);
+
+    await api.patch('/api/llm/routes', { provider: 'deepseek', model: 'deepseek-reasoner', allowedEfforts: ['low', 'high'] });
+    const narrowed = await tool('team_models').execute({ refresh: false }, lead);
+    assert.deepEqual(narrowed.models.find((m) => m.model === 'deepseek-reasoner').efforts, ['low', 'high'], 'team_models 只报允许的 effort');
+
+    // 被禁止的 effort 拒绝派发
+    let effortErr = null;
+    try {
+      await tool('team_spawn').execute({ teamId: team.id, name: 'gina', prompt: '你是 gina。', agentProvider: 'deepseek', model: 'deepseek-reasoner', reasoningEffort: 'medium' }, lead);
+    } catch (e) { effortErr = e; }
+    assert(effortErr, '被禁止的 effort 必须拒绝');
+    assert.match(String(effortErr.message), /已禁止/, `错误信息应解释，实际：${effortErr.message}`);
+    assert.equal(ctx.agents.spawned.length, 4, '被拒的 effort spawn 不调 startActivation');
+
+    // 未声明的 effort 拒绝
+    let unknownErr = null;
+    try {
+      await tool('team_spawn').execute({ teamId: team.id, name: 'gina2', prompt: '你是 gina2。', agentProvider: 'deepseek', model: 'deepseek-reasoner', reasoningEffort: 'ultra' }, lead);
+    } catch (e) { unknownErr = e; }
+    assert(unknownErr && /不支持/.test(String(unknownErr.message)), `未知 effort 应报“不支持”，实际：${unknownErr && unknownErr.message}`);
+
+    // 允许的 effort 正常派发，并记录到成员（面板卡片/team_status 依赖它）
+    const hank = await tool('team_spawn').execute(
+      { teamId: team.id, name: 'hank', prompt: '你是 hank。', agentProvider: 'deepseek', model: 'deepseek-reasoner', reasoningEffort: 'high' }, lead,
+    );
+    assert.equal(hank.member.reasoningEffort, 'high', '成员记录实际生效 effort');
+    assert.equal(ctx.agents.spawned[4].req.request.agentOptions.reasoningEffort, 'high', 'effort 进 agentOptions');
+    const st = await api.get(`/api/status?team=${team.id}`);
+    assert.equal(st.members.find((m) => m.name === 'hank').reasoningEffort, 'high', '/api/status 暴露成员 effort');
+
     // 面板停用 gpt-5 后，再指定该 route 必须被拒
     await api.patch('/api/llm/routes', { provider: 'openai', model: 'gpt-5', enabled: false, note: '先不用' });
     let err = null;
@@ -113,7 +176,7 @@ const main = async () => {
     } catch (e) { err = e; }
     assert(err, '停用的 route 必须拒绝');
     assert.match(String(err.message), /未启用/, `错误信息应解释，实际：${err.message}`);
-    assert.equal(ctx.agents.spawned.length, 4, '被拒的 spawn 不调 startActivation');
+    assert.equal(ctx.agents.spawned.length, 5, '被拒的 spawn 不调 startActivation');
 
     // 继承 Lead 的 route 也过同一道闸门：停用 deepseek-chat 后省略 route 的 spawn 也要被拒
     await api.patch('/api/llm/routes', { provider: 'deepseek', model: 'deepseek-chat', enabled: false });
@@ -123,7 +186,7 @@ const main = async () => {
     } catch (e) { err = e; }
     assert(err, '继承的 route 被停用时必须拒绝');
     assert.match(String(err.message), /未启用/, `错误信息应解释，实际：${err.message}`);
-    assert.equal(ctx.agents.spawned.length, 4, '被拒的继承 spawn 不调 startActivation');
+    assert.equal(ctx.agents.spawned.length, 5, '被拒的继承 spawn 不调 startActivation');
     await api.patch('/api/llm/routes', { provider: 'deepseek', model: 'deepseek-chat', enabled: true });
 
     // team_models 立即反映停用

@@ -70,6 +70,12 @@ export function MemberInfoContent({ member }: { member: Member }) {
         <Row label="成员 ID"><code className="text-[11px]">{member.id}</code></Row>
         {member.role ? <Row label="角色">{member.role}</Row> : null}
         {member.model ? <Row label="模型">{member.model}</Row> : null}
+        {member.reasoningEffort ? (
+          <Row label="思考强度">
+            <code className="text-[11px]">{member.reasoningEffort}</code>
+            <span className="text-muted-foreground"> · 派发时锁定</span>
+          </Row>
+        ) : null}
         {member.currentTaskId ? <Row label="当前任务"><code className="text-[11px]">{member.currentTaskId}</code></Row> : null}
         {member.step ? <Row label="步骤">{member.step}</Row> : null}
         {typeof member.pct === 'number' ? (

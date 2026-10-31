@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS member (
   id TEXT PRIMARY KEY, team_id TEXT NOT NULL, name TEXT NOT NULL,
   role TEXT, model TEXT, context_mode TEXT,
   default_plan_json TEXT, quota_json TEXT,
-  agent_session_id TEXT,
+  agent_session_id TEXT, reasoning_effort TEXT,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
   UNIQUE(team_id, name)
 );
@@ -225,6 +225,10 @@ CREATE TABLE IF NOT EXISTS llm_route (
   provider TEXT NOT NULL, model TEXT NOT NULL,
   name TEXT, description TEXT, modalities_json TEXT, context_window INTEGER,
   source TEXT NOT NULL DEFAULT 'live',
+  -- 适配器声明的可选思考强度（[{id,name,description?}]）与默认值；NULL = 该次同步未知
+  efforts_json TEXT, default_effort TEXT,
+  -- 用户允许派发给该 route 的 effort 子集；NULL = 全部允许
+  allowed_efforts_json TEXT,
   enabled INTEGER NOT NULL DEFAULT 1, note TEXT,
   synced_at TEXT NOT NULL, updated_at TEXT NOT NULL,
   PRIMARY KEY (provider, model)
@@ -260,6 +264,10 @@ export function openDb(file) {
   ensureColumn(db, 'team', 'archived_at', 'TEXT');
   ensureColumn(db, 'team', 'lead_session_id', 'TEXT');
   ensureColumn(db, 'member', 'agent_session_id', 'TEXT');
+  ensureColumn(db, 'member', 'reasoning_effort', 'TEXT');
+  ensureColumn(db, 'llm_route', 'efforts_json', 'TEXT');
+  ensureColumn(db, 'llm_route', 'default_effort', 'TEXT');
+  ensureColumn(db, 'llm_route', 'allowed_efforts_json', 'TEXT');
   ensureColumn(db, 'todo', 'task_id', 'TEXT');
   ensureColumn(db, 'artifact', 'added', 'INTEGER');
   ensureColumn(db, 'artifact', 'deleted', 'INTEGER');

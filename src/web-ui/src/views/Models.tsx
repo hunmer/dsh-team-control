@@ -39,6 +39,11 @@ interface LlmModel {
   source?: string;
   enabled: boolean;
   note?: string | null;
+  /** 适配器声明的可选思考强度（按弱→强排序）；null/缺省 = 未知或不支持 */
+  efforts?: Array<{ id: string; name?: string; description?: string | null }> | null;
+  defaultEffort?: string | null;
+  /** 用户允许派发给该 route 的 effort 子集；null/缺省 = 全部允许 */
+  allowedEfforts?: string[] | null;
 }
 
 interface LlmProvider {
@@ -91,7 +96,7 @@ export function ModelsView() {
     return () => clearInterval(timer);
   }, [loading, catalog]);
 
-  const mutate = async (model: LlmModel, patch: { enabled?: boolean; note?: string }) => {
+  const mutate = async (model: LlmModel, patch: { enabled?: boolean; note?: string; allowedEfforts?: string[] | null }) => {
     const key = keyOf(model);
     setBusy((prev) => new Set(prev).add(key));
     try {
@@ -162,6 +167,14 @@ export function ModelsView() {
     void mutate(model, { note: value });
   };
 
+  /** 切换某个思考强度是否允许派发给该 route；全选时折回 null（不限）。 */
+  const toggleEffort = (model: LlmModel, id: string) => {
+    const ids = (model.efforts || []).map((e) => e.id);
+    const current = model.allowedEfforts ?? ids;
+    const next = current.includes(id) ? current.filter((x) => x !== id) : [...current, id];
+    void mutate(model, { allowedEfforts: next.length === ids.length ? null : next });
+  };
+
   const groups = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!catalog) return [];
@@ -194,6 +207,7 @@ export function ModelsView() {
 
       <div className="text-xs text-muted-foreground">
         只有勾选启用的 provider/model 才会出现在 <code className="rounded bg-muted px-1">team_models</code> 里，也才能传给 <code className="rounded bg-muted px-1">team_spawn</code> 的 agentProvider/model。
+        模型行里的 effort 开关决定该 route 允许派发的 <code className="rounded bg-muted px-1">reasoningEffort</code>（含继承自 Lead 的强度）：关掉的强度会从 team_models 里隐藏，主 Agent 指定时直接被拒绝。
         目录本身来自宿主 DSH，本面板不代理任何模型请求；Host 侧模型配置变化后，下一次团队工具调用会刷新它。
       </div>
 
@@ -245,6 +259,33 @@ export function ModelsView() {
                     </div>
                     {m.description ? <div className="text-xs text-muted-foreground">{m.description}</div> : null}
                   </div>
+                  {m.efforts?.length ? (
+                    <span className="flex h-8 flex-wrap items-center gap-1" title="允许主 Agent 派发给该模型的思考强度：关闭后 team_spawn 指定它会被拒绝">
+                      {m.efforts.map((e) => {
+                        const on = !m.allowedEfforts || m.allowedEfforts.includes(e.id);
+                        const isDefault = m.defaultEffort === e.id;
+                        return (
+                          <button
+                            key={e.id}
+                            type="button"
+                            disabled={disabled}
+                            aria-pressed={on}
+                            title={`${e.description || e.name || e.id}${isDefault ? '（模型默认）' : ''}${on ? '' : ' — 已禁止派发'}`}
+                            onClick={() => toggleEffort(m, e.id)}
+                            className={
+                              'rounded-full border px-1.5 py-0.5 text-[10px] leading-none transition '
+                              + (on
+                                ? 'border-primary/50 bg-primary/10 text-foreground'
+                                : 'border-dashed text-muted-foreground line-through opacity-60 hover:opacity-100')
+                            }
+                          >
+                            {e.name || e.id}
+                            {isDefault ? ' ·默认' : ''}
+                          </button>
+                        );
+                      })}
+                    </span>
+                  ) : null}
                   <Input
                     value={notes[key] ?? ''}
                     onChange={(e) => setNotes((prev) => ({ ...prev, [key]: e.target.value }))}

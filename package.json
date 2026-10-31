@@ -1,19 +1,44 @@
 {
   "name": "dsh-team-control-cli",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "description": "Agent 编排协同开发：可配置上限、DAG 自动派发、四域强制权限、SSE 实时可观测（PRD v1.0 实现）",
-  "bin": { "dsh-team": "bin/dsh-team.mjs" },
-  "files": ["bin", "src/*.mjs", "src/web", "src/worker", "skills", "demo", "docs/CONTRACT.md", "LICENSE", "README.md"],
-  "engines": { "node": ">=22.15.0" },
-  "repository": { "type": "git", "url": "git+https://github.com/hunmer/dsh-team-control.git" },
+  "bin": {
+    "dsh-team": "bin/dsh-team.mjs"
+  },
+  "files": [
+    "bin",
+    "src/*.mjs",
+    "src/web",
+    "src/worker",
+    "skills",
+    "demo",
+    "docs/CONTRACT.md",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.15.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hunmer/dsh-team-control.git"
+  },
   "homepage": "https://github.com/hunmer/dsh-team-control#readme",
-  "bugs": { "url": "https://github.com/hunmer/dsh-team-control/issues" },
+  "bugs": {
+    "url": "https://github.com/hunmer/dsh-team-control/issues"
+  },
   "scripts": {
     "start": "node bin/dsh-team.mjs up",
     "test": "node tests/run-all.mjs",
     "demo": "node demo/run-demo.mjs"
   },
-  "keywords": ["agent", "orchestration", "dag", "sidecar", "dsh"],
+  "keywords": [
+    "agent",
+    "orchestration",
+    "dag",
+    "sidecar",
+    "dsh"
+  ],
   "license": "MIT"
 }

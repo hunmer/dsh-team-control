@@ -63,6 +63,8 @@ team_spawn({ teamId, name:"architect", prompt:"...", agentProvider:"deepseek", m
 
 - `agentProvider` + `model` 必须是 `team_models` 里出现过的启用项；没启用就报错，别自己拼 id。
 - 换 route 且不传 `reasoningEffort` → 成员用模型默认值（继承的 effort 被丢弃）；route 不变 → 继承 Lead 的 effort。
+- `team_models` 里每条 route 的 `efforts` 是用户允许派发的 effort（面板「模型路由」页可逐个关闭）：传了被关闭的 effort 会报“已禁止”，传了未声明的值会报“不支持”。被禁止时省略该参数即可用模型默认值。
+- 面板成员卡片与 `team_status.members[].reasoningEffort` 显示成员派发时锁定的 effort（worker 成员为 null）。
 - 省略 `agentProvider`/`model` → 完全继承 Lead；但如果 Lead 的 route 已被用户停用，spawn 同样会被拒（换成启用项即可）。worker 团队的 `model` 只是展示标签。
 - 用户要加/减可用模型：让他在面板「模型路由」页勾选/写备注，不要改代码。
 

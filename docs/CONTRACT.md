@@ -222,12 +222,12 @@ root(run:team)                         ← 团队整体
 
 | 方法 路径 | 请求 | 响应 |
 |---|---|---|
-| `POST /api/llm/catalog` | `{providers:[{id,name,source?,error?}], models:[{provider,model,name,description?,modalities?}], partial?}` | `{ok, asOf, providers, models, enabled}`；按 `(provider,model)` upsert，**保留既有 enabled/note**；`partial` 为真时跳过删除；空 `providers` → 400 |
+| `POST /api/llm/catalog` | `{providers:[{id,name,source?,error?}], models:[{provider,model,name,description?,modalities?,efforts?,defaultEffort?}], partial?}` | `{ok, asOf, providers, models, enabled}`；按 `(provider,model)` upsert，**保留既有 enabled/note/allowedEfforts**（`allowedEfforts` 与新声明求交）；`efforts` 省略表示本次未知、保留旧值；`partial` 为真时跳过删除；空 `providers` → 400 |
 | `GET /api/llm/catalog` | — | `{asOf, source:"dsh-llm", providers:[{id,name,source,error,models:[route]}], totals}` |
 | `GET /api/llm/models?all=` | 默认只返回 `enabled=1`；`all=1` 返回全部 | `{asOf, total, items:[route]}` |
-| `PATCH /api/llm/routes` | `{provider, model, enabled?, note?}` | `{route}`；未知 route → 404；`enabled` 非 boolean → 400；`note` 截断到 240 字符 |
+| `PATCH /api/llm/routes` | `{provider, model, enabled?, note?, allowedEfforts?}` | `{route}`；未知 route → 404；`enabled` 非 boolean → 400；`note` 截断到 240 字符；`allowedEfforts` 为 null（不限）或该 route 已声明的 effort id 子集，全选折回 null；未声明 efforts 的 route 或未知 id → 400 |
 
-`route` = `{provider, model, name, description, modalities, contextWindow, source, enabled, note}`。
+`route` = `{provider, model, name, description, modalities, contextWindow, source, enabled, note, efforts, defaultEffort, allowedEfforts}`；`efforts` 是适配器声明的 `[{id,name,description?}]`，`allowedEfforts` 为 null 表示不限。
 
 语义：
 

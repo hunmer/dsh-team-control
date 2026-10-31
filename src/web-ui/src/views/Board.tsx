@@ -21,6 +21,11 @@ function MemberPill({ member }: { member: Member }) {
       <MemberAvatarButton member={member} size={13} />
       <span className="font-medium">{member.name || member.id}</span>
       {member.model ? <span className="text-muted-foreground">{member.model}</span> : null}
+      {member.reasoningEffort ? (
+        <span className="rounded-full border px-1 text-[10px] text-muted-foreground" title="该成员被派发时锁定的思考强度">
+          {member.reasoningEffort}
+        </span>
+      ) : null}
       {member.step ? <span className="text-muted-foreground">{member.step}</span> : null}
     </span>
   );

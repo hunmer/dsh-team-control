@@ -294,7 +294,7 @@ export class DshTeam {
     ).get(teamId).c);
   }
 
-  addMember(teamId, { name, role = 'worker', model = null, contextMode = 'isolated', defaultPlan = null, agentSessionId = null }) {
+  addMember(teamId, { name, role = 'worker', model = null, contextMode = 'isolated', defaultPlan = null, agentSessionId = null, reasoningEffort = null }) {
     const team = this.getTeam(teamId);
     if (!name) throw ERR.bad('name required');
     const dup = this.get('SELECT id FROM member WHERE team_id=? AND name=?').get(teamId, name);
@@ -305,9 +305,9 @@ export class DshTeam {
     const id = newId('m');
     const t = nowIso();
     this.get(
-      `INSERT INTO member (id, team_id, name, role, model, context_mode, default_plan_json, quota_json, agent_session_id, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,NULL,?,?,?)`
-    ).run(id, teamId, name, role, model, contextMode, defaultPlan ? json(defaultPlan) : null, agentSessionId ? String(agentSessionId) : null, t, t);
+      `INSERT INTO member (id, team_id, name, role, model, context_mode, default_plan_json, quota_json, agent_session_id, reasoning_effort, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,NULL,?,?,?,?)`
+    ).run(id, teamId, name, role, model, contextMode, defaultPlan ? json(defaultPlan) : null, agentSessionId ? String(agentSessionId) : null, reasoningEffort ? String(reasoningEffort) : null, t, t);
     this.events.append({
       teamId, memberId: id, taskId: null, phase: 'init', action: 'member.create',
       target: name, result: 'OK', next: status === 'queued' ? 'wait for capacity' : 'wait for task',
@@ -338,6 +338,8 @@ export class DshTeam {
     if (pct == null && task) pct = 0.5;
     return {
       id: m.id, teamId: m.team_id, name: m.name, role: m.role, model: m.model, contextMode: m.context_mode,
+      // 派发时确定、之后不可变的思考强度（agent 成员才有；worker 成员为 null）
+      reasoningEffort: m.reasoning_effort ?? null,
       createdAt: m.created_at,
       agentSessionId: m.agent_session_id ?? null,
       status: st.status, leaseUntil: rt.leaseUntil, currentTaskId: task?.id ?? null,
@@ -474,7 +476,7 @@ export class DshTeam {
    * 幂等 upsert——同名成员已存在时只更新 session，不重复建行。
    */
   registerAgent(input = {}) {
-    const { teamId, name, sessionId = null, role = 'teammate', model = null, contextMode = 'fresh' } = input;
+    const { teamId, name, sessionId = null, role = 'teammate', model = null, contextMode = 'fresh', reasoningEffort = null } = input;
     if (!teamId) throw ERR.bad('teamId required');
     if (!name) throw ERR.bad('name required');
     const team = this.getTeam(teamId);
@@ -482,10 +484,10 @@ export class DshTeam {
     let id;
     if (existing) {
       id = existing.id;
-      this.get('UPDATE member SET agent_session_id=?, role=COALESCE(?, role), model=COALESCE(?, model), updated_at=? WHERE id=?')
-        .run(sessionId != null ? String(sessionId) : existing.agent_session_id, role || null, model || null, nowIso(), id);
+      this.get('UPDATE member SET agent_session_id=?, role=COALESCE(?, role), model=COALESCE(?, model), reasoning_effort=COALESCE(?, reasoning_effort), updated_at=? WHERE id=?')
+        .run(sessionId != null ? String(sessionId) : existing.agent_session_id, role || null, model || null, reasoningEffort ? String(reasoningEffort) : null, nowIso(), id);
     } else {
-      id = this.addMember(teamId, { name, role, model, contextMode, agentSessionId: sessionId }).id;
+      id = this.addMember(teamId, { name, role, model, contextMode, agentSessionId: sessionId, reasoningEffort }).id;
     }
     const st = this.events.state(id);
     // 重新报到（Host/DSH 重启后 sub-agent session 仍活着）：只要没有在途任务就回到 idle
