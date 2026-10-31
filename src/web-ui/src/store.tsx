@@ -882,9 +882,10 @@ export function PanelProvider({ children }: { children: ReactNode }) {
       pausedRef.current = ui.paused;
       lastEventIdRef.current = lastEventId;
       const tab = route.tab ?? ui.tab;
-      // 旧链接可能带 ?team=：作为没有 hash 路由时的兜底
+      // 内嵌在 GUI 里时父页面用 ?team= 指定「当前会话的团队」，它比 hash 新（hash 是上次的
+      // 选择），所以优先采纳；独立打开面板时没有这个参数，仍由 hash 决定。
       const legacyTeam = new URLSearchParams(location.search).get('team');
-      const wantedTeam = route.team ?? legacyTeam;
+      const wantedTeam = legacyTeam ?? route.team;
       setState((prev) => ({ ...prev, tab, filters: ui.filters, paused: ui.paused, speed: ui.speed }));
       storeSet(STORE_UI, JSON.stringify({ tab, filters: ui.filters, paused: ui.paused, speed: ui.speed }));
       const workspaces = await refreshWorkspaces().catch(() => [] as Workspace[]);
@@ -904,17 +905,20 @@ export function PanelProvider({ children }: { children: ReactNode }) {
         const ws = workspaces.find((w) => w.id === wsId);
         return ws ? teams.filter((t) => workspaceMatches(t.workspace, ws.path)) : teams;
       };
+      const wantedKnown = wantedTeam ? teams.find((t) => t.id === wantedTeam) : undefined;
       let workspaceId = route.ws && (workspaces.some((w) => w.id === route.ws) || route.ws === OTHER_WORKSPACE_ID) ? route.ws : null;
-      if (!workspaceId && wantedTeam) {
-        const known = teams.find((t) => t.id === wantedTeam);
-        workspaceId = known ? workspaces.find((w) => workspaceMatches(known.workspace, w.path))?.id ?? null : null;
+      if (wantedKnown) {
+        // 指定了团队就以它归属的工作区为准；注册表匹配不上就落到「其他工作区」
+        workspaceId = workspaces.find((w) => workspaceMatches(wantedKnown.workspace, w.path))?.id ?? OTHER_WORKSPACE_ID;
       }
       if (!workspaceId) {
         // 没有指定工作区时，优先落到「有团队」的第一个工作区，避免一进来就是空态
         workspaceId = (workspaces.find((w) => teams.some((t) => workspaceMatches(t.workspace, w.path))) ?? workspaces[0])?.id ?? null;
       }
       const scoped = teamScope(workspaceId);
-      const target = (wantedTeam && scoped.some((t) => t.id === wantedTeam) ? wantedTeam : scoped[0]?.id) ?? null;
+      // 显式指定的团队即使不在当前工作区里也切过去：否则会把工作区停在上一个、
+      // 顺手选中那个工作区的第一个团队，看起来「显示的团队和当前会话不一致」。
+      const target = (wantedKnown ? wantedTeam : scoped[0]?.id) ?? null;
       patchUi({ workspaceId });
       stateRef.current = { ...stateRef.current, workspaceId };
       if (!target) { writeRoute({ ws: workspaceId, team: null, tab }, false); return; }
