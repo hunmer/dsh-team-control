@@ -3,8 +3,9 @@
  *
  * 瀑布流：所有成员卡片按「等待中 → 进行中 → 已完成」排序后进多列布局，列宽随容器宽度自动
  * 增减，卡片各按内容高度排列（非等高）；卡片由 Card + Badge + Button 组成，动作由 Home 传入。
+ * 点整张卡片即「激活」（等同于原来的「打开」按钮），激活的卡片带主题色描边。
  */
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { CircleCheck, CircleX, FileText, LoaderCircle, Sparkles, TriangleAlert } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -52,7 +53,10 @@ export interface AgentInboxProps {
   onApprove?: (task: AgentTask) => void;
   onReject?: (task: AgentTask) => void;
   onRetry?: (task: AgentTask) => void;
+  /** 点整张卡片 =「激活」该任务（Plan/Activity 跟随），不再单独给按钮。 */
   onOpen?: (task: AgentTask) => void;
+  /** 当前激活的任务 id：卡片描边高亮。 */
+  activeId?: string;
   /** 点击产物 → 跳到「审阅」并选中该文件。 */
   onOpenArtifact?: (task: AgentTask, artifact: AgentTaskArtifact) => void;
   /** 「查看对话」→ 打开该成员成员的 DSH 会话记录。 */
@@ -116,7 +120,7 @@ function useNow(active: boolean): number {
   return now;
 }
 
-function TaskCard({ task, onApprove, onReject, onRetry, onOpen, onOpenArtifact, onOpenChat }: { task: AgentTask } & Pick<AgentInboxProps, 'onApprove' | 'onReject' | 'onRetry' | 'onOpen' | 'onOpenArtifact' | 'onOpenChat'>) {
+function TaskCard({ task, active, onApprove, onReject, onRetry, onOpen, onOpenArtifact, onOpenChat }: { task: AgentTask; active?: boolean } & Pick<AgentInboxProps, 'onApprove' | 'onReject' | 'onRetry' | 'onOpen' | 'onOpenArtifact' | 'onOpenChat'>) {
   const meta = STATUS_META[task.status] ?? STATUS_META.done;
   const { Icon } = meta;
   const live = task.status === 'running' || task.status === 'waiting';
@@ -125,8 +129,34 @@ function TaskCard({ task, onApprove, onReject, onRetry, onOpen, onOpenArtifact, 
   const artifacts = task.artifacts ?? [];
   const elapsed = task.elapsed ?? (task.startedAt !== undefined ? Math.max(0, now - toTime(task.startedAt)) : undefined);
 
+  const clickable = typeof onOpen === 'function';
+  /** 卡内的按钮（批准/驳回/重试/产物/查看对话）自己处理点击，不要连带激活整张卡。 */
+  const onCardClick = (event: MouseEvent<HTMLDivElement>) => {
+    if (!clickable) return;
+    if ((event.target as HTMLElement).closest('button, a')) return;
+    onOpen(task);
+  };
+  const onCardKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!clickable) return;
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    onOpen(task);
+  };
+
   return (
-    <Card className="min-w-0 gap-0 overflow-hidden p-3 shadow-none">
+    <Card
+      aria-pressed={clickable ? !!active : undefined}
+      className={cn(
+        'min-w-0 gap-0 overflow-hidden p-3 shadow-none transition-colors',
+        clickable && 'cursor-pointer hover:border-primary/40',
+        active && 'border-primary/60 ring-2 ring-primary/25',
+      )}
+      data-active={active ? '' : undefined}
+      onClick={onCardClick}
+      onKeyDown={onCardKeyDown}
+      role={clickable ? 'button' : undefined}
+      tabIndex={clickable ? 0 : undefined}
+    >
       <div className="flex items-start gap-2">
         <div className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
           {task.logo ?? <Sparkles className="size-3.5" />}
@@ -199,33 +229,31 @@ function TaskCard({ task, onApprove, onReject, onRetry, onOpen, onOpenArtifact, 
             </ul>
           ) : null}
 
-          <div className="mt-2 flex items-center gap-1.5">
-            {task.status === 'waiting' && (
-              <>
-                <Button onClick={() => onReject?.(task)} size="xs" type="button" variant="outline">
-                  驳回
+          {(task.status === 'waiting' || task.status === 'failed'
+            || ((task.status === 'running' || task.status === 'done') && onOpenChat)) && (
+            <div className="mt-2 flex items-center gap-1.5">
+              {task.status === 'waiting' && (
+                <>
+                  <Button onClick={() => onReject?.(task)} size="xs" type="button" variant="outline">
+                    驳回
+                  </Button>
+                  <Button onClick={() => onApprove?.(task)} size="xs" type="button">
+                    批准
+                  </Button>
+                </>
+              )}
+              {task.status === 'failed' && (
+                <Button onClick={() => onRetry?.(task)} size="xs" type="button">
+                  重试
                 </Button>
-                <Button onClick={() => onApprove?.(task)} size="xs" type="button">
-                  批准
+              )}
+              {(task.status === 'running' || task.status === 'done') && onOpenChat && (
+                <Button onClick={() => onOpenChat(task)} size="xs" type="button" variant="ghost">
+                  查看对话
                 </Button>
-              </>
-            )}
-            {task.status === 'failed' && (
-              <Button onClick={() => onRetry?.(task)} size="xs" type="button">
-                重试
-              </Button>
-            )}
-            {(task.status === 'running' || task.status === 'done') && onOpen && (
-              <Button onClick={() => onOpen(task)} size="xs" type="button" variant="ghost">
-                打开
-              </Button>
-            )}
-            {(task.status === 'running' || task.status === 'done') && onOpenChat && (
-              <Button onClick={() => onOpenChat(task)} size="xs" type="button" variant="ghost">
-                查看对话
-              </Button>
-            )}
-          </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </Card>
@@ -234,7 +262,7 @@ function TaskCard({ task, onApprove, onReject, onRetry, onOpen, onOpenArtifact, 
 
 const LANE_ORDER: Record<LaneId, number> = { needs: 0, running: 1, done: 2 };
 
-export function AgentInbox({ tasks, onApprove, onReject, onRetry, onOpen, onOpenArtifact, onOpenChat, title = '实时收件箱', className }: AgentInboxProps) {
+export function AgentInbox({ tasks, activeId, onApprove, onReject, onRetry, onOpen, onOpenArtifact, onOpenChat, title = '实时收件箱', className }: AgentInboxProps) {
   // 等待决策的排前面，其次进行中，最后已完成；同组内保持传入顺序
   const sorted = [...tasks].sort((a, b) => LANE_ORDER[laneOf(a.status)] - LANE_ORDER[laneOf(b.status)]);
   return (
@@ -259,6 +287,7 @@ export function AgentInbox({ tasks, onApprove, onReject, onRetry, onOpen, onOpen
           sorted.map((task) => (
             <div className="mb-2 break-inside-avoid" key={task.id}>
               <TaskCard
+                active={!!activeId && task.id === activeId}
                 onApprove={onApprove}
                 onOpen={onOpen}
                 onOpenArtifact={onOpenArtifact}

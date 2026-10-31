@@ -336,6 +336,7 @@ export function HomeView() {
           <div className="flex h-full flex-col rounded-xl border bg-card">
             <div className="flex min-h-0 flex-1 flex-col p-3">
               <AgentInbox
+                activeId={activeId}
                 className="min-h-0 flex-1"
                 tasks={board}
                 title="实时收件箱"
