@@ -15,6 +15,7 @@ window.__ModuleLoader__.load({
         title: 'dsh-team 编排控制台',
         subtitle: '成员看板（Trace 瀑布）、DAG、时间线、权限与审批；数据来自本地 sidecar，经 Host 代理',
         side_nav: '编排',
+        panel_loading: '正在查找该会话的团队…',
         guide_desc: '团队成员、任务 DAG 与实时进度',
         members_title: '团队成员',
         members_running: '运行中',
@@ -56,6 +57,7 @@ window.__ModuleLoader__.load({
         title: 'dsh-team console',
         subtitle: 'Trace waterfall, DAG, timeline, permissions and approvals (local sidecar via Host proxy)',
         side_nav: 'Team',
+        panel_loading: 'Looking up this session’s team…',
         guide_desc: 'Team members, task DAG and live progress',
         members_title: 'Team members',
         members_running: 'running',
@@ -97,6 +99,7 @@ window.__ModuleLoader__.load({
     const CSS = `
 .dsht-page { display:flex; flex-direction:column; height:100%; min-height:0; background:var(--dsw-alias-bg-base); color:var(--dsw-alias-label-primary); }
 .dsht-page-head { display:flex; align-items:center; gap:10px; padding:8px 14px; border-bottom:1px solid var(--dsw-alias-border-l1); flex:none; }
+.dsht-page-wait { display:flex; align-items:center; justify-content:center; height:100%; font-size:12px; color:var(--dsw-alias-label-secondary); }
 .dsht-page-mark { display:inline-flex; color:var(--dsw-alias-brand-primary); }
 .dsht-page-title { font-size:13px; font-weight:600; white-space:nowrap; }
 .dsht-page-sub { font-size:11px; color:var(--dsw-alias-label-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -249,9 +252,55 @@ window.__ModuleLoader__.load({
     /** 自动打开面板时希望面板直接选中的团队（TeamView 渲染时带上 &team=）。 */
     let pendingTeamId = null;
 
+    /**
+     * 每个会话自己的团队 id。侧栏「编排」页拿不到 sessionId prop，而面板又会随会话切换
+     * 重新挂载 —— 只靠上面那个全局 pendingTeamId 会带错团队（切回老会话时它根本没被赋值，
+     * 面板就以空 team 加载，进而落到第一个工作区的团队）。这里按会话记住结果，跨挂载复用。
+     */
+    const sessionTeamStore = (() => {
+      const byId = new Map();
+      const listeners = new Set();
+      let active = null;
+      const emit = () => {
+        for (const fn of listeners) { try { fn(); } catch { /* 单个订阅出错不影响其他 */ } }
+      };
+      return {
+        setActive(sessionId) {
+          const next = sessionId || null;
+          if (active === next) return;
+          active = next;
+          emit();
+        },
+        /** teamId 为 null 表示「查过了，这个会话没有团队」；重复写入相同值不触发渲染。 */
+        set(sessionId, teamId) {
+          if (!sessionId) return;
+          const prev = byId.get(sessionId);
+          const nextTeam = teamId || null;
+          if (prev && prev.teamId === nextTeam) return;
+          byId.set(sessionId, { teamId: nextTeam });
+          emit();
+        },
+        get(sessionId) { return (sessionId && byId.get(sessionId)) || null; },
+        subscribe(fn) { listeners.add(fn); return () => { listeners.delete(fn); }; },
+        snapshot() { return { sessionId: active, info: (active && byId.get(active)) || null }; },
+      };
+    })();
+
     /** 面板主体：iframe 复用 sidecar 自带 /panel（成员看板 Trace 瀑布 + 其余视图 + SSE）。 */
     function TeamView({ t, compact, getService }) {
-      const teamParam = pendingTeamId || '';
+      const [sessionTeam, setSessionTeam] = React.useState(() => sessionTeamStore.snapshot());
+      React.useEffect(() => {
+        const sync = () => setSessionTeam(sessionTeamStore.snapshot());
+        sync();
+        return sessionTeamStore.subscribe(sync);
+      }, []);
+      // 知道会话时只认这个会话自己的团队（没有团队就是空，不能退回上一个会话的团队）
+      const teamParam = sessionTeam.sessionId
+        ? ((sessionTeam.info && sessionTeam.info.teamId) || '')
+        : (pendingTeamId || '');
+      // 知道是哪个会话、但团队还没查出来时先不挂 iframe：否则会先用空 team 加载一屏
+      // 别的团队的看板，等查到了再整页重载一次。
+      const waitingTeam = !!sessionTeam.sessionId && !sessionTeam.info;
       const frameSrc = '/dsh-team-api/panel?api=/dsh-team-api&embed=1'
         + (teamParam ? '&team=' + encodeURIComponent(teamParam) : '');
       const frameRef = React.useRef(null);
@@ -279,13 +328,15 @@ window.__ModuleLoader__.load({
           compact ? null : h('span', { className: 'dsht-page-sub' }, t('subtitle')),
           h('span', { className: 'dsht-spacer' })),
         h('div', { className: 'dsht-page-body' },
-          h('iframe', {
-            ref: frameRef,
-            key: teamParam || 'default',
-            className: 'dsht-frame',
-            title: t('title'),
-            src: frameSrc,
-          })));
+          waitingTeam
+            ? h('div', { className: 'dsht-page-wait' }, t('panel_loading'))
+            : h('iframe', {
+              ref: frameRef,
+              key: teamParam || 'default',
+              className: 'dsht-frame',
+              title: t('title'),
+              src: frameSrc,
+            })));
     }
 
     // ---------- 会话右上角：当前会话的运行中成员（点击在右侧栏内嵌该成员对话） ----------
@@ -926,11 +977,18 @@ window.__ModuleLoader__.load({
         const kidsKey = kids.map((kid) => kid.id).join(',');
         const card = useCard(sessionId);
 
-        // 团队建好（或进入一个已有团队的会话）后自动把编排页推到侧栏；每会话只自动开一次。
+        // 当前是哪个会话：侧栏「编排」页据此决定 iframe 带哪个 team
         React.useEffect(() => {
           if (!sessionId) return undefined;
-          const key = AUTO_OPEN_KEY + sessionId;
-          try { if (window.sessionStorage.getItem(key) === '1') return undefined; } catch { /* ignore */ }
+          sessionTeamStore.setActive(sessionId);
+          return undefined;
+        }, [sessionId]);
+
+        // 解析本会话的团队并记住；首次解析到团队时把编排页自动推到侧栏（每会话只自动开一次）。
+        // 注意：查团队每次挂载都做（很便宜），只有「自动打开」是一次性的 —— 否则切回已经
+        // 打开过编排页的会话时拿不到自己的团队，面板就会显示第一个工作区的团队。
+        React.useEffect(() => {
+          if (!sessionId) return undefined;
           let stopped = false;
           let timer = null;
           let attempt = 0;
@@ -945,12 +1003,19 @@ window.__ModuleLoader__.load({
             } catch { /* sidecar 没起：下一轮再试 */ }
             if (stopped) return;
             if (team) {
-              stopped = true;
-              try { window.sessionStorage.setItem(key, '1'); } catch { /* ignore */ }
+              sessionTeamStore.set(sessionId, team.id || null);
               pendingTeamId = team.id || null;
-              openTeamPanel(getService, sessionId);
+              const key = AUTO_OPEN_KEY + sessionId;
+              let opened = false;
+              try { opened = window.sessionStorage.getItem(key) === '1'; } catch { /* ignore */ }
+              if (!opened) {
+                try { window.sessionStorage.setItem(key, '1'); } catch { /* ignore */ }
+                openTeamPanel(getService, sessionId);
+              }
               return;
             }
+            // 连续几次都没有团队就先按「无团队」放行面板，之后仍然会继续轮询补上
+            if (attempt >= 3) sessionTeamStore.set(sessionId, null);
             // 前 1 分钟勤快点（刚建团队），之后降频，避免长期空转
             timer = setTimeout(tick, attempt < 20 ? 3000 : 15000);
           };
