@@ -1,8 +1,8 @@
 ---
 name: dsh-agent-team
-description: 用 dsh-team 插件编排「真 sub-agent 成员」团队的最小可用流程：team_create(runtime:"agent") → team_spawn → team_task → 成员 team_report_task → team_status/team_report；含 11 个 team_* 工具的字段清单、按任务难度给成员分配 provider/model/思考强度、简报写法、并发与依赖、agent/worker 两种运行时的区别与常见错法。Use when the user asks to create an agent team, orchestrate teammates, dispatch parallel work to sub-agents, or when a team_* call failed with an unexpected shape (unknown teamId, assignee by name, empty plan, member never reports).
+description: 用 dsh-team 插件编排「真 sub-agent 成员」团队的最小可用流程：team_create(runtime:"agent") → team_spawn → team_task → 成员 team_report_task → team_status/team_report；含 11 个 team_* 工具的字段清单、按任务难度给成员分配 provider/model/思考强度、简报写法、并发与依赖、agent/worker 两种运行时的区别与常见错法，以及 Lead（主 agent）的边界：只协调、不写代码、不做二次验收、派发完就结束回话、收尾提一个精简 commit。Use when the user asks to create an agent team, orchestrate teammates, dispatch parallel work to sub-agents, or when a team_* call failed with an unexpected shape (unknown teamId, assignee by name, empty plan, member never reports).
 user-invocable: true
-version: "1.0.0"
+version: "1.2.0"
 ---
 
 # dsh-team：把活派给真 sub-agent 成员的流程
@@ -10,6 +10,26 @@ version: "1.0.0"
 插件提供 11 个工具：`team_create` `team_spawn` `team_models` `team_task` `team_report_task` `team_send` `team_status`
 `team_dispatch` `team_control` `team_scope` `team_report`。
 **别按名字猜顺序**，按下面 5 步走，一次就能通。
+
+## ⚠️ 先读：Lead 的边界（主 agent 只做协调）
+
+Lead = 主 agent。职责只有三件：**全局理解项目 → 把活拆成 `team_task` 派给成员 → 在用户和成员之间传话**。
+下面五条是硬边界，违反它们比派错任务更伤：
+
+- **不写代码**：改文件、跑命令、修 bug、写脚本都属于成员。Lead 一旦自己下手，就会和成员的改动互相覆盖，
+  也失去并行的意义。只有用户明确说「你直接改」时才例外。
+- **不做二次验收**：成员 `team_report_task` 报 `done` 就是它的交付。**不要去读它改的文件、不要复跑
+  lint/build/`npm test`、不要逐行判断改得对不对**——这些是用户的活。Lead 只需要把「谁改了什么、
+  产物在哪、怎么验」转述给用户，验收结论由用户下。
+- **派完就结束回话**：`team_task` 派发成功后本回合即可收尾（说明派给了谁、在等什么），
+  **不要写 `sleep` / 延迟脚本 / `until` 轮询循环**「等它跑完」。
+- **保持空闲等用户**：成员在跑时 Lead 应该静默。成员完成、任务推进时 Host 会正常把 Lead 会话拉起，
+  不需要 Lead 守着或轮询；不要用 `team_status` 刷进度（要看只在给用户汇报时看一眼快照）。
+- **收尾时提交一个精简 commit**：本批任务全部 `done` 后，由 **Lead** 提交一次（成员不各自提交）：
+  只 `git add` 本次任务涉及的文件、commit message 一行说清做了什么，不写多段 body、不把无关改动一起带进去。
+
+Lead 主动出手只有三种情况：用户给了新指令（改派/加任务/叫停）、成员卡死或报错（`team_control` 重派/换人）、
+成员越界（`team_scope` 转给用户决定）。
 
 ## 0. 先决定运行时（唯一关键决策）
 
@@ -42,7 +62,7 @@ team_task({ teamId, subject: "写 README 的安装章节",
 ```
 
 成员自己会：调工具干活 → `team_report_task` → 任务 `done` → 依赖解锁 → 下一波 `team_task` 自动派发。
-**Lead 不要轮询**：`team_status({teamId})` 看一眼快照即可；成员回报后调度自动推进。
+**派发成功这一回合就可以结束**，不要轮询、不要守着：成员回报后调度自动推进，需要时 Host 会把 Lead 会话拉起。
 
 ## 1.5 按任务难度分配模型（agent 团队）
 
@@ -85,7 +105,8 @@ team_spawn({ teamId, name:"architect", prompt:"...", agentProvider:"deepseek", m
   （它只在 `team_control` 恢复或批准越界申请后补一次）。
 - 并发上限 = 建团时 `maxConcurrency`（默认 8）；成员上限 `maxMembers`（默认 64，超出变 `queued` 不报错）。
 - 同一文件别让两个成员同时写：按文件/目录切 owner，或串成 `deps`。
-- 失败重试 `maxAttempts`（默认 3）+ `failurePolicy`(`continue`/`abort`)，Lead 只读 `team_status`。
+- 失败重试 `maxAttempts`（默认 3）+ `failurePolicy`(`continue`/`abort`)。Lead 只在汇报时读一眼 `team_status`，
+  不替成员复核产物（见开头「Lead 的边界」）。
 
 ## 4. 常见错法与症状
 
@@ -94,7 +115,9 @@ team_spawn({ teamId, name:"architect", prompt:"...", agentProvider:"deepseek", m
 | `team_spawn` 报需要 `prompt` | agent 团队必填 | 写清角色 + 工作目录 + 「完成后调 team_report_task」 |
 | `team_task` 建完没人接 | 成员全 busy/queued，或 `assignee` 用了 name | 省略 `assignee` 让调度器挑，或 `team_status` 看谁 idle |
 | 成员一直 `running` 不 done | 简报没让它调 `team_report_task` | 补 `prompt`；`team_control({action:"interrupt"})` 后重派 |
-| 任务 `done` 但产物不对 | 成员看不到 Lead 的对话 | 简报自包含：目标文件、验收标准、不要假设它读过本对话 |
+| 任务 `done` 但产物不对 | 成员看不到 Lead 的对话 | 简报自包含：目标文件、验收标准、不要假设它读过本对话；产物好坏交给用户判定，Lead 不自己返工复核 |
+| Lead 又去读 diff / 复跑 lint、测试「确认没问题」 | 做了二次验收，把用户的活抢了，还白烧一轮上下文 | 停手：只向用户转告改了什么、产物在哪、怎么验 |
+| Lead 顺手自己改一个小地方 | 与成员并发写同一文件，改动互相覆盖 | 一律走 `team_task` 派给成员；只有用户明确说「你直接改」才自己动手 |
 | worker 团队「跑完 0 步」 | 把自然语言当简报给了 worker | 改用 `runtime:"agent"`，或把 `plan` 写成真实 op |
 | `team_spawn` 报「模型路由未启用」 | 指定的 provider/model 没在面板启用 | `team_models` 看可用项；让用户在面板「模型路由」页启用 |
 | `deps` 报 `E_BAD_REQUEST`：`"m_xxx" 是成员「alice」的 id` | `deps.from` 填了成员 id | 用 `team_task` 返回的 `task_…` 作为 `from` |
@@ -106,5 +129,8 @@ team_spawn({ teamId, name:"architect", prompt:"...", agentProvider:"deepseek", m
 - `team_status({teamId, detail:"summary"})`：成员 status/step/pct/next/blockers；`detail:"dag"`：依赖与关键路径。
 - DSH 里看：对话右上角「团队成员」条（点 chip → 右侧栏内嵌该成员对话）；侧车面板 `http://127.0.0.1:4317/panel`
   （Trace 瀑布 / DAG / 模型路由 / 审批队列）。
-- 收工：`team_report({teamId})` 导出 Markdown（成员、DAG、决策、审计含 before/after 哈希）给用户。
+- 收工顺序：成员全部 `done` → **Lead 提一个精简 commit**（`git add` 本批任务涉及的文件，message 一行
+  说明做了什么）→ `team_report({teamId})` 导出 Markdown（成员、DAG、决策、审计含 before/after 哈希）给用户。
+- 验收归用户：把「产物路径 + 最短验收步骤」写给用户就结束，**不要再自己去跑一遍确认**；
+  用户说有问题时，再把反馈拆成新的 `team_task` 派回去。
 - 越界：成员动了写域外或有风险的域会挂起等 `team_scope({action:"decide"})`；批准是单次授权、带 TTL。
