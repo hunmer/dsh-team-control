@@ -54,12 +54,12 @@ const main = async () => {
       /团队不存在或 teamId 无效: team_nope/, '404 明确报团队不存在');
     assert.equal((await sidecar.api.get(`/api/teams/${team.id}/members`)).items.length, 0, '失败的调用没有往真实团队里建成员');
 
-    // ④ 正常路径不受影响：带 description 也能建出成员
-    const created = await spawn.execute({ teamId: team.id, name: 'probe', description: '回归探针' }, {});
-    assert.equal(created?.member?.name, 'probe', 'team_spawn 正常创建成员');
-    assert.equal((await sidecar.api.get(`/api/teams/${team.id}/members`)).items.length, 1, '成员落库 1 个');
+    // ④ 合法 teamId 但宿主没有 subagents 服务：明确报错，不静默建 worker 成员
+    await rejects(spawn.execute({ teamId: team.id, name: 'probe', prompt: '你是 probe。' }, {}),
+      /subagents 服务不可用/, '没有 subagents 时明确报错');
+    assert.equal((await sidecar.api.get(`/api/teams/${team.id}/members`)).items.length, 0, '失败调用没有建成员');
 
-    console.log('PASS plugin-teamid-guard — 缺 teamId/无效 teamId 显式报错，正常路径不受影响');
+    console.log('PASS plugin-teamid-guard — 缺 teamId/无效 teamId/无 subagents 均显式报错，不静默建成员');
   } finally {
     await sidecar.close();
   }

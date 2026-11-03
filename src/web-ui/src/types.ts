@@ -24,14 +24,17 @@ export interface Member {
   currentTaskId?: string;
   last?: string;
   next?: string;
-  leaseUntil?: string;
   pct?: number;
   stale?: boolean;
   blockers?: Blocker[];
   /** member.created_at，列表按它排序 */
   createdAt?: string;
-  /** 成员在 DSH 里的会话 id（agent runtime 才有；可据此打开该成员的对话） */
+  /** 成员在 DSH 里的会话 id（可据此打开该成员的对话） */
   agentSessionId?: string | null;
+  /** 该成员实际生效的 DSH permission preset（sandbox + approval policy） */
+  permissionPreset?: string | null;
+  /** 该成员实际生效的 DSH agent preset（组合：工具/skill/MCP + 系统提示词） */
+  agentPreset?: string | null;
 }
 
 export interface DagEdge {
@@ -57,40 +60,6 @@ export interface DagData {
   edges: DagEdge[];
   ready?: string[];
   criticalPath?: string[];
-}
-
-export interface Policy {
-  id: string;
-  subjectType?: string;
-  subjectId?: string;
-  domain?: string;
-  matcher?: string;
-  ops?: string[] | string;
-  mode?: string;
-  expiresAt?: string;
-}
-
-export interface MatrixRow {
-  memberId: string;
-  name?: string;
-  role?: string;
-  fs?: unknown;
-  exec?: unknown;
-  net?: unknown;
-  env?: unknown;
-}
-
-export interface ScopeRequest {
-  id: string;
-  memberId: string;
-  domain?: string;
-  target?: string;
-  risk?: string;
-  reason?: string;
-  diffSize?: number;
-  fallback?: string;
-  blockedStep?: string;
-  createdAt?: string;
 }
 
 export interface TeamMessage {
@@ -129,7 +98,6 @@ export interface Task {
   assignee?: string | null;
   status: string;
   plan?: unknown[];
-  writeScopes?: string[];
   acceptance?: string | null;
   attempts?: number;
   maxAttempts?: number;
@@ -156,6 +124,10 @@ export interface Team {
   archivedAt?: string | null;
   /** 创建该团队的 lead 会话 id（面板据此把成员会话的父会话带给 DSH） */
   leadSessionId?: string | null;
+  /** 团队默认的 DSH permission preset；成员未单独指定时继承它 */
+  permissionPreset?: string | null;
+  /** 团队默认的 DSH agent preset；成员未单独指定时继承它 */
+  agentPreset?: string | null;
 }
 
 /** DSH 工作区注册表里的一项（/api/workspaces，Host 插件从 ctx.workspaceRegistry 同步）。 */
@@ -329,4 +301,16 @@ export interface MemberChange {
   added?: number | null;
   deleted?: number | null;
   createdAt?: string;
+}
+
+/** agentPreset 目录行：Host 插件同步到 sidecar，面板只读展示；团队自建可排队删除。 */
+export interface PresetRow {
+  id: string;
+  name?: string | null;
+  description?: string | null;
+  order?: number | null;
+  source: 'host' | 'team';
+  file?: string | null;
+  broken?: string | null;
+  updatedAt?: string | null;
 }

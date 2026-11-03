@@ -10,28 +10,25 @@ const check = (name, fn) => { try { const d = fn(); results.push({ name, ok: tru
 try {
   s = await startSidecar({ dataDir: tmp.dataDir, ws: tmp.ws });
   const team = await s.api.post('/api/teams', { name: 'panel-team', workspace: tmp.ws, maxMembers: 4, maxConcurrency: 2 });
-  await s.api.post('/api/policies', { teamId: team.id, subjectType: 'team', subjectId: team.id, domain: 'fs', matcher: '**', ops: ['write'], mode: 'allow' });
   const m1 = await s.api.post(`/api/teams/${team.id}/members`, { name: 'panel-alpha', role: 'writer' });
   const m2 = await s.api.post(`/api/teams/${team.id}/members`, { name: 'panel-beta', role: 'reader' });
 
-  const done = await s.api.post('/api/tasks', {
+  await s.api.post('/api/tasks', {
     teamId: team.id, subject: 'panel done task', assignee: m1.id,
-    plan: [{ step: 'S1', phase: 'write', action: 'write', target: 'p.txt', op: { kind: 'fs.write', args: { path: 'p.txt', content: 'panel\n' } } }],
+    plan: [{ step: 'S1', detail: '由面板契约检查创建' }],
   });
-  await waitFor('done', async () => (await s.api.get(`/api/tasks/${done.id}`)).status === 'done', { timeout: 20000 });
-
-  const running = await s.api.post('/api/tasks', {
-    teamId: team.id, subject: 'panel long task', assignee: m1.id,
-    plan: Array.from({ length: 8 }, (_, i) => ({ step: `S${i + 1}`, phase: 'wait', action: 'sleep', target: `t${i}`, op: { kind: 'sleep', args: { ms: 120 } } })),
+  await s.api.post('/api/tasks', {
+    teamId: team.id, subject: 'panel long task', assignee: m2.id,
+    plan: Array.from({ length: 8 }, (_, i) => ({ step: `S${i + 1}`, detail: `第 ${i + 1} 步` })),
   });
-  await waitFor('running', async () => (await s.api.get(`/api/status?member=${m1.id}`)).members[0].status === 'running', { timeout: 15000 });
 
-  // 让 m2 产生一次越界申请 + 一条消息 + 一个 todo
-  const sr = await s.api.post('/api/scope-requests', { memberId: m2.id, domain: 'fs', target: 'config/x.json', reason: 'panel contract', diffSize: 12, risk: 'low', blockedStep: 'S2', fallback: 'outbox' });
-  await s.api.post('/api/messages', { teamId: team.id, from: 'lead', to: m2.id, kind: 'note', payload: { hello: 'panel' }, correlationId: 'corr-1' });
+  // 让 m2 产生一条审批 + 一条消息 + 一个 todo
+  await s.api.post('/api/approvals', { id: 'apr_panel_1', teamId: team.id, memberId: m2.id, sessionId: 'sess_panel', toolName: 'fs', reason: 'panel contract' });
+  await s.api.post('/api/messages', { teamId: team.id, from: m1.id, to: m2.id, kind: 'note', payload: { hello: 'panel' }, correlationId: 'corr-1' });
   await s.api.post('/api/todos', { teamId: team.id, memberId: m2.id, title: 'panel todo' });
 
   sse = sseOpen(s.url, s.token, { team: team.id });
+  await s.api.post('/api/approvals', { id: 'apr_panel_2', teamId: team.id, memberId: m2.id, toolName: 'exec', reason: 'sse kick' });
   await sse.waitFor(() => sse.frames.length > 0, { timeout: 5000 });
 
   // ---------- 静态资源（Vite 构建产物：/panel/assets/app-*.js + panel-*.css） ----------
@@ -75,33 +72,19 @@ try {
     return `${steps.items.length} events`;
   });
 
-  const matrix = await s.api.get(`/api/permission-matrix?team=${team.id}`);
-  check('GET /api/permission-matrix', () => {
-    assert(Array.isArray(matrix.items) && matrix.items.length === 2, 'items');
-    const item = matrix.items[0];
-    for (const k of ['memberId', 'name', 'role', 'matrix', 'rules']) assert(k in item, `missing ${k}`);
-    for (const d of ['fs', 'exec', 'net', 'env']) {
-      assert(Array.isArray(item.matrix[d]), `matrix.${d} array`);
-      for (const p of item.matrix[d]) for (const k of ['op', 'target', 'allowed', 'effect']) assert(k in p, `probe missing ${k}`);
-    }
-    return `rules=${item.rules.length}`;
+  const aprs = await s.api.get(`/api/approvals?team=${team.id}&status=pending`);
+  check('GET /api/approvals', () => {
+    assert(aprs.items.length >= 1, 'pending count');
+    const a = aprs.items.find((x) => x.id === 'apr_panel_1');
+    for (const k of ['id', 'teamId', 'memberId', 'sessionId', 'toolName', 'reason', 'status', 'decidedBy', 'createdAt']) assert(k in a, `missing ${k}`);
+    assert(a.status === 'pending' && a.memberId === m2.id, 'pending/member');
+    return a.id;
   });
 
-  // 允许写时矩阵应显示 fs.write allow
-  check('matrix 反映 allow 规则', () => {
-    const item = matrix.items.find((x) => x.memberId === m1.id);
-    const w = item.matrix.fs.find((p) => p.op === 'write');
-    assert(w.allowed === true, `fs.write 应 allow，实际 ${JSON.stringify(w)}`);
-    return 'allow';
-  });
-
-  const reqs = await s.api.get(`/api/scope-requests?team=${team.id}&status=pending`);
-  check('GET /api/scope-requests', () => {
-    assert(reqs.items.length === 1, 'pending count');
-    const r = reqs.items[0];
-    for (const k of ['id', 'memberId', 'domain', 'target', 'reason', 'diffSize', 'risk', 'blockedStep', 'fallback', 'createdAt', 'status']) assert(k in r, `missing ${k}`);
-    assert(r.status === 'pending', 'status');
-    return r.id;
+  check('team.permissionPreset 契约', () => {
+    assert(teams.items[0].permissionPreset === 'workspace-write', `permissionPreset=${teams.items[0].permissionPreset}`);
+    assert(!('runtime' in teams.items[0]), '不再暴露 runtime');
+    return 'workspace-write';
   });
 
   const msgs = await s.api.get(`/api/messages?team=${team.id}`);
@@ -116,11 +99,8 @@ try {
   const todos = await s.api.get(`/api/todos?team=${team.id}`);
   check('GET /api/todos', () => { assert(todos.items.length === 1 && todos.items[0].title === 'panel todo', 'todo'); return 'ok'; });
 
-  const policies = await s.api.get(`/api/policies?team=${team.id}`);
-  check('GET /api/policies', () => { assert(policies.items.length >= 4, 'policies'); assert(policies.items[0].matcher, 'matcher'); return `${policies.items.length}`; });
-
   const report = await s.api.get(`/api/report?team=${team.id}`);
-  check('GET /api/report', () => { assert(typeof report === 'string' && report.includes('before_hash') && report.includes('panel-alpha'), 'markdown'); return `${report.length}B`; });
+  check('GET /api/report', () => { assert(typeof report === 'string' && report.includes('panel-team') && report.includes('审批'), 'markdown'); return `${report.length}B`; });
 
   const hist = await s.api.get(`/api/events/history?team=${team.id}`);
   check('GET /api/events/history', () => { assert(hist.items.length > 0, 'history'); return `${hist.items.length}`; });

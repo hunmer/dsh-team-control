@@ -81,12 +81,11 @@ runAc(AC, async () => {
     assertEqual(h0.items.filter((e) => e.action === 'task.todo' && e.taskId === queued.id).length, 0, '未派发任务不写成员事件');
 
     // ---- ⑤ 已派发任务：事件 target 显示进度、meta.by 记录写入者 ----
-    const member = one(await api.post(`/api/teams/${team.id}/members`, { name: 'writer' }), 'member');
-    const running = one(await api.post('/api/tasks', { teamId: team.id, subject: '运行中的任务', assignee: member.id, plan: PLAN }), 'task');
-    await waitFor('任务被派发', async () => {
-      const t = one(await api.get(`/api/tasks/${running.id}`), 'task');
-      return ['running', 'done'].includes(t.status) ? t : null;
-    });
+    const member = one(await api.post('/api/agents/register', { teamId: team.id, name: 'writer', sessionId: 'sess_todo' }), 'member');
+    await new Promise((r) => setTimeout(r, 400));
+    const claimed = await api.post('/api/agents/dispatch', { teamId: team.id });
+    assertEqual(claimed.task?.id, queued.id, '排队中的任务被派发给 agent');
+    const running = queued;
     const w3 = await api.post(`/api/tasks/${running.id}/todos`, {
       by: member.id,
       items: [{ title: '写初稿', status: 'done' }, { title: '验收', status: 'active' }],

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// bin/dsh-team.mjs — CLI：up / down / status / dag / logs / approve / report
+// bin/dsh-team.mjs — CLI：up / down / status / dag / logs / approvals / report
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,7 +11,6 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '-f' || a === '--follow') { opts.follow = true; continue; }
     if (a === '-o' || a === '--out') { opts.out = argv[++i]; continue; }
-    if (a === '--deny') { opts.deny = true; continue; }
     if (a === '--json') { opts.json = true; continue; }
     if (a.startsWith('--')) {
       const k = a.slice(2);
@@ -119,7 +118,7 @@ const HELP = `dsh-team — Agent 编排协同开发 CLI
   dsh-team status <team> [--json]
   dsh-team dag <team> [--json]
   dsh-team logs <member> [-f] [--since N]
-  dsh-team approve <request-id> [--deny] [--reason TEXT] [--ttl SEC]
+  dsh-team approvals <team> [--status pending|allowed|rejected|expired]
   dsh-team report <team> [-o run.md]
 
 全局：--url URL / --token TOKEN / --data DIR（默认 ~/.dsh/team 或 $DSH_TEAM_HOME）
@@ -177,18 +176,17 @@ async function main() {
       }
       return;
     }
-    case 'approve': {
-      const id = opts._[0];
-      if (!id) throw new Error('用法：dsh-team approve <request-id> [--deny]');
-      const body = {
-        decision: opts.deny ? 'denied' : 'approved',
-        decidedBy: 'cli',
-        reason: opts.reason || (opts.deny ? 'denied by CLI' : 'approved by CLI'),
-        ttlSeconds: Number(opts.ttl || 60),
-        singleUse: true,
-      };
-      const res = await api(opts, `/api/scope-requests/${encodeURIComponent(id)}/decide`, { method: 'POST', body: JSON.stringify(body) });
-      console.log(`${body.decision} ${id}  grant=${res.grant?.id ?? '-'}  decision=${res.decision?.id ?? '-'}`);
+    case 'approvals': {
+      const team = opts._[0];
+      if (!team) throw new Error('用法：dsh-team approvals <team> [--status pending|allowed|rejected|expired]');
+      const status = typeof opts.status === 'string' ? `&status=${encodeURIComponent(opts.status)}` : '';
+      const res = await api(opts, `/api/approvals?team=${encodeURIComponent(team)}${status}`);
+      if (opts.json) { console.log(JSON.stringify(res, null, 2)); return; }
+      const items = res.items || [];
+      if (!items.length) { console.log('（没有审批记录）'); return; }
+      for (const a of items) {
+        console.log(`${a.status.padEnd(8)} ${a.id}  ${a.toolName || '-'}  member=${a.memberId || '-'}  ${a.decidedBy ? `by=${a.decidedBy}` : ''} ${a.reason || ''}`);
+      }
       return;
     }
     case 'report': {

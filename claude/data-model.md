@@ -1,21 +1,21 @@
 # 数据模型
 
-## 表（`src/db.mjs`，`SCHEMA_VERSION = 7`，共 23 张）
+> **v2 变更（2026-11）**：worker 运行时与四域 broker 已移除；成员一律是真 sub-agent，权限由 DSH 权限预设按成员分配，成员审批经 `team_approve` 转发给 Lead。下文涉及 `worker` / `broker` / `policy` / `scope` 的段落为历史记录，以 [CONTRACT.md](../docs/CONTRACT.md) 与 [README](../README.md) 为准。
+
+## 表（`src/db.mjs`，`SCHEMA_VERSION = 11`，共 21 张）
 
 | 表 | 角色 |
 |---|---|
 | `meta` | 键值（含 `schema_version`） |
-| `team` | 团队：`runtime`(worker/agent)、`max_members`、`workspace`、状态、归档时间 |
-| `member` | 成员定义：`kind`、`role`、provider/model、`plan`、`agent_session_id`、`retired_at` |
-| `member_state` | **状态真相源**（物化视图）：`status`、`seq`、`lease_until`、`stale` |
-| `member_runtime` | 运行时细节：pid、端口、启动时间 |
+| `preset` | agentPreset 目录镜像（Host 插件同步：id/name/description/ord/source/file/broken/`doc_json`） |
+| `preset_delete` | 面板删除队列（插件 5s 轮询执行后 ack；`attempts`/`last_error` 记录失败，>=5 次停止重试） |
+| `team` | 团队：`workspace`、`max_members`/`max_concurrency`、失败策略、`permission_preset`、`agent_preset`、`lead_session_id`、归档时间 |
+| `member` | 成员定义：`role`、`model`、`context_mode`、`agent_session_id`、`reasoning_effort`、`permission_preset`、`agent_preset` |
+| `member_state` | **状态真相源**（物化视图）：`status`、`seq`、`step`、`stale` |
 | `task` | 任务/DAG 节点：`status`、`priority`、`acceptance`、`plan`、`attempts` |
 | `dep` | 依赖边：`from`/`to`/`condition` |
-| `event` | 只增事件（`seq`、`type`、`phase`、`payload`） |
-| `policy` | 四域规则：`subject_type`(team/member/role)、`domain`、`effect`、`match`、`constraints` |
-| `scope_request` | 越界申请：`status`(pending/approved/denied/expired)、`target`、`risk` |
-| `scope_grant` | 单次授权：`expires_at`、`used_at`、`single_use`、`ttl` |
-| `decision` | 决策落盘（C4）：`request_id`、`decided_by`、`reason` |
+| `event` | 只增事件（`seq`、`phase`、`action`、`result`、`meta`） |
+| `approval` | 宿主审批镜像：`status`(pending/allowed/rejected/cancelled/expired)、`tool_name`、`reason`、`decided_by` |
 | `message` | 持久信箱：`corr_id`、`delivery`(pending/delivered/acked) |
 | `todo` | 任务清单（面板可见） |
 | `audit` | 审计：`actor`、`domain`、`action`、`target`、`before_sha`、`after_sha` |
@@ -26,8 +26,6 @@
 | `workspace` | 工作区定义 |
 | `file_state` | 文件基线哈希（供 diff/CAS） |
 | `llm_provider` / `llm_route` | 模型目录与启停开关 |
-
-索引：`idx_member_team`、`idx_task_team`、`idx_dep_to`、`idx_event_team`、`idx_event_member`、`idx_policy_team`、`idx_scope_status`、`idx_grant_member`、`idx_msg_to`、`idx_msg_corr`、`idx_audit_team`、`idx_span_team`、`idx_span_parent`、`idx_artifact_team`、`idx_change_team`、`idx_change_member`、`idx_context_team`、`idx_llm_route_enabled`、`idx_todo_task`、`idx_member_session`。
 
 ## 事件溯源（C2）
 

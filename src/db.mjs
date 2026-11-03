@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 11;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -16,9 +16,10 @@ CREATE TABLE IF NOT EXISTS team (
   max_concurrency INTEGER NOT NULL DEFAULT 8,
   failure_policy TEXT NOT NULL DEFAULT 'continue',
   max_attempts INTEGER NOT NULL DEFAULT 3,
-  auto_approve_json TEXT,
-  auto_takeover INTEGER NOT NULL DEFAULT 0,
-  runtime TEXT NOT NULL DEFAULT 'worker',
+  -- 团队默认权限预设（workspace-write / danger-full-access，或宿主自定义名）
+  permission_preset TEXT NOT NULL DEFAULT 'workspace-write',
+  -- 团队默认 agent 组合预设；NULL = 不指定（沿用宿主默认）
+  agent_preset TEXT,
   archived_at TEXT,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
@@ -28,6 +29,10 @@ CREATE TABLE IF NOT EXISTS member (
   role TEXT, model TEXT, context_mode TEXT,
   default_plan_json TEXT, quota_json TEXT,
   agent_session_id TEXT, reasoning_effort TEXT,
+  -- 成员级覆盖；NULL = 继承 team.permission_preset
+  permission_preset TEXT,
+  -- 成员级 agent 组合预设；NULL = 继承 team.agent_preset
+  agent_preset TEXT,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
   UNIQUE(team_id, name)
 );
@@ -40,12 +45,6 @@ CREATE TABLE IF NOT EXISTS member_state (
   step TEXT, phase TEXT, status TEXT NOT NULL DEFAULT 'queued',
   last TEXT, next TEXT, blockers_json TEXT NOT NULL DEFAULT '[]',
   as_of TEXT, stale INTEGER NOT NULL DEFAULT 0
-);
-
--- 易失运行时信息（租约/进程），刻意不入 member_state，避免破坏 C2 可重建性
-CREATE TABLE IF NOT EXISTS member_runtime (
-  member_id TEXT PRIMARY KEY, lease_until INTEGER, pid INTEGER,
-  started_at TEXT, updated_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task (
@@ -81,38 +80,27 @@ CREATE TABLE IF NOT EXISTS event (
 CREATE INDEX IF NOT EXISTS idx_event_team ON event(team_id, id);
 CREATE INDEX IF NOT EXISTS idx_event_member ON event(member_id, seq);
 
-CREATE TABLE IF NOT EXISTS policy (
+-- 权限审批：成员会话在 permission preset 的 approval=ask 下触发的审批。
+-- sidecar 只做待办/审计镜像，真正的允许/拒绝由 Host 插件里的 team_approve 决定并回填。
+CREATE TABLE IF NOT EXISTS approval (
   id TEXT PRIMARY KEY, team_id TEXT NOT NULL,
-  subject_type TEXT NOT NULL, subject_id TEXT NOT NULL,
-  domain TEXT NOT NULL, matcher TEXT NOT NULL,
-  ops_json TEXT NOT NULL, mode TEXT NOT NULL,
-  constraints_json TEXT, expires_at INTEGER,
-  created_at TEXT NOT NULL
+  member_id TEXT, session_id TEXT,
+  tool_name TEXT NOT NULL DEFAULT '', reason TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  decided_by TEXT, decided_at TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_policy_team ON policy(team_id, domain);
+CREATE INDEX IF NOT EXISTS idx_approval_team ON approval(team_id, status, created_at);
 
-CREATE TABLE IF NOT EXISTS scope_request (
-  id TEXT PRIMARY KEY, team_id TEXT NOT NULL, member_id TEXT NOT NULL,
-  domain TEXT NOT NULL, target TEXT NOT NULL, reason TEXT NOT NULL,
-  diff_size INTEGER, risk TEXT, blocked_step TEXT, fallback TEXT,
-  status TEXT NOT NULL DEFAULT 'pending', decision_id TEXT, grant_id TEXT,
-  created_at TEXT NOT NULL, decided_at TEXT
+-- agentPreset 目录镜像：Host 插件同步过来，面板只读；删除是「面板排队 → 插件执行」。
+CREATE TABLE IF NOT EXISTS preset (
+  id TEXT PRIMARY KEY, name TEXT, description TEXT, ord INTEGER,
+  source TEXT NOT NULL DEFAULT 'team', file TEXT, broken TEXT,
+  doc_json TEXT, updated_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_scope_status ON scope_request(team_id, status);
-
-CREATE TABLE IF NOT EXISTS scope_grant (
-  id TEXT PRIMARY KEY, request_id TEXT, team_id TEXT NOT NULL, member_id TEXT NOT NULL,
-  domain TEXT NOT NULL, matcher TEXT NOT NULL, ops_json TEXT NOT NULL,
-  single_use INTEGER NOT NULL DEFAULT 1, expires_at INTEGER,
-  granted_by TEXT, used_at TEXT, created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_grant_member ON scope_grant(team_id, member_id, domain);
-
-CREATE TABLE IF NOT EXISTS decision (
-  id TEXT PRIMARY KEY, team_id TEXT NOT NULL, subject TEXT NOT NULL, kind TEXT NOT NULL,
-  request_id TEXT, options_json TEXT, chosen TEXT NOT NULL,
-  decided_by TEXT, reason TEXT, evidence TEXT, decided_at TEXT NOT NULL,
-  ttl_seconds INTEGER
+CREATE TABLE IF NOT EXISTS preset_delete (
+  id TEXT PRIMARY KEY, requested_at TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT
 );
 
 CREATE TABLE IF NOT EXISTS message (
@@ -259,24 +247,35 @@ export function openDb(file) {
   db.exec('PRAGMA foreign_keys=OFF;');     // 关系由应用层维护（便于按 run 导出/清理）
   db.exec(DDL);
   // 轻量迁移：老库补列（不重建表）
-  ensureColumn(db, 'team', 'auto_takeover', 'INTEGER NOT NULL DEFAULT 0');
-  ensureColumn(db, 'team', 'runtime', "TEXT NOT NULL DEFAULT 'worker'");
+  ensureColumn(db, 'team', 'permission_preset', "TEXT NOT NULL DEFAULT 'workspace-write'");
+  ensureColumn(db, 'team', 'agent_preset', 'TEXT');
   ensureColumn(db, 'team', 'archived_at', 'TEXT');
   ensureColumn(db, 'team', 'lead_session_id', 'TEXT');
   ensureColumn(db, 'member', 'agent_session_id', 'TEXT');
   ensureColumn(db, 'member', 'reasoning_effort', 'TEXT');
+  ensureColumn(db, 'member', 'permission_preset', 'TEXT');
+  ensureColumn(db, 'member', 'agent_preset', 'TEXT');
   ensureColumn(db, 'llm_route', 'efforts_json', 'TEXT');
   ensureColumn(db, 'llm_route', 'default_effort', 'TEXT');
   ensureColumn(db, 'llm_route', 'allowed_efforts_json', 'TEXT');
   ensureColumn(db, 'todo', 'task_id', 'TEXT');
   ensureColumn(db, 'artifact', 'added', 'INTEGER');
   ensureColumn(db, 'artifact', 'deleted', 'INTEGER');
+  ensureColumn(db, 'preset', 'doc_json', 'TEXT');
+  ensureColumn(db, 'preset_delete', 'attempts', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'preset_delete', 'last_error', 'TEXT');
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_todo_task ON todo(task_id, order_no)'); } catch { /* ignore */ }
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_member_session ON member(agent_session_id)'); } catch { /* ignore */ }
   const get = q(db);
   const cur = get('SELECT value FROM meta WHERE key=?').get('schema_version');
   if (!cur) get('INSERT INTO meta (key,value) VALUES (?,?)').run('schema_version', String(SCHEMA_VERSION));
   else if (Number(cur.value) < SCHEMA_VERSION) {
+    if (Number(cur.value) < 8) {
+      // v8：移除 worker 四域权限模块，旧库里的策略/scope/决策/租约表一并清掉。
+      for (const table of ['policy', 'scope_request', 'scope_grant', 'decision', 'member_runtime']) {
+        try { db.exec(`DROP TABLE IF EXISTS ${table}`); } catch { /* ignore */ }
+      }
+    }
     get('UPDATE meta SET value=? WHERE key=?').run(String(SCHEMA_VERSION), 'schema_version');
   }
   return db;

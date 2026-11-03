@@ -1,5 +1,7 @@
 # 对外接口
 
+> **v2 变更（2026-11）**：worker 运行时与四域 broker 已移除；成员一律是真 sub-agent，权限由 DSH 权限预设按成员分配，成员审批经 `team_approve` 转发给 Lead。下文涉及 `worker` / `broker` / `policy` / `scope` 的段落为历史记录，以 [CONTRACT.md](../docs/CONTRACT.md) 与 [README](../README.md) 为准。
+
 ## 1. REST（`src/server.mjs`，前缀 `/api`）
 
 返回约定：单资源直接返回对象本体；列表返回 `{asOf, version, items}`；错误 `{error:{code,message,detail}}`，`code` 取 `ERR.*`。
@@ -40,9 +42,12 @@
 **消息**
 - `POST|GET /api/messages`、`POST /api/messages/{id}/ack`
 
-**权限**
-- `POST|GET /api/policies`、`DELETE /api/policies/{id}`、`GET /api/permission-matrix`
-- `POST|GET /api/scope-requests`、`POST /api/scope-requests/{id}/decide`
+**审批镜像**
+- `POST|GET /api/approvals`、`POST /api/approvals/{id}/decide`
+
+**组合预设目录**
+- `GET /api/presets`、`POST /api/presets/sync`、`POST /api/presets/{id}/delete`
+- `GET /api/presets/pending-deletes`、`POST /api/presets/pending-deletes/{id}/ack`
 
 **待办**
 - `GET /api/todos`、`POST /api/tasks/{id}/todos`、`POST /api/todos`、`PATCH /api/todos/{id}`
@@ -65,29 +70,28 @@
 | `status <team> [--json]` | 团队看板摘要 |
 | `dag <team> [--json]` | DAG 与关键路径 |
 | `logs <member> [-f] [--since N]` | 成员日志（`-f` 跟随） |
-| `approve <request-id> [--deny] [--reason TEXT] [--ttl SEC]` | 审批越界请求 |
+| `approvals <team> [--status pending\|allowed\|rejected] [--json]` | 查审批镜像（只读） |
 | `report <team> [-o run.md]` | 导出运行报告 |
 
 全局：`--url`、`--token`、`--data`。
 
-## 3. 插件工具（`dsh-plugin/index.js` `buildTools`，共 12 个）
+## 3. 插件工具（`dsh-plugin/index.js` `buildTools`，共 13 个）
 
-| 工具 | 行号 | 作用 |
-|---|---|---|
-| `team_create` | :1030 | 建团队，`runtime:"worker"\|"agent"`、`maxMembers`、`workspace` |
-| `team_spawn` | :1068 | 加成员，可按 `agentProvider`/`model`/`reasoningEffort` 路由 |
-| `team_models` | :1179 | 列出可用 provider/model 路由 |
-| `team_status` | :1219 | `detail:"summary"`（成员）/`"dag"`（任务图） |
-| `team_task` | :1267 | 建任务（DAG 节点），`plan` 对 worker 是代理动作、对 agent 是简报 |
-| `team_send` | :1326 | 给成员/广播投消息 |
-| `team_todo` | :1395 | 设置任务清单（落 sidecar，面板可见） |
-| `team_report_task` | :1433 | 成员报告任务结果（done/failed/blocked） |
-| `team_dispatch` | :1471 | 手动泵一次派发器 |
-| `team_scope` | :1487 | 四域越界请求的 list/request/decide |
-| `team_control` | :1557 | interrupt/resume/assign |
-| `team_report` | :1600 | 导出 Markdown 运行报告（含 audit 前后哈希） |
-
-> README 与 `skills/dsh-agent-team/SKILL.md` 仍写「11 个」——`team_todo` 是后加的，改文档时一并修正。
+| 工具 | 作用 |
+|---|---|
+| `team_create` | 建团队，`permissionPreset`、`agentPreset`、`maxMembers`、`workspace` |
+| `team_spawn` | 拉起 sub-agent 成员，`permissionPreset`/`agentPreset` 按成员覆盖 |
+| `team_preset` | 自建 agentPreset：`list`/`save`/`show`，写 `presetDir` 并即时注册 |
+| `team_models` | 列出可用 provider/model 路由 |
+| `team_status` | `detail:"summary"`（成员）/`"dag"`（任务图） |
+| `team_task` | 建任务（DAG 节点），`plan` 是给成员的简报 |
+| `team_send` | 给成员/广播投消息 |
+| `team_todo` | 设置任务清单（落 sidecar，面板可见） |
+| `team_report_task` | 成员报告任务结果（done/failed/blocked） |
+| `team_dispatch` | 手动泵一次派发器 |
+| `team_approve` | Lead 裁决成员审批（allow/deny），转成宿主 outcome |
+| `team_control` | interrupt/resume/assign |
+| `team_report` | 导出 Markdown 运行报告（含审批与 audit） |
 
 ## 4. Host 同源代理（`dsh-plugin-ui/index.js`）
 

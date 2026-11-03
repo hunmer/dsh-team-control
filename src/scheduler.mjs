@@ -1,4 +1,4 @@
-// scheduler.mjs — DAG 依赖自动派发（FR-2）：依赖满足即 ready，主动唤醒，不依赖 Lead 轮询
+// scheduler.mjs — DAG 依赖推进（FR-2）：依赖满足即 ready；实际派发由 Host 插件调用 /api/agents/dispatch
 import fs from 'node:fs';
 import path from 'node:path';
 import { q } from './db.mjs';
@@ -10,7 +10,7 @@ export function rowToTask(r) {
   if (!r) return null;
   return {
     id: r.id, teamId: r.team_id, subject: r.subject, assignee: r.assignee ?? null,
-    status: r.status, plan: parseJson(r.plan_json, []), writeScopes: parseJson(r.write_scopes_json, []),
+    status: r.status, plan: parseJson(r.plan_json, []),
     acceptance: r.acceptance ?? null, attempts: Number(r.attempts),
     maxAttempts: Number(r.max_attempts), failurePolicy: r.failure_policy ?? null,
     priority: Number(r.priority), attemptedAt: r.attempted_at, finishedAt: r.finished_at,
@@ -19,13 +19,11 @@ export function rowToTask(r) {
 }
 
 export class Scheduler {
-  constructor({ db, events, runner, sse, broker, log = () => {}, settleMs = 200, tickMs = 150 }) {
+  constructor({ db, events, sse, log = () => {}, settleMs = 200, tickMs = 150 }) {
     this.db = db;
     this.get = q(db);
     this.events = events;
-    this.runner = runner;
     this.sse = sse;
-    this.broker = broker;
     this.log = log;
     this.settleMs = settleMs;   // 建任务后先留一个「声明依赖」的窗口，避免建任务即启动的竞态
     this.timers = new Set();
@@ -44,7 +42,7 @@ export class Scheduler {
 
   // ---------- 建图 ----------
   createTask(input) {
-    const { teamId, subject, assignee = null, plan = [], writeScopes = [], acceptance = null, priority = 0, failurePolicy = null, maxAttempts = null, deps = [] } = input;
+    const { teamId, subject, assignee = null, plan = [], acceptance = null, priority = 0, failurePolicy = null, maxAttempts = null, deps = [] } = input;
     const team = this.get('SELECT * FROM team WHERE id=?').get(teamId);
     if (!team) throw ERR.notFound('team');
     if (!subject) throw ERR.bad('subject required');
@@ -52,10 +50,10 @@ export class Scheduler {
     const id = newId('task');
     const t = nowIso();
     this.get(
-      `INSERT INTO task (id, team_id, subject, assignee, status, plan_json, write_scopes_json, acceptance,
+      `INSERT INTO task (id, team_id, subject, assignee, status, plan_json, acceptance,
         attempts, max_attempts, failure_policy, priority, created_at, updated_at)
-       VALUES (?,?,?,?,'pending',?,?,?,0,?,?,?,?,?)`
-    ).run(id, teamId, subject, assignee, json(plan), json(writeScopes), acceptance,
+       VALUES (?,?,?,?,'pending',?,?,0,?,?,?,?,?)`
+    ).run(id, teamId, subject, assignee, json(plan), acceptance,
       Number(maxAttempts ?? team.max_attempts), failurePolicy, Number(priority) || 0, t, t);
     // 支持建任务时原子声明依赖（deps: [{from, condition, artifactPath}]，from 为上游任务）
     const added = [];
@@ -218,81 +216,15 @@ export class Scheduler {
         }
       }
 
-      // agent 团队：成员是 DSH sub-agent，没有可拉起的 worker 进程。
-      // 依赖推进（上面一步）照常发生，但派发交给 Host 插件（POST /api/agents/dispatch → sendMessage）。
-      if ((team.runtime || 'worker') === 'agent') return { started, ready, blocked };
-
-      // 2) 并发控制 + 派发
-      const running = this.get("SELECT COUNT(*) AS c FROM task WHERE team_id=? AND status='running'").get(teamId);
-      const maxConc = Number(team.max_concurrency) || 8;
-      let slots = Math.max(0, maxConc - Number(running.c));
-      const candidates = this.get(
-        "SELECT * FROM task WHERE team_id=? AND status='ready' ORDER BY priority ASC, created_at ASC"
-      ).all(teamId);
-      for (const row of candidates) {
-        if (slots <= 0) break;
-        const task = rowToTask(row);
-        // 依赖可能是在任务已置 ready 之后才声明的：派发前必须再求值一次，不满足就降级
-        const r = this.readiness(task, team.workspace);
-        if (!r.ready) {
-          const unsatisfiable = r.blockers.some((b) => String(b.detail || '').includes('unsatisfiable'));
-          this.get('UPDATE task SET status=?, updated_at=? WHERE id=?').run(unsatisfiable ? 'blocked' : 'pending', nowIso(), task.id);
-          this.emitTaskState(teamId, task.id, unsatisfiable ? 'blocked' : 'pending', task.assignee);
-          continue;
-        }
-        // 建任务后留 settle 窗口：让 Lead 有机会先声明依赖，再派发
-        if (Date.now() - Date.parse(task.createdAt) < this.settleMs) continue;
-        const assignee = task.assignee || this.pickIdleMember(teamId);
-        if (!assignee) break;
-        const st = this.get('SELECT status FROM member_state WHERE member_id=?').get(assignee);
-        if (!st || st.status !== 'idle') continue;
-        if (this.runner.workers.get(assignee) && !this.runner.workers.get(assignee).exited) continue;
-        try {
-          this.startTask(teamId, task, assignee);
-          started.push(task.id);
-          slots--;
-        } catch (e) {
-          this.log({ level: 'error', msg: 'start task failed', taskId: task.id, err: String(e.message) });
-        }
-      }
+      // 派发由 Host 插件完成（POST /api/agents/dispatch → sendMessage），这里只推进 DAG。
+      return { started, ready, blocked };
     } finally {
       this._busy.delete(teamId);
     }
     return { started, ready, blocked };
   }
 
-  pickIdleMember(teamId) {
-    const rows = this.get(
-      `SELECT m.id FROM member m JOIN member_state s ON s.member_id = m.id
-       WHERE m.team_id=? AND s.status='idle' AND m.id NOT IN (
-         SELECT assignee FROM task WHERE team_id=? AND status='running' AND assignee IS NOT NULL
-       ) ORDER BY m.created_at ASC`
-    ).all(teamId, teamId);
-    return rows[0]?.id ?? null;
-  }
-
-  startTask(teamId, task, assignee) {
-    const team = this.get('SELECT * FROM team WHERE id=?').get(teamId);
-    const plan = task.plan || [];
-    this.get("UPDATE task SET status='running', assignee=?, attempts=attempts+1, attempted_at=?, updated_at=? WHERE id=?")
-      .run(assignee, nowIso(), nowIso(), task.id);
-    this.get("UPDATE member SET updated_at=? WHERE id=?").run(nowIso(), assignee);
-    const m = this.get('SELECT * FROM member WHERE id=?').get(assignee);
-    // 成员进入 running：事件驱动（C2），stepIndex=-1 表示尚未开始任何 step
-    this.events.append({
-      teamId, memberId: assignee, taskId: task.id,
-      phase: 'init', action: 'task.start', target: task.subject,
-      result: 'OK', next: plan[0] ? `${plan[0].action || plan[0].op?.kind || 'step'} ${plan[0].target ?? ''}`.trim() : 'no steps',
-      status: 'running', blockers: [],
-      meta: { stepIndex: -1, step: 'S0', stepTotal: plan.length, taskId: task.id, attempt: task.attempts + 1 },
-    });
-    this.emitTaskState(teamId, task.id, 'running', assignee);
-    this.runner.start(assignee, task.id, { resumeFrom: 0 });
-    this.log({ level: 'info', msg: 'task started', teamId, taskId: task.id, memberId: assignee, plan: plan.length });
-    return true;
-  }
-
-  // ---------- 完成/失败回调（Runner 调用） ----------
+  // ---------- 完成/失败回调（Host 插件经 /api/agents 上报） ----------
   onTaskDone(ctx, args = {}) {
     const { teamId, memberId, taskId } = ctx;
     const task = this.get('SELECT * FROM task WHERE id=?').get(taskId);
@@ -365,13 +297,18 @@ export class Scheduler {
   }
 
   abortTeam(teamId, reason) {
-    for (const t of this.get("SELECT id, assignee FROM task WHERE team_id=? AND status IN ('pending','ready','blocked')").all(teamId)) {
+    for (const t of this.get("SELECT id FROM task WHERE team_id=? AND status NOT IN ('done','failed','skipped')").all(teamId)) {
       this.get("UPDATE task SET status='failed', finished_at=?, updated_at=? WHERE id=?").run(nowIso(), nowIso(), t.id);
+      this.emitTaskState(teamId, t.id, 'failed', null);
     }
     for (const m of this.get('SELECT id FROM member WHERE team_id=?').all(teamId)) {
       const st = this.events.state(m.id);
       if (st && ['running', 'blocked'].includes(st.status)) {
-        try { this.runner.interrupt(m.id, reason); } catch { /* ignore */ }
+        this.events.append({
+          teamId, memberId: m.id, taskId: null, phase: 'wait', action: 'agent.interrupt',
+          target: m.id, result: 'OK', next: reason, status: 'interrupted',
+          blockers: [{ kind: 'interrupt', detail: reason }], meta: { stepIndex: -1 },
+        });
       }
     }
   }

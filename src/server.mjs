@@ -157,16 +157,16 @@ export function createRoutes(core) {
     })],
     ['POST', /^\/api\/messages\/([^/]+)\/ack$/, async (ctx) => C.ackMessage(ctx.p[0], ctx.body.state || 'acked')],
 
-    // policies
-    ['POST', /^\/api\/policies$/, async (ctx) => C.createPolicy(ctx.body)],
-    ['GET', /^\/api\/policies$/, async (ctx) => ({ asOf: nowIso(), version: C.scheduler.version(need(qs(ctx.url).get('team'), 'team')), items: C.listPolicies(need(qs(ctx.url).get('team'), 'team')) })],
-    ['DELETE', /^\/api\/policies\/([^/]+)$/, async (ctx) => C.deletePolicy(ctx.p[0])],
-    ['GET', /^\/api\/permission-matrix$/, async (ctx) => C.permissionMatrix(need(qs(ctx.url).get('team'), 'team'))],
-
-    // scope requests
-    ['POST', /^\/api\/scope-requests$/, async (ctx) => C.createScopeRequest(ctx.body)],
-    ['GET', /^\/api\/scope-requests$/, async (ctx) => C.listScopeRequests({ teamId: qs(ctx.url).get('team'), status: qs(ctx.url).get('status') })],
-    ['POST', /^\/api\/scope-requests\/([^/]+)\/decide$/, async (ctx) => C.decideScopeRequest(ctx.p[0], ctx.body)],
+    // 权限审批：permission preset 的 approval=ask 触发，Host 插件把决定回填到这里
+    ['POST', /^\/api\/approvals$/, async (ctx) => C.createApproval(ctx.body)],
+    ['GET', /^\/api\/approvals$/, async (ctx) => C.listApprovals({ teamId: qs(ctx.url).get('team'), status: qs(ctx.url).get('status') })],
+    ['POST', /^\/api\/approvals\/([^/]+)\/decide$/, async (ctx) => C.decideApproval(ctx.p[0], ctx.body)],
+    ['GET', /^\/api\/presets$/, async () => C.listPresets()],
+    ['POST', /^\/api\/presets\/sync$/, async (ctx) => C.syncPresets(ctx.body)],
+    ['POST', /^\/api\/presets\/([^/]+)\/delete$/, async (ctx) => C.requestPresetDelete(ctx.p[0])],
+    ['GET', /^\/api\/presets\/pending-deletes$/, async () => C.pendingPresetDeletes()],
+    ['POST', /^\/api\/presets\/pending-deletes\/([^/]+)\/ack$/, async (ctx) => C.ackPresetDelete(ctx.p[0], ctx.body)],
+    ['GET', /^\/api\/presets\/([^/]+)$/, async (ctx) => C.getPreset(ctx.p[0])],
 
     // todos
     ['GET', /^\/api\/todos$/, async (ctx) => C.listTodos({ teamId: need(qs(ctx.url).get('team'), 'team'), memberId: qs(ctx.url).get('member'), taskId: qs(ctx.url).get('task') })],
@@ -194,7 +194,7 @@ export function createRoutes(core) {
   ];
 }
 
-export async function startServer({ home, port = 4317, host = '127.0.0.1', leaseMs = 15000, log = null } = {}) {
+export async function startServer({ home, port = 4317, host = '127.0.0.1', log = null } = {}) {
   const token = ensureToken(home);
   const logs = [];
   const logFn = log || ((entry) => {
@@ -202,7 +202,7 @@ export async function startServer({ home, port = 4317, host = '127.0.0.1', lease
     if (logs.length > 500) logs.shift();
     try { process.stdout.write(JSON.stringify(redactor.obj({ ts: nowIso(), ...entry })) + '\n'); } catch { /* ignore */ }
   });
-  const core = new DshTeam({ home, log: logFn, leaseMs });
+  const core = new DshTeam({ home, log: logFn });
   const routes = createRoutes(core);
 
   const server = http.createServer(async (req, res) => {
