@@ -1,23 +1,25 @@
 # 工具面与生命周期
 
-## 12 个 `team_*` 工具（`index.js` `buildTools`）
+## 13 个 `team_*` 工具（`index.js` `buildTools`）
 
-| 工具 | 行号 | 关键参数 | 语义 |
-|---|---|---|---|
-| `team_create` | :1030 | `name`、`workspace`、`runtime:"worker"\|"agent"`、`maxMembers`、`maxConcurrency`、`failurePolicy`、`maxAttempts` | 建团队。`runtime` 决定成员是什么 |
-| `team_spawn` | :1068 | `teamId`、`name`、`role`、`agentProvider`、`model`、`reasoningEffort`、`contextMode`、`prompt`、`description` | 加成员。agent 团队按难度选便宜/强推理路由 |
-| `team_models` | :1179 | 无 | 列出宿主已启用的 provider/model 路由 |
-| `team_status` | :1219 | `teamId`、`detail:"summary"\|"dag"` | 成员快照或任务 DAG（含依赖/就绪/关键路径） |
-| `team_task` | :1267 | `teamId`、`subject`、`plan`、`assignee`、`deps[]`、`acceptance`、`priority`、`dispatch` | 建 DAG 节点。worker 的 `plan` 是代理动作；agent 的 `plan` 是简报 |
-| `team_send` | :1326 | `teamId`、`to`(名字/`*`)、`message`、`correlationId` | 投消息（agent 进子会话信箱，worker 在步边界读） |
-| `team_todo` | :1395 | `teamId`、`taskId`、`items[]`、`by` | 任务清单，落 sidecar，面板可见 |
-| `team_report_task` | :1433 | `teamId`、`taskId`、`status:"done"\|"failed"\|"blocked"`、`summary` | 成员交卷：推进 DAG、释放成员、套用失败策略 |
-| `team_dispatch` | :1471 | `teamId` | 手动泵一次派发器（成员 idle 却没收到活时用） |
-| `team_scope` | :1487 | `action:"list"\|"request"\|"decide"`、`domain`、`target`、`requestId`、`decision`、`ttlSeconds` | 四域越界申请的查看/发起/裁决 |
-| `team_control` | :1557 | `action:"interrupt"\|"resume"\|"assign"`、`memberId`、`taskId`、`teamId` | 中断/恢复/指派 |
-| `team_report` | :1600 | `teamId` | 导出 Markdown 运行报告（成员/任务/DAG/决策/audit 前后哈希） |
+| 工具 | 关键参数 | 语义 |
+|---|---|---|
+| `team_create` | `name`、`workspace`、`permissionPreset`、`agentPreset`、`maxMembers`、`maxConcurrency`、`failurePolicy`、`maxAttempts` | 建团队 + 团队级默认预设 |
+| `team_spawn` | `teamId`、`name`、`prompt`、`role`、`permissionPreset`、`agentPreset`、`agentProvider`、`model`、`reasoningEffort`、`contextMode`、`description` | 拉起真 sub-agent 成员；按成员覆盖预设 |
+| `team_preset` | `action:"list"\|"save"\|"show"`、`id`、`name`、`plugins[]`、`order` | Leader 自建 agentPreset：写固定目录并即时注册 |
+| `team_models` | 无 | 列出宿主已启用的 provider/model 路由 |
+| `team_status` | `teamId`、`detail:"summary"\|"dag"` | 成员快照（含两个预设）或任务 DAG |
+| `team_task` | `teamId`、`subject`、`plan`、`assignee`、`deps[]`、`acceptance`、`priority`、`dispatch` | 建 DAG 节点；`plan` 是给成员的简报 |
+| `team_send` | `teamId`、`to`（名字/`*`/`lead`）、`message`、`correlationId` | 投消息（成员 → 子会话；给 lead 只落信箱） |
+| `team_todo` | `teamId`、`taskId`、`items[]`、`by` | 任务清单，落 sidecar，面板可见 |
+| `team_report_task` | `teamId`、`taskId`、`status:"done"\|"failed"\|"blocked"`、`summary` | 成员交卷：推进 DAG、释放成员、套用失败策略 |
+| `team_dispatch` | `teamId` | 手动泵一次派发器 |
+| `team_approve` | `teamId`、`requestId`、`decision:"allow"\|"deny"`、`reason` | Lead 裁决成员审批；返回宿主 `allowed-once` / `rejected` |
+| `team_control` | `action:"interrupt"\|"resume"\|"assign"`、`memberId`、`taskId`、`teamId` | 中断/恢复/指派 |
+| `team_report` | `teamId` | 导出 Markdown 运行报告（成员/任务/DAG/审批/audit） |
 
-> `README.md` 与 `skills/dsh-agent-team/SKILL.md` 仍写「11 个」——`team_todo` 后加，文档待同步。
+权限与审批不在工具里判定：`permissionPreset` 由插件 `ctx.permissionPresets.set(session, name)` 落到子会话，
+成员审批由 `ctx.on('approval/request', …)` 转发给 Lead。
 
 ## 插件元信息
 
@@ -37,7 +39,7 @@ insert:
 ## `apply(ctx, config)` 做的事
 
 1. `resolveConfig(config)` → 归一 `baseUrl/port/home/autoStart/entry/...`（键表见 [根目录依赖与配置](../../claude/dependencies-and-config.md)）。
-2. `ctx.effect(...)` 注册 12 个工具。
+2. `ctx.effect(...)` 注册 11 个工具。
 3. `ctx.inject(['skills'])` 注册 skills provider（rank 600，目录 `skills/`）——模型因此能看到 `dsh-agent-team` 技能。
 4. `ensureSidecar()`：`autoStart` 时 spawn `bin/dsh-team.mjs up`，等第一行 ready JSON，超时 `startTimeoutMs`（20s）。
 5. 挂事件钩子（见下）。

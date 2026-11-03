@@ -9,9 +9,9 @@ import {
 import { API_BASE, api, ApiError, EMBEDDED, enc, getToken, initUrlToken, pickItems, setToken } from './lib/api';
 import { fmtClock, storeGet, storeSet } from './lib/format';
 import { workspaceMatches } from './lib/workspace';
-import type { ContextSnapshot, ContextUsage, DagData, MatrixRow, Member, MemberChange, Policy, ScopeRequest, Task, TaskArtifact, Team, TeamMessage, TimelineEntry, Todo, TraceData, TraceNode, Workspace } from './types';
+import type { ContextSnapshot, ContextUsage, DagData, Member, MemberChange, PresetRow, Task, TaskArtifact, Team, TeamMessage, TimelineEntry, Todo, TraceData, TraceNode, Workspace } from './types';
 
-export const TAB_NAMES = ['board', 'review', 'context', 'dag', 'timeline', 'models', 'permissions', 'approvals', 'messages'] as const;
+export const TAB_NAMES = ['board', 'review', 'context', 'dag', 'timeline', 'models', 'messages', 'presets'] as const;
 /**
  * 面板视图。`home` 是 affectui 风格的默认主页（FR-2/FR-4）：
  * 它不在 TAB_NAMES 里，因此不会被持久化；旧版本存下的 7 个业务 tab 仍按白名单恢复。
@@ -19,7 +19,7 @@ export const TAB_NAMES = ['board', 'review', 'context', 'dag', 'timeline', 'mode
 export type TabName = (typeof TAB_NAMES)[number] | 'home';
 
 export const PHASES = ['init', 'read', 'write', 'exec', 'net', 'env', 'msg', 'wait', 'verify', 'interrupt', 'resume', 'done', 'fail', 'decision', 'recover'];
-const SSE_TYPES = ['member.status', 'step.append', 'task.state', 'message.delivered', 'scope.request', 'decision', 'lease.warn', 'span.append', 'artifact.added', 'context.update'];
+const SSE_TYPES = ['member.status', 'step.append', 'task.state', 'message.delivered', 'span.append', 'artifact.added', 'context.update'];
 const TIMELINE_CAP = 2000;
 const STORE_UI = 'dsh-team.panel.ui.v1';
 const STORE_LAST = 'dsh-team.panel.lastEventId.v1';
@@ -31,7 +31,7 @@ export const pendingTimelineRef: { current: TimelineEntry[] } = { current: [] };
 
 export type ConnKind = 'connecting' | 'live' | 'reconnecting' | 'offline';
 export interface ToastItem { id: number; message: string; kind: 'ok' | 'warn' | 'error' | 'info'; }
-export type Errors = Partial<Record<'status' | 'dag' | 'permissions' | 'policies' | 'approvals' | 'messages' | 'timeline' | 'trace' | 'tasks' | 'todos' | 'artifacts' | 'changes' | 'contexts', string | null>>;
+export type Errors = Partial<Record<'status' | 'dag' | 'messages' | 'timeline' | 'trace' | 'tasks' | 'todos' | 'artifacts' | 'changes' | 'contexts' | 'presets', string | null>>;
 
 interface PanelState {
   teamId: string | null;
@@ -66,10 +66,8 @@ interface PanelState {
   traceHasOlder: boolean;
   /** 正在拉更早一批 */
   traceLoadingOlder: boolean;
-  matrix: MatrixRow[];
-  policies: Policy[];
-  scopeRequests: ScopeRequest[];
   messages: TeamMessage[];
+  presets: PresetRow[];
   errors: Errors;
   timeline: TimelineEntry[];
   paused: boolean;
@@ -84,7 +82,7 @@ interface PanelState {
 const initialState: PanelState = {
   teamId: null, team: null, teams: [], workspaces: [], workspaceId: null, noTeams: false,
   members: [], staleMembers: new Set(), degraded: false, snapshot: null,
-  dag: null, tasks: [], todos: [], artifacts: [], changes: [], contexts: [], contextLead: null, trace: null, traceWindow: 30, traceHasOlder: false, traceLoadingOlder: false, matrix: [], policies: [], scopeRequests: [], messages: [],
+  dag: null, tasks: [], todos: [], artifacts: [], changes: [], contexts: [], contextLead: null, trace: null, traceWindow: 30, traceHasOlder: false, traceLoadingOlder: false, messages: [], presets: [],
   errors: {}, timeline: [], paused: false, speed: 1,
   tab: 'home', filters: { member: '', phase: '' }, conn: 'connecting', reviewFocus: null,
 };
@@ -110,10 +108,10 @@ export interface PanelActions {
   /** 删除团队（成员/任务/事件级联清理）；不传 teamId 用当前团队。 */
   deleteTeam(teamId?: string): Promise<void>;
   refreshAll(): Promise<void>;
-  /** 落盘一条越界申请决策，并刷新审批队列/权限矩阵。 */
-  decideScope(id: string, decision: 'approved' | 'denied'): Promise<void>;
-  refreshPermissions(): Promise<void>;
   refreshMessages(): Promise<void>;
+  /** agentPreset 目录（团队自建可删）。 */
+  refreshPresets(): Promise<void>;
+  deletePreset(id: string): Promise<void>;
   /** 刷新子成员文件改动（「审阅」页）。 */
   refreshChanges(): Promise<void>;
   /** 刷新成员上下文快照（「上下文分析」页）。 */
@@ -502,29 +500,25 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     }));
   }, [onUnauthorized]);
 
-  const refreshPermissions = useCallback(async () => {
-    const teamId = stateRef.current.teamId;
-    const [policiesResponse, matrixResponse] = await Promise.all([
-      api('/api/policies?team=' + enc(teamId), { onUnauthorized }),
-      api('/api/permission-matrix?team=' + enc(teamId), { onUnauthorized }),
-    ]);
-    setState((prev) => ({
-      ...prev,
-      policies: pickItems<Policy>(policiesResponse),
-      matrix: pickItems<MatrixRow>(matrixResponse),
-      errors: { ...prev.errors, permissions: null, policies: null },
-    }));
-  }, []);
-
-  const refreshApprovals = useCallback(async () => {
-    const items = pickItems<ScopeRequest>(await api('/api/scope-requests?team=' + enc(stateRef.current.teamId) + '&status=pending', { onUnauthorized }));
-    patchUi({ scopeRequests: items });
-  }, [patchUi]);
-
   const refreshMessages = useCallback(async () => {
     const items = pickItems<TeamMessage>(await api('/api/messages?team=' + enc(stateRef.current.teamId), { onUnauthorized }));
     patchUi({ messages: items });
   }, [patchUi]);
+
+  const refreshPresets = useCallback(async () => {
+    const response = await api('/api/presets', { onUnauthorized });
+    patchUi({
+      presets: pickItems<PresetRow>(response),
+      errors: { ...stateRef.current.errors, presets: null },
+    });
+  }, [patchUi]);
+
+  const deletePreset = useCallback(async (id: string) => {
+    await api('/api/presets/' + enc(id) + '/delete', { method: 'POST', onUnauthorized });
+    // 删除由 Host 插件在数秒内执行；先乐观移除，下一次刷新以服务端为准。
+    patchUi({ presets: stateRef.current.presets.filter((p) => p.id !== id) });
+    setTimeout(() => { void refreshPresets().catch(() => {}); }, 6000);
+  }, [patchUi, refreshPresets]);
 
   const backfillTimeline = useCallback(async () => {
     try {
@@ -564,33 +558,21 @@ export function PanelProvider({ children }: { children: ReactNode }) {
       safe('artifacts', refreshArtifacts),
       safe('changes', refreshChanges),
       safe('contexts', refreshContexts),
-      safe('permissions', refreshPermissions),
-      safe('approvals', refreshApprovals),
       safe('messages', refreshMessages),
+      safe('presets', refreshPresets),
     ]);
-  }, [refreshStatus, refreshTrace, refreshDag, refreshTasks, refreshTodos, refreshArtifacts, refreshChanges, refreshContexts, refreshPermissions, refreshApprovals, refreshMessages]);
+  }, [refreshStatus, refreshTrace, refreshDag, refreshTasks, refreshTodos, refreshArtifacts, refreshChanges, refreshContexts, refreshMessages, refreshPresets]);
 
-  /**
-   * 落盘一条越界申请的决策（home 右栏审批卡使用）。
-   * 与审批队列视图的差别：不收集 reason/TTL，使用默认的 300s 授权有效期。
-   */
-  const decideScope = useCallback(async (id: string, decision: 'approved' | 'denied') => {
-    const body: Record<string, unknown> = { decision, decidedBy: 'panel', singleUse: true };
-    if (decision === 'approved') body.ttlSeconds = 300;
-    await api('/api/scope-requests/' + enc(id) + '/decide', { method: 'POST', body, onUnauthorized });
-    await Promise.all([refreshAll(), refreshPermissions()]);
-  }, [refreshAll, refreshPermissions]);
-
-  const scheduleRefresh = useCallback((key: 'status' | 'trace' | 'dag' | 'tasks' | 'todos' | 'artifacts' | 'changes' | 'contexts' | 'permissions' | 'approvals' | 'messages', delay = 200) => {
+  const scheduleRefresh = useCallback((key: 'status' | 'trace' | 'dag' | 'tasks' | 'todos' | 'artifacts' | 'changes' | 'contexts' | 'messages', delay = 200) => {
     if (refreshTimers.current[key]) return;
     refreshTimers.current[key] = setTimeout(async () => {
       delete refreshTimers.current[key];
       const map: Record<string, () => Promise<void>> = {
-        status: refreshStatus, trace: refreshTrace, dag: refreshDag, tasks: refreshTasks, todos: refreshTodos, artifacts: refreshArtifacts, changes: refreshChanges, contexts: refreshContexts, permissions: refreshPermissions, approvals: refreshApprovals, messages: refreshMessages,
+        status: refreshStatus, trace: refreshTrace, dag: refreshDag, tasks: refreshTasks, todos: refreshTodos, artifacts: refreshArtifacts, changes: refreshChanges, contexts: refreshContexts, messages: refreshMessages,
       };
       try { await map[key](); } catch { return; }
     }, delay);
-  }, [refreshStatus, refreshTrace, refreshDag, refreshTasks, refreshTodos, refreshArtifacts, refreshChanges, refreshContexts, refreshPermissions, refreshApprovals, refreshMessages]);
+  }, [refreshStatus, refreshTrace, refreshDag, refreshTasks, refreshTodos, refreshArtifacts, refreshChanges, refreshContexts, refreshMessages]);
 
   /* ---------- SSE ---------- */
   const memberName = useCallback((id?: string | null): string => {
@@ -668,7 +650,7 @@ export function PanelProvider({ children }: { children: ReactNode }) {
         case 'member.status': {
           patchMember(memberId, {
             status: payload.status as string, step: payload.step as string, seq: payload.seq as number,
-            next: payload.next as string, last: payload.last as string, leaseUntil: payload.leaseUntil as string,
+            next: payload.next as string, last: payload.last as string,
           });
           // 成员状态变化 → 团队运行状态 badge 去抖刷新
           refreshTeamsSoon();
@@ -696,27 +678,6 @@ export function PanelProvider({ children }: { children: ReactNode }) {
         case 'span.append':
           // 工具调用 / 步骤跨度变化：去抖刷新瀑布树，保留正在增长中的条
           scheduleRefresh('trace', 120);
-          break;
-        case 'scope.request': {
-          // 合成帧（scope.request / decision / lease.warn）的字段在 frame 顶层，其余事件在 payload 内。
-          const domain = String(frame.domain ?? payload.domain ?? '');
-          const target = String(frame.target ?? payload.target ?? '');
-          toast('新的越界申请：' + memberName(memberId) + ' ' + domain + ' ' + target, 'warn', 6000);
-          scheduleRefresh('approvals', 150);
-          break;
-        }
-        case 'decision': {
-          const raw = String(frame.decision ?? payload.decision ?? '');
-          const decision = raw.toLowerCase();
-          const verdict = decision === 'approved' ? '已批准' : decision === 'denied' ? '已驳回' : raw || '已落盘';
-          toast('决策落盘：' + memberName(memberId) + ' 的申请' + verdict, decision === 'denied' ? 'warn' : 'ok');
-          scheduleRefresh('approvals', 150);
-          scheduleRefresh('permissions', 250);
-          break;
-        }
-        case 'lease.warn':
-          toast('租约告警：' + memberName((payload.memberId as string) || memberId) + '（leaseUntil=' + fmtClock(payload.leaseUntil as string) + '，missed=' + String(payload.missed ?? '?') + '）', 'error', 8000);
-          scheduleRefresh('status', 200);
           break;
         default: break;
       }
@@ -757,7 +718,7 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({
       ...prev, teamId, team, workspaceId,
       members: [], staleMembers: new Set(), degraded: false, snapshot: null,
-      dag: null, tasks: [], todos: [], artifacts: [], changes: [], contexts: [], contextLead: null, trace: null, matrix: [], policies: [], scopeRequests: [], messages: [], timeline: [],
+      dag: null, tasks: [], todos: [], artifacts: [], changes: [], contexts: [], contextLead: null, trace: null, messages: [], timeline: [],
       errors: {},
     }));
     // setState 异步生效；先同步 stateRef，保证随后的 refreshAll 读到新 teamId
@@ -785,7 +746,7 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     timelineIdsRef.current = new Set();
     const cleared: Partial<PanelState> = {
       teamId: null, team: null, members: [], staleMembers: new Set(), degraded: false, snapshot: null,
-      dag: null, tasks: [], todos: [], artifacts: [], changes: [], contexts: [], contextLead: null, trace: null, matrix: [], policies: [], scopeRequests: [], messages: [],
+      dag: null, tasks: [], todos: [], artifacts: [], changes: [], contexts: [], contextLead: null, trace: null, messages: [],
       timeline: [], errors: {},
     };
     stateRef.current = { ...stateRef.current, ...cleared, workspaceId };
@@ -825,7 +786,7 @@ export function PanelProvider({ children }: { children: ReactNode }) {
           timelineIdsRef.current = new Set();
           const cleared: Partial<PanelState> = {
             teamId: null, team: null, members: [], staleMembers: new Set(), degraded: false, snapshot: null,
-            dag: null, tasks: [], todos: [], artifacts: [], changes: [], contexts: [], contextLead: null, trace: null, matrix: [], policies: [], scopeRequests: [], messages: [],
+            dag: null, tasks: [], todos: [], artifacts: [], changes: [], contexts: [], contextLead: null, trace: null, messages: [],
             timeline: [], errors: {},
           };
           stateRef.current = { ...stateRef.current, ...cleared };
@@ -856,7 +817,7 @@ export function PanelProvider({ children }: { children: ReactNode }) {
           timelineIdsRef.current = new Set();
           const cleared: Partial<PanelState> = {
             teamId: null, team: null, members: [], staleMembers: new Set(), degraded: false, snapshot: null,
-            dag: null, tasks: [], todos: [], artifacts: [], changes: [], contexts: [], contextLead: null, trace: null, matrix: [], policies: [], scopeRequests: [], messages: [],
+            dag: null, tasks: [], todos: [], artifacts: [], changes: [], contexts: [], contextLead: null, trace: null, messages: [],
             timeline: [], errors: {},
           };
           stateRef.current = { ...stateRef.current, ...cleared };
@@ -963,13 +924,12 @@ export function PanelProvider({ children }: { children: ReactNode }) {
       const map: Partial<Record<TabName, () => Promise<void>>> = {
         review: refreshChanges,
         home: async () => { await refreshTasks(); await refreshTodos(); },
-        board: refreshStatus, dag: refreshDag, permissions: refreshPermissions,
-        approvals: refreshApprovals, messages: refreshMessages,
+        board: refreshStatus, dag: refreshDag, messages: refreshMessages, presets: refreshPresets,
       };
       void map[tab]?.().catch(() => {});
       if (tab === 'board') void refreshTrace().catch(() => {});
     }
-  }, [patchUi, saveUiState, writeRoute, refreshStatus, refreshTrace, refreshDag, refreshTasks, refreshTodos, refreshChanges, refreshPermissions, refreshApprovals, refreshMessages]);
+  }, [patchUi, saveUiState, writeRoute, refreshStatus, refreshTrace, refreshDag, refreshTasks, refreshTodos, refreshChanges, refreshMessages, refreshPresets]);
 
   const focusReview = useCallback((path: string, memberId?: string) => {
     setState((prev) => ({ ...prev, reviewFocus: { path, memberId } }));
@@ -1074,11 +1034,11 @@ export function PanelProvider({ children }: { children: ReactNode }) {
 
   const actions = useMemo<PanelActions>(() => ({
     state, toasts, authOverlay, bootError, memberName, toast,
-    selectTeam, refreshTeams, selectWorkspace, refreshWorkspaces, teamsInWorkspace, stopTeam, archiveTeam, deleteTeam, refreshAll, decideScope, refreshPermissions, refreshMessages, refreshChanges, refreshContexts, refreshStatus, refreshTrace, setTraceWindow, loadOlderTrace,
+    selectTeam, refreshTeams, selectWorkspace, refreshWorkspaces, teamsInWorkspace, stopTeam, archiveTeam, deleteTeam, refreshAll, refreshMessages, refreshPresets, deletePreset, refreshChanges, refreshContexts, refreshStatus, refreshTrace, setTraceWindow, loadOlderTrace,
     setTab, setPaused, setSpeed, setFilterMember, setFilterPhase, exportReport,
     focusReview, clearReviewFocus,
     retryBoot, submitToken,
-  }), [state, toasts, authOverlay, bootError, memberName, toast, selectTeam, refreshTeams, selectWorkspace, refreshWorkspaces, teamsInWorkspace, stopTeam, archiveTeam, deleteTeam, refreshAll, decideScope, refreshPermissions, refreshMessages, refreshChanges, refreshContexts, refreshStatus, refreshTrace, setTraceWindow, loadOlderTrace, setTab, setPaused, setSpeed, setFilterMember, setFilterPhase, exportReport, focusReview, clearReviewFocus, retryBoot, submitToken]);
+  }), [state, toasts, authOverlay, bootError, memberName, toast, selectTeam, refreshTeams, selectWorkspace, refreshWorkspaces, teamsInWorkspace, stopTeam, archiveTeam, deleteTeam, refreshAll, refreshMessages, refreshPresets, deletePreset, refreshChanges, refreshContexts, refreshStatus, refreshTrace, setTraceWindow, loadOlderTrace, setTab, setPaused, setSpeed, setFilterMember, setFilterPhase, exportReport, focusReview, clearReviewFocus, retryBoot, submitToken]);
 
   return <PanelContext.Provider value={actions}>{children}</PanelContext.Provider>;
 }

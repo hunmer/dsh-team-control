@@ -1,5 +1,5 @@
 // tests/ac-15-agent-runtime.mjs — AC-15 agent 运行时：成员 = 真 DSH sub-agent（Host 派发，sidecar 记账）
-// ① POST /api/teams {runtime:'agent'}：runtime 落库并在 teamView/status 暴露；非法 runtime 报错。
+// ① POST /api/teams：permissionPreset 落库并在 teamView 暴露；成员可覆盖。
 // ② POST /api/agents/register：成员绑定 agent session、事件 agent.spawn、状态 idle（幂等重报不重复建行）。
 // ③ agent 团队不拉起 worker：任务停在 ready（依赖推进照常），idle 成员不会被 sidecar 自动派活。
 // ④ POST /api/agents/dispatch：原子认领 → running + 事件 task.dispatch；没活时返回 dispatched=false。
@@ -24,22 +24,16 @@ runAc(AC, async () => {
 
     // ================= ① runtime 落库 =================
     const team = one(await api.post('/api/teams', {
-      name: 'ac15-agent', workspace: tmp.ws, runtime: 'agent', maxMembers: 4, maxConcurrency: 1,
+      name: 'ac15-agent', workspace: tmp.ws, maxMembers: 4, maxConcurrency: 1, permissionPreset: 'danger-full-access',
     }), 'team');
-    assertEqual(team.runtime, 'agent', 'teamView.runtime = agent');
-    const tv = await api.get(`/api/teams/${team.id}`);
-    assertEqual(tv.runtime, 'agent', 'GET /api/teams/:id 带 runtime');
-
-    let badRuntime = null;
-    try { await api.post('/api/teams', { name: 'nope', workspace: tmp.ws, runtime: 'robot' }); } catch (e) { badRuntime = e; }
-    assert(badRuntime && badRuntime.status === 400, `非法 runtime 报 400，实际 ${badRuntime && badRuntime.status}`);
+    assertEqual(team.permissionPreset, 'danger-full-access', 'teamView.permissionPreset');
+    assert(!('runtime' in team), '团队不再有 runtime 字段');
 
     // ================= ② 登记 sub-agent 成员 =================
     const reg = await api.post('/api/agents/register', {
       teamId: team.id, name: 'alice', sessionId: 'ac15-sess-alice', role: 'teammate', model: 'test-model', contextMode: 'fresh',
     });
     const alice = reg.member;
-    assertEqual(reg.runtime, 'agent', 'register 回 runtime=agent');
     assertEqual(alice.agentSessionId, 'ac15-sess-alice', '成员绑定 agent session');
     assertEqual(alice.status, 'idle', '登记即 idle');
     assertEqual(alice.model, 'test-model', 'model 落库');
@@ -48,7 +42,6 @@ runAc(AC, async () => {
     assertEqual(reg2.member.id, alice.id, '同名重报幂等（不重复建成员）');
 
     const st0 = await api.get(`/api/status?team=${team.id}`);
-    assertEqual(st0.runtime, 'agent', 'status 带 runtime');
     assertEqual(st0.members.length, 1, '只有 1 个成员');
     assertEqual(st0.members[0].agentSessionId, 'ac15-sess-alice', 'status 暴露 agentSessionId');
 
@@ -64,7 +57,6 @@ runAc(AC, async () => {
 
     // ================= ④ 认领 + 派发 =================
     const ready = await api.get(`/api/agents/ready?team=${team.id}`);
-    assertEqual(ready.runtime, 'agent', 'agents/ready 带 runtime');
     assertEqual(ready.idleMembers.length, 1, 'agents/ready 列出 idle 成员');
     assert(ready.readyTasks.some((t) => t.taskId === t1.id), 'agents/ready 列出 ready 任务');
 
@@ -188,19 +180,13 @@ runAc(AC, async () => {
     assert(Array.isArray(readyEnd.readyTasks), 'agents/ready.readyTasks 是数组');
     assert(Array.isArray(readyEnd.idleMembers), 'agents/ready.idleMembers 是数组');
 
-    // ================= ⑩ worker 团队回归 =================
-    const wteam = one(await api.post('/api/teams', { name: 'ac15-worker', workspace: tmp.ws, maxMembers: 2, maxConcurrency: 2 }), 'team');
-    assertEqual(wteam.runtime, 'worker', '默认 runtime=worker');
-    const wm = one(await api.post(`/api/teams/${wteam.id}/members`, { name: 'w1' }), 'member');
-    assertEqual(wm.agentSessionId, null, 'worker 成员没有 agent session');
-    const wt = one(await api.post('/api/tasks', {
-      teamId: wteam.id, subject: 'worker 自动跑', assignee: wm.id,
-      plan: [{ step: 'S1', phase: 'verify', action: 'noop', target: 'ok', op: { kind: 'noop' } }],
-    }), 'task');
-    await waitFor('worker 团队仍自动派发', async () => (await api.get(`/api/tasks/${wt.id}`)).status === 'done', { timeout: 15000 });
-    assert(true, 'worker 团队自动派发未受影响');
+    // ================= ⑩ 成员预设覆盖 =================
+    const override = one(await api.post('/api/agents/register', {
+      teamId: team.id, name: 'bob', sessionId: 'ac15-sess-bob', permissionPreset: 'workspace-write',
+    }), 'member');
+    assertEqual(override.permissionPreset, 'workspace-write', '成员可覆盖团队预设');
 
-    return `agent 团队：runtime 落库/register 幂等/dispatch 认领+并发拒绝/归属校验/done+依赖推进/blocked 不消耗重试/idle 兜底/trace 挂成员节点；worker 团队回归正常`;
+    return `agent 团队：permissionPreset 落库+成员覆盖/register 幂等/dispatch 认领/归属校验/done+依赖推进/blocked 不消耗重试/trace 挂成员节点`;
   } finally {
     if (sidecar) await sidecar.close();
   }

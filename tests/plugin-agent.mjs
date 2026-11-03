@@ -1,11 +1,13 @@
 // tests/plugin-agent.mjs — Host 插件的 agent 成员闭环（不依赖运行中的 DSH：假 ctx + 真 sidecar）。
-// 覆盖：① team_create(runtime=agent) 透传 runtime ② team_spawn 调 subagents.startActivation 并把 sessionId 注册回 sidecar
+// 覆盖：① team_create 透传 permissionPreset ② team_spawn 调 subagents.startActivation、设置权限预设并把 sessionId 注册回 sidecar
 //       ③ team_task 自动 dispatch → sendMessage 收到任务简报（含 taskId 与 team_report_task 指引）
 //       ④ 成员 team_report_task(done) → 任务 done、成员回 idle
 //       ⑤ 归属校验：别的 session 回报被拒
 //       ⑥ agent/status=idle 兜底收尾在途任务，并继续派发下一波
 //       ⑦ team_control interrupt 调 subagents.interrupt
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { mkTmp, startSidecar, waitFor, sleep } from './lib/harness.mjs';
 import { apply } from '../dsh-plugin/index.js';
 
@@ -31,7 +33,22 @@ const mkFakeCtx = () => {
     interrupt(targetId, authority) { agents.interrupts.push({ targetId, authority }); },
     list: () => ['spawn', 'fork'],
   };
+  const presetDefs = new Map([['standard', { id: 'standard' }], ['reviewer', { id: 'reviewer' }]]);
+  const agentPresets = {
+    async list() { return [...presetDefs.values()].map((d) => ({ id: d.id })); },
+    async register(definition) {
+      if (presetDefs.has(definition.id)) throw new Error(`Duplicate agent preset: ${definition.id}`);
+      presetDefs.set(definition.id, definition);
+      return async () => { presetDefs.delete(definition.id); };
+    },
+  };
+  const presets = {
+    applied: [],
+    names: ['read-only', 'workspace-write', 'danger-full-access'],
+    set(session, name) { presets.applied.push({ session: session?.id, name }); },
+  };
   const ctx = {
+    presets,
     tools: {
       register: (tool) => { registry.set(tool.name, tool); return () => registry.delete(tool.name); },
       get: (name) => registry.get(name),
@@ -41,6 +58,8 @@ const mkFakeCtx = () => {
     get: (name) => {
       if (name === 'subagents') return agents;
       if (name === 'sessions') return { get: (id) => ({ id }) };
+      if (name === 'permissionPresets') return presets;
+      if (name === 'agentPresets') return agentPresets;
       // 成员用内置 todo_write 时，插件从这里读它的清单并镜像成 sidecar 计划
       if (name === 'sessionProjections') return { stateOf: (_session, key) => (key === 'todos' ? TODOS : null) };
       return undefined;
@@ -69,7 +88,10 @@ const main = async () => {
   try {
     const api = sidecar.api;
     const ctx = mkFakeCtx();
-    apply(ctx, { baseUrl: sidecar.url, autoStart: false, reportToolCalls: false, agentDispatchMs: 600, agentIdleSettleMs: 1200 });
+    const presetDir = path.join(tmp.dataDir, 'presets');
+    fs.mkdirSync(presetDir, { recursive: true });
+    fs.writeFileSync(path.join(presetDir, 'boot-preset.json'), JSON.stringify({ id: 'boot-preset', plugins: [{ name: '@deepseek-ai/dsh-tool-fs' }] }));
+    apply(ctx, { baseUrl: sidecar.url, autoStart: false, reportToolCalls: false, agentDispatchMs: 600, agentIdleSettleMs: 1200, presetDir });
     const tool = (name) => {
       const t = ctx.tools.get(name);
       assert(t, `工具 ${name} 已注册`);
@@ -79,9 +101,10 @@ const main = async () => {
     let asAlice = null;
 
     // ① 建 agent 团队
-    const created = await tool('team_create').execute({ name: 'plugin-agent', workspace: tmp.ws, runtime: 'agent' }, lead);
+    const created = await tool('team_create').execute({ name: 'plugin-agent', workspace: tmp.ws, agentPreset: 'standard' }, lead);
     const team = created.team;
-    assert.equal(team.runtime, 'agent', 'team_create 透传 runtime=agent');
+    assert.equal(team.permissionPreset, 'workspace-write', 'team_create 默认 workspace-write');
+    assert.equal(team.agentPreset, 'standard', 'team_create 透传 agentPreset');
 
     // ② spawn：真调 subagents.startActivation（continuable 子会话）+ 注册回 sidecar
     const spawned = await tool('team_spawn').execute(
@@ -99,7 +122,72 @@ const main = async () => {
     assert.equal(typeof spec.request.cwd, 'string', '成员 cwd 落在团队工作目录');
     assert.equal(spec.request.cwd, team.workspace, 'cwd 就是 team.workspace');
     assert.equal(spawned.agent.sessionId, sessionId, '返回 agent 诊断信息');
+    assert.equal(spawned.permissionPreset, 'workspace-write', 'spawn 继承团队预设');
+    assert.equal(spawned.permissionPresetApplied, true, '预设已落到子会话');
+    assert.deepEqual(ctx.presets.applied.at(-1), { session: sessionId, name: 'workspace-write' }, 'permissionPresets.set 被调用');
+    assert.equal(spec.request.agentPreset, 'standard', '成员继承团队的 agentPreset');
+    assert.equal(spawned.agentPreset, 'standard', '返回值回显 agentPreset');
     asAlice = { agent: { id: sessionId } };
+
+    // ②b agentPreset 校验：未知 id 报错；fork 继承父组装，传了只警告不生效
+    await assert.rejects(
+      () => tool('team_spawn').execute({ teamId: team.id, name: 'ghost', prompt: 'x', agentPreset: 'nope' }, lead),
+      /agentPreset「nope」不存在/,
+      '未知 agentPreset 被拒绝',
+    );
+    const forked = await tool('team_spawn').execute(
+      { teamId: team.id, name: 'bob-fork', prompt: '你是 bob。', contextMode: 'fork', agentPreset: 'reviewer' }, lead,
+    );
+    assert.equal(ctx.agents.spawned.at(-1).req.request.agentPreset, undefined, 'fork 不传 agentPreset');
+    assert.match(String(forked.agentPresetWarning || ''), /fork/, 'fork 时给出警告');
+
+    // ②c Leader 自建 agentPreset：写固定目录 + 立刻注册；内置同名不可覆盖
+    const listed0 = await tool('team_preset').execute({ action: 'list' }, lead);
+    assert.equal(listed0.dir, path.join(tmp.dataDir, 'presets'), '预设目录来自配置');
+    assert(listed0.presets.some((p) => p.id === 'standard' && p.source === 'host'), '列出宿主预设');
+    assert(listed0.presets.some((p) => p.id === 'boot-preset' && p.source === 'team'), '插件启动时加载目录里的预设');
+    const saved = await tool('team_preset').execute({
+      action: 'save', id: 'strict-reviewer', name: '严格审阅',
+      plugins: [{ name: '@deepseek-ai/dsh-tool-fs' }, { name: '@deepseek-ai/dsh-persona', config: { prefix: 'You are a strict reviewer.' } }],
+    }, lead);
+    assert.equal(saved.registered, true, '自建预设立刻注册');
+    assert.equal(saved.file, path.join(tmp.dataDir, 'presets', 'strict-reviewer.json'), '写入固定目录');
+    const listed1 = await tool('team_preset').execute({ action: 'list' }, lead);
+    assert(listed1.presets.some((p) => p.id === 'strict-reviewer' && p.source === 'team'), 'list 标出 team 来源');
+    const shown = await tool('team_preset').execute({ action: 'show', id: 'strict-reviewer' }, lead);
+    assert.equal(shown.doc.plugins.length, 2, 'show 读回文档');
+    await assert.rejects(
+      () => tool('team_preset').execute({ action: 'save', id: 'strict-reviewer', plugins: [{ name: '@deepseek-ai/dsh-tool-fs' }] }, lead),
+      /覆盖请传 confirm:true/,
+      '覆盖同名团队预设需显式 confirm',
+    );
+    const overwritten = await tool('team_preset').execute({
+      action: 'save', id: 'strict-reviewer', description: 'v2', confirm: true,
+      plugins: [{ name: '@deepseek-ai/dsh-tool-fs' }],
+    }, lead);
+    assert.equal(overwritten.registered, true, 'confirm 后可覆盖');
+    const custom = await tool('team_spawn').execute({ teamId: team.id, name: 'carol', prompt: '你是 carol。', agentPreset: 'strict-reviewer' }, lead);
+    assert.equal(custom.agentPreset, 'strict-reviewer', '自建预设可派发');
+    await assert.rejects(
+      () => tool('team_preset').execute({ action: 'save', id: 'standard', plugins: [{ name: '@deepseek-ai/dsh-tool-fs' }] }, lead),
+      /已由宿主定义/,
+      '内置同名预设不可覆盖',
+    );
+    const temp = await tool('team_preset').execute({ action: 'save', id: 'temp-preset', plugins: [{ name: '@deepseek-ai/dsh-tool-fs' }] }, lead);
+    const removed = await tool('team_preset').execute({ action: 'delete', id: 'temp-preset' }, lead);
+    assert.equal(removed.removed, true, '自建预设可删除');
+    assert.equal(fs.existsSync(temp.file), false, '删除会移除文件');
+    const afterDelete = await tool('team_preset').execute({ action: 'list' }, lead);
+    assert(!afterDelete.presets.some((p) => p.id === 'temp-preset'), '删除后 list 不再出现');
+    await assert.rejects(
+      () => tool('team_preset').execute({ action: 'delete', id: 'standard' }, lead),
+      /只有团队自建预设可以删除/,
+      '内置预设不可删除',
+    );
+    const synced = await (await fetch(sidecar.url + '/api/presets')).json();
+    assert(synced.items.some((p) => p.id === 'strict-reviewer' && p.source === 'team'), '目录同步到 sidecar');
+    const syncedDoc = await (await fetch(sidecar.url + '/api/presets/strict-reviewer')).json();
+    assert.equal(syncedDoc.doc.plugins.length, 1, '镜像带组合文档（覆盖后 1 个插件）');
 
     // ③ 建任务 → 自动 dispatch → sendMessage 简报
     const t1 = await tool('team_task').execute({ teamId: team.id, subject: '实现 FS02 编码器' }, lead);
@@ -206,15 +294,14 @@ const main = async () => {
     assert.equal(ctl.member.status, 'interrupted', '成员同步置 interrupted');
     assert.equal((await api.get(`/api/tasks/${t3.task.id}`)).status, 'ready', '在途任务回到 ready 等下次派发');
 
-    // ⑧ worker 团队仍然走 sidecar 成员（不被 agent 路径影响）
-    const wTeam = (await tool('team_create').execute({ name: 'plugin-worker', workspace: tmp.ws }, lead)).team;
-    assert.equal(wTeam.runtime, 'worker', '默认 runtime=worker');
-    const wMem = await tool('team_spawn').execute({ teamId: wTeam.id, name: 'bob' }, lead);
-    assert.equal(wMem.member.agentSessionId, null, 'worker 成员没有 agent session');
-    assert.equal(wMem.agent, undefined, 'worker 团队不返回 agent 信息');
-    assert.equal(ctx.agents.spawned.length, 1, 'worker 成员的 team_spawn 不调 subagents.startActivation');
+    // ⑧ 第二个团队自定义预设：spawn 继承并可被成员覆盖
+    const t2Team = (await tool('team_create').execute({ name: 'plugin-readonly', workspace: tmp.ws, permissionPreset: 'read-only' }, lead)).team;
+    assert.equal(t2Team.permissionPreset, 'read-only', 'team_create 透传 permissionPreset');
+    const bob = await tool('team_spawn').execute({ teamId: t2Team.id, name: 'bob', prompt: '你是 bob，只读。' }, lead);
+    assert.equal(bob.member.permissionPreset, 'read-only', '成员继承团队 read-only 预设');
+    assert.equal(bob.permissionPreset, 'read-only', '返回实际生效预设');
 
-    console.log('PASS plugin-agent — agent 成员闭环：spawn/register/dispatch 简报/report/归属校验/idle 兜底/interrupt；worker 团队回归');
+    console.log('PASS plugin-agent — agent 成员闭环：preset/权限预设落会话/spawn/register/dispatch 简报/report/归属校验/idle 兜底/interrupt');
     process.exitCode = 0;
   } finally {
     try { await sidecar.close(); } catch { /* ignore */ }

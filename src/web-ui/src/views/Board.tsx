@@ -26,6 +26,16 @@ function MemberPill({ member }: { member: Member }) {
           {member.reasoningEffort}
         </span>
       ) : null}
+      {member.permissionPreset ? (
+        <span className="rounded-full border px-1 text-[10px] text-muted-foreground" title="DSH 权限预设：决定沙箱与审批策略">
+          {member.permissionPreset}
+        </span>
+      ) : null}
+      {member.agentPreset ? (
+        <span className="rounded-full bg-muted px-1 text-[10px] text-muted-foreground" title="DSH 组合预设：决定工具 / skill / MCP">
+          {member.agentPreset}
+        </span>
+      ) : null}
       {member.step ? <span className="text-muted-foreground">{member.step}</span> : null}
     </span>
   );

@@ -40,7 +40,7 @@ try {
   const team = (await hit('POST /api/teams', 'POST', '/api/teams', { name: 'routes', workspace: tmp.ws, maxMembers: 4, maxConcurrency: 2 })).json;
   await hit('GET /api/teams', 'GET', '/api/teams');
   await hit('GET /api/teams/{id}', 'GET', `/api/teams/${team.id}`);
-  await hit('PATCH /api/teams/{id}', 'PATCH', `/api/teams/${team.id}`, { maxConcurrency: 3, autoTakeover: true });
+  await hit('PATCH /api/teams/{id}', 'PATCH', `/api/teams/${team.id}`, { maxConcurrency: 3, permissionPreset: 'danger-full-access' });
   // 封存 / 恢复 / 面板设置
   await hit('GET /api/settings', 'GET', '/api/settings');
   await hit('PATCH /api/settings', 'PATCH', '/api/settings', { autoArchive: { enabled: true, days: 9 } });
@@ -72,11 +72,6 @@ try {
   assert(afterOverwrite.length === 2 && afterOverwrite.find((a) => a.path === 'outline.md').label === '大纲 v2', '同路径覆盖为最新');
   assert(afterOverwrite.find((a) => a.path === 'outline.md').added === 12, '覆盖时未带行数则保留旧行数');
   await hit('GET /api/artifacts 缺 team(400)', 'GET', '/api/artifacts', undefined, 400);
-  await hit('POST /api/policies', 'POST', '/api/policies', { teamId: team.id, subjectType: 'team', subjectId: team.id, domain: 'fs', matcher: '**', ops: ['write', 'delete'], mode: 'allow' });
-  const pols = (await hit('GET /api/policies', 'GET', `/api/policies?team=${team.id}`)).json;
-  await hit('DELETE /api/policies/{id}', 'DELETE', `/api/policies/${pols.items.find((p) => p.matcher === '**' && p.domain === 'fs' && p.mode === 'allow').id}`);
-  await hit('GET /api/permission-matrix', 'GET', `/api/permission-matrix?team=${team.id}`);
-
   const m1 = (await hit('POST member', 'POST', `/api/teams/${team.id}/members`, { name: 'r1', role: 'w' })).json;
   const m2 = (await hit('POST member2', 'POST', `/api/teams/${team.id}/members`, { name: 'r2' })).json;
   await hit('GET members', 'GET', `/api/teams/${team.id}/members`);
@@ -118,24 +113,42 @@ try {
   });
   await hit('GET /api/todos?task=', 'GET', `/api/todos?team=${team.id}&task=${a.id}`);
 
-  // 审批（人工创建 + 决策）
-  const sr = (await hit('POST scope-request', 'POST', '/api/scope-requests', { memberId: m2.id, domain: 'fs', target: 'config/y.json', reason: 'routes', diffSize: 5 })).json;
-  await hit('GET scope-requests', 'GET', `/api/scope-requests?team=${team.id}`);
-  await hit('POST decide (approved)', 'POST', `/api/scope-requests/${sr.id}/decide`, { decision: 'approved', decidedBy: 'smoke', reason: 'ok', ttlSeconds: 30 });
-  await hit('POST decide 二次(应 409)', 'POST', `/api/scope-requests/${sr.id}/decide`, { decision: 'denied', decidedBy: 'smoke' }, 409);
+  // 审批（插件镜像创建 + Lead 决策）
+  const apr = (await hit('POST approval', 'POST', '/api/approvals', { id: 'apr_routes_1', teamId: team.id, memberId: m2.id, toolName: 'exec', reason: 'routes' })).json;
+  await hit('GET approvals', 'GET', `/api/approvals?team=${team.id}`);
+  await hit('POST approval decide', 'POST', `/api/approvals/${apr.id}/decide`, { decision: 'allowed', decidedBy: 'lead', reason: 'ok' });
+  await hit('GET approvals allowed', 'GET', `/api/approvals?team=${team.id}&status=allowed`);
+
+  // agentPreset 目录镜像 + 面板删除队列（Host 插件负责真正反注册）
+  await hit('POST presets sync', 'POST', '/api/presets/sync', { presets: [
+    { id: 'standard', name: '标准', source: 'host' },
+    { id: 'team-smoke', name: '团队自建', source: 'team', file: '/tmp/team-smoke.json', doc: { id: 'team-smoke', plugins: [{ name: 'p1' }] } },
+  ] });
+  const presets = (await hit('GET presets', 'GET', '/api/presets')).json;
+  assert(presets.items.length === 2, '目录镜像两条');
+  const one = (await hit('GET preset detail', 'GET', '/api/presets/team-smoke')).json;
+  assert(one.doc && one.doc.plugins.length === 1, '镜像保留组合文档');
+  await hit('GET missing preset(404)', 'GET', '/api/presets/nope', undefined, 404);
+  await hit('DELETE host preset(400)', 'POST', '/api/presets/standard/delete', {}, 400);
+  await hit('POST preset delete', 'POST', '/api/presets/team-smoke/delete', {});
+  const pending = (await hit('GET preset pending deletes', 'GET', '/api/presets/pending-deletes')).json;
+  assert(pending.items.some((p) => p.id === 'team-smoke'), '删除已排队');
+  const ackFail = (await hit('POST preset ack error', 'POST', '/api/presets/pending-deletes/team-smoke/ack', { error: '磁盘忙' })).json;
+  assert(ackFail.removed === false && ackFail.attempts === 1, '失败 ack 计数 +1');
+  const pending2 = (await hit('GET preset pending after error', 'GET', '/api/presets/pending-deletes')).json;
+  assert(pending2.items.find((p) => p.id === 'team-smoke').attempts === 1, '队列保留并记 attempts');
+  assert(pending2.items.find((p) => p.id === 'team-smoke').lastError === '磁盘忙', '队列保留错误原因');
+  await hit('POST preset ack', 'POST', '/api/presets/pending-deletes/team-smoke/ack', {});
+  const after = (await hit('GET presets after ack', 'GET', '/api/presets')).json;
+  assert(!after.items.some((p) => p.id === 'team-smoke'), 'ack 后目录移除');
 
   await hit('GET /api/audit', 'GET', `/api/audit?team=${team.id}`);
   await hit('GET /api/report', 'GET', `/api/report?team=${team.id}`);
 
   // 中断 / 恢复 / 回收 / 物理删除
-  await waitFor('running with progress', async () => {
-    const st = await s.api.get(`/api/members/${m1.id}`);
-    return st.status === 'running' && st.seq >= 3;
-  }, { timeout: 20000 });
   await hit('POST interrupt', 'POST', `/api/members/${m1.id}/interrupt`, { reason: 'smoke' });
-  await hit('POST interrupt 二次(应 409)', 'POST', `/api/members/${m1.id}/interrupt`, { reason: 'smoke' }, 409);
+  await hit('POST interrupt 二次', 'POST', `/api/members/${m1.id}/interrupt`, { reason: 'smoke' });
   await hit('POST resume', 'POST', `/api/members/${m1.id}/resume`, {});
-  await waitFor('idle after resume', async () => (await s.api.get(`/api/members/${m1.id}`)).status === 'idle', { timeout: 25000 });
   await hit('DELETE retire', 'DELETE', `/api/members/${m1.id}?mode=retire`);
   await waitFor('m2 idle', async () => ['idle', 'done'].includes((await s.api.get(`/api/members/${m2.id}`)).status), { timeout: 25000 });
   // 利用 settle 窗口在自动派发前完成 assign
@@ -143,8 +156,6 @@ try {
     teamId: team.id, subject: 'C', plan: [{ step: 'S1', phase: 'wait', action: 'sleep', target: 'c', op: { kind: 'sleep', args: { ms: 60 } } }],
   })).json;
   await hit('POST assign', 'POST', `/api/members/${m2.id}/assign`, { taskId: c.id });
-  await waitFor('C done', async () => (await s.api.get(`/api/tasks/${c.id}`)).status === 'done', { timeout: 20000 });
-  await waitFor('m2 idle again', async () => (await s.api.get(`/api/members/${m2.id}`)).status === 'idle', { timeout: 20000 });
   await hit('DELETE remove 无 confirm(400)', 'DELETE', `/api/members/${m2.id}?mode=remove`, undefined, 400);
   await hit('DELETE remove confirm', 'DELETE', `/api/members/${m2.id}?mode=remove&confirm=1`);
 

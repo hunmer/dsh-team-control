@@ -6,7 +6,7 @@
  *      （任务事件流），两者都按「当前选中的任务」过滤；窄屏时依次上下堆叠。
  *
  * 真实数据源：
- * - `GET /api/scope-requests?status=pending` → Needs you 卡；Approve/Reject → POST decide；
+ * - `GET /api/approvals?status=pending` → 待审批提示（审批由 Lead 用 `team_approve` 决定）；
  * - `GET /api/tasks` + `GET /api/dag` → 任务卡（标题、成员、起止时间、验收标准）；
  * - `GET /api/todos?team=` → Plan 清单（Leader/成员用 team_todo 维护）；
  * - `GET /api/events/history` → Activity；卡片展开的步骤也用这些事件；
@@ -18,7 +18,7 @@ import { usePanel } from '@/store';
 import { api } from '@/lib/api';
 import { openMemberConversation } from '@/lib/dsh-bridge';
 import { fmtClockSec } from '@/lib/format';
-import type { ScopeRequest, Task, TimelineEntry, Todo } from '@/types';
+import type { Task, TimelineEntry, Todo } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import {
@@ -32,7 +32,6 @@ import { PlanSteps, type PlanStep, type PlanStepStatus } from '@/components/plan
 import { ToolCall } from '@/components/tool-call';
 import { modelAvatar } from '@/components/ModelAvatar';
 
-const SCOPE_PREFIX = 'scope:';
 
 /** 申请/任务 → 看板状态。没有可执行动作的状态（pending/ready/blocked）不进看板。 */
 function laneStatus(status: string): AgentTaskStatus | null {
@@ -92,9 +91,9 @@ function eventStatus(entry: TimelineEntry): 'running' | 'success' | 'error' {
 }
 
 export function HomeView() {
-  const { state, decideScope, refreshAll, setTab, setFilterMember, memberName, toast, focusReview } =
+  const { state, refreshAll, setTab, setFilterMember, memberName, toast, focusReview } =
     usePanel();
-  const { dag, tasks, todos, scopeRequests, timeline, members, artifacts } = state;
+  const { dag, tasks, todos, timeline, members, artifacts } = state;
 
   /** 点击收件箱卡片的 Open 时切换 Plan/Activity 跟随的任务。 */
   const [selectedId, setSelectedId] = useState('');
@@ -182,28 +181,6 @@ export function HomeView() {
       memberId
         ? modelAvatar(modelByMember.get(memberId), memberName(memberId), undefined, 16)
         : undefined;
-    const approvals = scopeRequests.map((request: ScopeRequest): AgentTask => {
-      const steps: AgentTaskStep[] = [];
-      if (request.blockedStep) steps.push({ label: `blocked step：${request.blockedStep}` });
-      if (request.risk) steps.push({ label: `risk：${request.risk}` });
-      if (request.fallback) steps.push({ label: `fallback：${request.fallback}` });
-      return {
-        id: SCOPE_PREFIX + request.id,
-        title: `${request.domain || 'scope'} · ${request.target || '未指定目标'}`,
-        description:
-          request.reason ||
-          (request.fallback
-            ? `若拒绝将走 fallback：${request.fallback}`
-            : '成员请求越界操作，等待你的决策。'),
-        agent: memberName(request.memberId),
-        memberId: request.memberId,
-        logo: logoOf(request.memberId),
-        status: 'waiting',
-        startedAt: ms(request.createdAt),
-        steps,
-      };
-    });
-
     const active = (dag?.nodes ?? [])
       .map((node): AgentTask | null => {
         const status = laneStatus(node.status ?? '');
@@ -236,35 +213,19 @@ export function HomeView() {
 
     // 需要你决策的排最前；同列内按开始时间倒序，最新的在最上面。
     const order: Record<AgentTaskStatus, number> = { waiting: 0, running: 1, failed: 1, done: 2 };
-    return [...approvals, ...active].sort((a, b) => {
+    return active.sort((a, b) => {
       const lane = Number(order[a.status] ?? 9) - Number(order[b.status] ?? 9);
       if (lane !== 0) return lane;
       const at = (task: AgentTask) => (typeof task.startedAt === 'number' ? task.startedAt : 0);
       return at(b) - at(a);
     });
-  }, [scopeRequests, dag, taskById, artifactsByTask, memberName, modelByMember]);
+  }, [dag, taskById, artifactsByTask, memberName, modelByMember]);
 
   const queued = (dag?.nodes ?? []).filter((node) => !laneStatus(node.status ?? '')).length;
   const staleMembers = members.filter((member) => member.stale).length;
 
-  const decide = (task: AgentTask, decision: 'approved' | 'denied') => {
-    const request = scopeRequests.find((item) => SCOPE_PREFIX + item.id === task.id);
-    if (!request) return;
-    const verdict = decision === 'approved' ? '批准' : '驳回';
-    if (
-      !window.confirm(
-        `确认${verdict} ${memberName(request.memberId)} 的 ${request.domain || '?'} 申请「${request.target || '?'}」？决策将事务落盘为 decision。`,
-      )
-    )
-      return;
-    void decideScope(request.id, decision).catch((err) =>
-      toast(verdict + '失败：' + (err instanceof Error ? err.message : String(err)), 'error'),
-    );
-  };
-
   /** Open：Plan / Activity 切换到这张卡对应的任务（不再跳走，时间线视图仍保留）。 */
   const openTask = (task: AgentTask) => {
-    if (task.id.startsWith(SCOPE_PREFIX)) return;
     setSelectedId(task.id);
   };
 
@@ -308,7 +269,6 @@ export function HomeView() {
           subject: row.subject,
           assignee: row.assignee ?? null,
           plan: row.plan ?? [],
-          writeScopes: row.writeScopes ?? [],
           acceptance: row.acceptance ?? null,
           priority: row.priority ?? 0,
           failurePolicy: row.failurePolicy ?? null,
@@ -340,8 +300,6 @@ export function HomeView() {
                 className="min-h-0 flex-1"
                 tasks={board}
                 title="实时收件箱"
-                onApprove={(task) => decide(task, 'approved')}
-                onReject={(task) => decide(task, 'denied')}
                 onRetry={(task) => void retry(task)}
                 onOpen={openTask}
                 onOpenArtifact={openArtifact}

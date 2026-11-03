@@ -54,7 +54,7 @@ export function MemberInfoContent({ member }: { member: Member }) {
 
   const openChat = () => {
     const result = openMemberConversation(member, state.team?.leadSessionId);
-    if (result === 'no-session') toast('该成员没有 DSH 会话（worker 运行时没有会话）', 'warn');
+    if (result === 'no-session') toast('该成员还没有绑定 DSH 会话', 'warn');
     else if (result === 'not-embedded') toast('面板不在 DSH 页面里打开，无法唤起成员对话', 'warn');
   };
 
@@ -70,6 +70,18 @@ export function MemberInfoContent({ member }: { member: Member }) {
         <Row label="成员 ID"><code className="text-[11px]">{member.id}</code></Row>
         {member.role ? <Row label="角色">{member.role}</Row> : null}
         {member.model ? <Row label="模型">{member.model}</Row> : null}
+        {member.permissionPreset ? (
+          <Row label="权限预设">
+            <code className="text-[11px]">{member.permissionPreset}</code>
+            <span className="text-muted-foreground"> · 沙箱 + 审批</span>
+          </Row>
+        ) : null}
+        {member.agentPreset ? (
+          <Row label="组合预设">
+            <code className="text-[11px]">{member.agentPreset}</code>
+            <span className="text-muted-foreground"> · 工具 / skill / MCP</span>
+          </Row>
+        ) : null}
         {member.reasoningEffort ? (
           <Row label="思考强度">
             <code className="text-[11px]">{member.reasoningEffort}</code>

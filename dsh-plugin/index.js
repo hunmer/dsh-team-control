@@ -44,6 +44,8 @@ function resolveConfig(config) {
     baseUrl,
     port,
     home: path.resolve(c.home || process.env.DSH_TEAM_HOME || path.join(os.homedir(), '.dsh', 'team')),
+    // Leader 自建 agentPreset 的固定目录：JSON 文档（JSON 是合法 YAML），插件启动时注册进宿主
+    presetDir: path.resolve(c.presetDir || process.env.DSH_TEAM_PRESET_DIR || path.join(os.homedir(), '.dsh', 'team', 'presets')),
     autoStart: c.autoStart !== false,
     entry: path.resolve(c.sidecarEntry || DEFAULT_ENTRY),
     startTimeoutMs: Number(c.startTimeoutMs) || 20000,
@@ -78,6 +80,8 @@ function resolveConfig(config) {
     agentHeartbeatMs: Number(c.agentHeartbeatMs) || 15000,
     // 任务投递后成员会话迟迟没有任何事件（模型路由报错、会话没启动）就判定失败并交回 sidecar 重试
     agentStartTimeoutMs: Number(c.agentStartTimeoutMs) || 120000,
+    // 成员触发权限审批（permission preset 的 approval=ask）后，等待 Lead 调 team_approve 的上限
+    approvalTimeoutMs: Number(c.approvalTimeoutMs) || 600000,
     // spawnTeammate 的 provider：默认与 dsh-experimental-tool-agent-team 一致
     freshProvider: String(c.freshProvider || 'spawn'),
     forkProvider: String(c.forkProvider || 'fork'),
@@ -184,7 +188,7 @@ const qs = (obj) => {
 /** teamId → 最近一次调用 team_* 工具的 Lead Agent（发消息必须由 live Lead 发出）。 */
 const leadByTeam = new Map();
 /** teamId → 'worker' | 'agent'，建团/查团缓存，省掉每次多一次 GET。 */
-const runtimeByTeam = new Map();
+const teamCache = new Map();
 /** DSH sessionId → { teamId, memberId }：把成员的工具 span 归到成员节点下。 */
 const sessionMember = new Map();
 /** DSH sessionId → 上次采集产物时的会话 seq：成员复用同一会话时只上报新产生的文件。 */
@@ -668,35 +672,279 @@ async function assertRouteEnabled(s, ctx, provider, model, effort = null) {
   }
 }
 
-function rememberMember(sessionId, teamId, memberId, cwd) {
+function rememberMember(sessionId, teamId, memberId, cwd, permissionPreset = null, name = null) {
   if (sessionId == null) return;
   const key = String(sessionId);
   const prev = sessionMember.get(key);
   // 会话 cwd 只有 spawn 时知道（= team.workspace）；派发路径会重复登记同一个会话，
   // 这里不能把它冲成空，否则成员用相对路径写文件时 diff 找不到落盘位置。
-  sessionMember.set(key, { teamId: String(teamId), memberId: String(memberId), cwd: cwd || prev?.cwd || '' });
+  sessionMember.set(key, {
+    teamId: String(teamId),
+    memberId: String(memberId),
+    cwd: cwd || prev?.cwd || '',
+    permissionPreset: permissionPreset || prev?.permissionPreset || null,
+    name: name || prev?.name || null,
+  });
 }
 
-async function runtimeOfTeam(s, teamId) {
-  // 模型偶尔会漏掉必填的 teamId。旧实现会把 undefined 拼进 URL（/api/teams/undefined），
-  // 再被下面的 catch 静默回退成 worker，于是错误被拖到 POST /api/teams/undefined/members
-  // 才爆成「team not found」，看不出真正原因是参数缺失。这里先显式挡住。
+async function teamOf(s, teamId, { refresh = false } = {}) {
+  // 模型偶尔会漏掉必填的 teamId。先显式挡住，避免 /api/teams/undefined 被误报成「团队不存在」。
   if (teamId == null || String(teamId).trim() === '' || String(teamId) === 'undefined' || String(teamId) === 'null') {
     throw new Error('缺少 teamId：请把 team_create 返回的团队 id（形如 team_xxx）作为 teamId 参数传入后重试。');
   }
   const key = String(teamId);
-  const cached = runtimeByTeam.get(key);
-  if (cached) return cached;
+  if (!refresh && teamCache.has(key)) return teamCache.get(key);
   try {
     const team = await request(s, `/api/teams/${encodeURIComponent(key)}`);
-    runtimeByTeam.set(key, team.runtime || 'worker');
-    return team.runtime || 'worker';
+    teamCache.set(key, team);
+    return team;
   } catch (err) {
-    // 404 = 团队不存在（id 打错/已删除）：明确报错，不能伪装成 worker 团队继续往下走。
     if (err && err.status === 404) {
       throw new Error(`团队不存在或 teamId 无效: ${key}（teamId 来自 team_create 返回值，请核对后重试）`);
     }
-    return 'worker'; // sidecar 不可达等其余情况保留原兜底，后续调用会报出真实错误
+    throw err;
+  }
+}
+
+const permissionPresetsOf = (ctx) => {
+  try { return ctx.get('permissionPresets'); } catch { return undefined; }
+};
+
+const agentPresetsOf = (ctx) => {
+  try { return ctx.get('agentPresets'); } catch { return undefined; }
+};
+
+/** 解析并校验 agentPreset（组合预设：工具/skill/MCP/系统提示词）。空 = 不指定，沿用宿主默认。 */
+async function resolveAgentPreset(ctx, requested, fallback, store = null) {
+  if (store) await ensureTeamPresets(store, ctx).catch(() => null);
+  const preset = String(requested ?? fallback ?? '').trim();
+  if (!preset) return null;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(preset)) {
+    throw new Error(`agentPreset 名称非法：「${preset}」`);
+  }
+  const svc = agentPresetsOf(ctx);
+  if (!svc || typeof svc.list !== 'function') return preset;
+  let rows = null;
+  try { rows = await svc.list(); } catch { rows = null; }
+  const ids = Array.isArray(rows) ? rows.map((r) => r && r.id).filter(Boolean) : [];
+  if (ids.length && !ids.includes(preset)) {
+    throw new Error(`agentPreset「${preset}」不存在；可用预设：${ids.join(', ')}`);
+  }
+  return preset;
+}
+
+// ---------------------------------------------------------------------------
+// Leader 自建 agentPreset
+//
+// 内置 preset 不满足时，Lead 用 team_preset({action:'save'}) 把一份组合定义写到固定目录，
+// 并立刻调用宿主 `agentPresets.register()` 生效（无需重启 DSH）。目录里的 JSON 文档
+// （JSON 是合法 YAML）在插件启动时也会被重新注册，因此跨会话可复用。
+// ---------------------------------------------------------------------------
+const PRESET_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const teamPresetDisposers = new Map();
+let teamPresetsReady = null;
+let teamPresetLoading = null;
+
+function presetFiles(dir) {
+  try {
+    return fs.readdirSync(dir).filter((f) => f.endsWith('.json')).sort();
+  } catch {
+    return [];
+  }
+}
+
+/** 读目录里全部 preset 文档；坏文件只记诊断，不阻塞其他文件。 */
+function readTeamPresetFiles(dir) {
+  const docs = [];
+  const errors = [];
+  for (const file of presetFiles(dir)) {
+    const full = path.join(dir, file);
+    try {
+      const doc = JSON.parse(fs.readFileSync(full, 'utf8'));
+      if (!doc || typeof doc !== 'object') throw new Error('不是对象');
+      if (!PRESET_ID_RE.test(String(doc.id || ''))) throw new Error('id 非法');
+      if (!Array.isArray(doc.plugins) || doc.plugins.length === 0) throw new Error('plugins 必须是非空数组');
+      docs.push({ doc, file: full });
+    } catch (err) {
+      errors.push({ file: full, error: String(err?.message || err) });
+    }
+  }
+  return { docs, errors };
+}
+
+/** 启动时把目录里的 preset 注册进宿主；幂等，重复调用复用同一个 Promise。 */
+function ensureTeamPresets(s, ctx) {
+  if (teamPresetsReady) return teamPresetsReady;
+  if (teamPresetLoading) return teamPresetLoading;
+  const serviceAvailable = () => {
+    const svc = ctx.get('agentPresets');
+    return !!(svc && typeof svc.register === 'function');
+  };
+  teamPresetLoading = (async () => {
+    const svc = ctx.get('agentPresets');
+    const result = { dir: s.presetDir, registered: [], skipped: [], errors: [] };
+    if (!svc || typeof svc.register !== 'function') {
+      result.errors.push({ file: s.presetDir, error: 'agentPresets 服务不可用（宿主未启用 agent-preset-registry）' });
+      return result;
+    }
+    const { docs, errors } = readTeamPresetFiles(s.presetDir);
+    result.errors.push(...errors);
+    let known = new Set();
+    try { known = new Set((await svc.list()).map((r) => r && r.id).filter(Boolean)); } catch { /* list 不可用就按空处理 */ }
+    for (const { doc, file } of docs) {
+      try {
+        if (known.has(doc.id)) { result.skipped.push({ id: doc.id, file, reason: '同名预设已由宿主定义' }); continue; }
+        const dispose = await svc.register(doc);
+        teamPresetDisposers.set(doc.id, dispose);
+        known.add(doc.id);
+        result.registered.push({ id: doc.id, file });
+      } catch (err) {
+        result.errors.push({ file, error: String(err?.message || err) });
+      }
+    }
+    return result;
+  })().finally(() => {
+    // 服务暂时不可用时不缓存失败，下次调用（例如宿主稍后启用 registry）再重试。
+    if (serviceAvailable()) teamPresetsReady = teamPresetLoading;
+    teamPresetLoading = null;
+  });
+  return teamPresetLoading;
+}
+
+/** 保存一个 preset 文档并立刻注册；同名的自建 preset 可覆盖，宿主内置的同名 preset 不允许覆盖。 */
+async function saveTeamPreset(s, ctx, input) {
+  const id = String(input?.id || '').trim();
+  if (!PRESET_ID_RE.test(id)) throw new Error(`agentPreset 名称非法：「${id}」`);
+  if (!Array.isArray(input?.plugins) || input.plugins.length === 0) {
+    throw new Error('plugins 必须是非空数组，每项形如 { name, config?, id?, disabled? }');
+  }
+  const doc = { id };
+  if (input.name) doc.name = String(input.name);
+  if (input.description) doc.description = String(input.description);
+  if (Number.isFinite(Number(input.order))) doc.order = Number(input.order);
+  doc.plugins = input.plugins;
+  const file = path.join(s.presetDir, `${id}.json`);
+  if (fs.existsSync(file) && !input?.confirm) {
+    throw new Error(`团队预设「${id}」已存在；覆盖请传 confirm:true（内置预设始终不可覆盖）`);
+  }
+  const svc = ctx.get('agentPresets');
+  if (!svc || typeof svc.register !== 'function') {
+    fs.mkdirSync(s.presetDir, { recursive: true });
+    fs.writeFileSync(file, `${JSON.stringify(doc, null, 2)}\n`, 'utf8');
+    return { id, file, registered: false, warning: 'agentPresets 服务不可用：文件已保存，宿主启用该服务后会加载' };
+  }
+  let existing = null;
+  let hostIds = [];
+  try {
+    const rows = await svc.list();
+    hostIds = rows.map((r) => r && r.id).filter(Boolean);
+    existing = rows.find((r) => r && r.id === id) || null;
+  } catch { existing = null; }
+  if (existing && !teamPresetDisposers.has(id)) {
+    throw new Error(`agentPreset「${id}」已由宿主定义，换一个 id（内置预设：${hostIds.join(', ')}）`);
+  }
+  fs.mkdirSync(s.presetDir, { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify(doc, null, 2)}\n`, 'utf8');
+  if (teamPresetDisposers.has(id)) {
+    const dispose = teamPresetDisposers.get(id);
+    teamPresetDisposers.delete(id);
+    try { await dispose(); } catch { /* 旧定义已失效就继续注册新定义 */ }
+  }
+  const dispose = await svc.register(doc);
+  teamPresetDisposers.set(id, dispose);
+  const row = (await svc.list().catch(() => [])).find((r) => r && r.id === id) || null;
+  return { id, file, registered: true, ...(row?.broken ? { broken: row.broken } : {}) };
+}
+
+/** 列出宿主 preset + 目录里的自建 preset（含未成功注册/解析失败的文件）。 */
+async function listTeamPresets(s, ctx) {
+  await ensureTeamPresets(s, ctx).catch(() => null);
+  const { docs, errors } = readTeamPresetFiles(s.presetDir);
+  const fileById = new Map(docs.map(({ doc, file }) => [doc.id, file]));
+  const svc = ctx.get('agentPresets');
+  let rows = [];
+  try { rows = await svc?.list?.() || []; } catch { rows = []; }
+  const presets = rows.map((r) => ({
+    id: r.id,
+    ...(r.name ? { name: r.name } : {}),
+    ...(r.description ? { description: r.description } : {}),
+    ...(r.order !== undefined ? { order: r.order } : {}),
+    ...(r.broken ? { broken: r.broken } : {}),
+    source: fileById.has(r.id) ? 'team' : 'host',
+    ...(fileById.has(r.id) ? { file: fileById.get(r.id) } : {}),
+  }));
+  for (const { doc, file } of docs) {
+    if (!presets.some((p) => p.id === doc.id)) {
+      presets.push({ id: doc.id, ...(doc.name ? { name: doc.name } : {}), source: 'team', file, registered: false });
+    }
+  }
+  return { dir: s.presetDir, presets, errors };
+}
+
+/** 把目录镜像同步给 sidecar，供面板浏览（尽力而为，失败不影响主流程）。 */
+async function syncPresetCatalog(s, ctx) {
+  try {
+    const catalog = await listTeamPresets(s, ctx);
+    const { docs } = readTeamPresetFiles(s.presetDir);
+    const docById = new Map(docs.map(({ doc }) => [doc.id, doc]));
+    const presets = catalog.presets.map(({ registered, ...row }) => ({ ...row, ...(docById.has(row.id) ? { doc: docById.get(row.id) } : {}) }));
+    await request(s, '/api/presets/sync', { method: 'POST', body: { presets } });
+    return catalog;
+  } catch { return null; }
+}
+
+/** 只删团队自建（目录里的 .json）；内置预设不可删。 */
+async function deleteTeamPreset(s, ctx, rawId) {
+  const id = String(rawId || '').trim();
+  if (!PRESET_ID_RE.test(id)) throw new Error(`agentPreset 名称非法：「${id}」`);
+  const file = path.join(s.presetDir, `${id}.json`);
+  if (!fs.existsSync(file)) throw new Error(`只有团队自建预设可以删除：「${id}」不在 ${s.presetDir}`);
+  const dispose = teamPresetDisposers.get(id);
+  teamPresetDisposers.delete(id);
+  if (dispose) { try { await dispose(); } catch { /* 已失效就继续删文件 */ } }
+  fs.rmSync(file, { force: true });
+  await syncPresetCatalog(s, ctx);
+  return { id, file, removed: true };
+}
+
+/** 面板点删除 → sidecar 排队 → 这里取队列执行并 ack（Host 服务只在本进程里可调）。 */
+async function processPresetDeletes(s, ctx) {
+  let items = [];
+  try { items = (await request(s, '/api/presets/pending-deletes')).items || []; } catch { return; }
+  for (const item of items) {
+    if (Number(item.attempts) >= 5) continue; // 面板显示错误；不再无限重试
+    let error = null;
+    try { await deleteTeamPreset(s, ctx, item.id); } catch (err) { error = String(err?.message || err); }
+    try { await request(s, `/api/presets/pending-deletes/${encodeURIComponent(item.id)}/ack`, { method: 'POST', body: error ? { error } : {} }); } catch { /* 下次再 ack */ }
+  }
+}
+
+/** 解析并校验 permissionPreset：宿主注册了该服务时按 names 校验，否则原样交给宿主 set()。 */
+function resolvePermissionPreset(ctx, requested, fallback) {
+  const preset = String(requested || fallback || 'workspace-write').trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(preset)) {
+    throw new Error(`permissionPreset 名称非法：「${preset}」`);
+  }
+  const svc = permissionPresetsOf(ctx);
+  const names = svc && Array.isArray(svc.names) ? svc.names : null;
+  if (names && names.length && !names.includes(preset)) {
+    throw new Error(`permissionPreset「${preset}」不存在；可用预设：${names.join(', ')}`);
+  }
+  return preset;
+}
+
+/** 把预设落到已发布的子会话：sandbox + approval 两个 knob 一起写。 */
+function applyPermissionPreset(ctx, sessionId, preset) {
+  const svc = permissionPresetsOf(ctx);
+  if (!svc || typeof svc.set !== 'function') return { applied: false, reason: 'permissionPresets 服务不可用' };
+  const sessions = sessionsOf(ctx);
+  const session = sessions && typeof sessions.get === 'function' ? sessions.get(String(sessionId)) : null;
+  if (!session) return { applied: false, reason: '子会话尚未发布' };
+  try {
+    svc.set(session, preset);
+    return { applied: true, preset };
+  } catch (err) {
+    return { applied: false, preset, error: String(err?.message || err) };
   }
 }
 
@@ -708,13 +956,10 @@ const clip = (text, max) => {
 /** 成员收到的一条任务说明：必须包含 teamId / taskId 和「跑完怎么回报」。 */
 function taskBrief(teamId, task, member) {
   const plan = (task.plan || []).map((p, i) => {
-    const kind = p.op?.kind || p.action || p.phase || 'do';
-    const target = p.target ? ` → ${p.target}` : '';
-    const args = p.op?.args ? ` ${clip(JSON.stringify(p.op.args), 300)}` : '';
-    return `${i + 1}. [${p.step || `S${i + 1}`}] ${kind}${target}${args}`;
+    const detail = p.detail || p.action || p.phase || 'do';
+    return `${i + 1}. [${p.step || `S${i + 1}`}] ${detail}`;
   });
   const deps = (task.dependsOn || []).length ? `\n依赖（已完成）：${task.dependsOn.join(', ')}` : '';
-  const scopes = (task.writeScopes || []).length ? `\n写域（写入请限制在这些前缀内）：${task.writeScopes.join(', ')}` : '';
   const acceptance = task.acceptance ? `\n验收标准：${task.acceptance}` : '';
   return [
     '【dsh-team 任务派发】',
@@ -725,7 +970,6 @@ function taskBrief(teamId, task, member) {
     `subject：${task.subject}`,
     ...(plan.length ? ['计划步骤：', ...plan] : []),
     ...(deps ? [deps.trim()] : []),
-    ...(scopes ? [scopes.trim()] : []),
     ...(acceptance ? [acceptance.trim()] : []),
     '',
     '执行要求：',
@@ -787,7 +1031,7 @@ async function dispatchLoop(s, ctx, teamId) {
       }
       const { task, member } = r;
       // 先记绑定再投递：成员第一轮 LLM 调用可能在 sendMessage 返回后就已开始
-      if (member.agentSessionId) rememberMember(member.agentSessionId, teamId, member.id);
+      if (member.agentSessionId) rememberMember(member.agentSessionId, teamId, member.id, null, member.permissionPreset, member.name);
       // 任务已投递：先按「在跑」记账，agent/status 的 running 事件可能因为状态未变化而不发
       if (member.agentSessionId) agentStatusBySession.set(String(member.agentSessionId), 'running');
       try {
@@ -808,6 +1052,124 @@ async function dispatchLoop(s, ctx, teamId) {
   } finally {
     dispatching.delete(teamId);
   }
+}
+
+// ---------- 权限审批转发：成员 preset 触发 approval/request → Lead 用 team_approve 决定 ----------
+const pendingApprovals = new Map();
+
+function settleApproval(s, requestId, decision, reason, decidedBy) {
+  const entry = pendingApprovals.get(requestId);
+  if (!entry) return null;
+  pendingApprovals.delete(requestId);
+  clearTimeout(entry.timer);
+  entry.signal?.removeEventListener?.('abort', entry.onAbort);
+  const outcome = decision === 'allow' || decision === 'allowed-once'
+    ? 'allowed-once'
+    : decision === 'cancelled' ? 'cancelled' : 'rejected';
+  const recorded = outcome === 'allowed-once' ? 'allowed' : outcome;
+  entry.resolve(outcome);
+  void request(s, `/api/approvals/${encodeURIComponent(requestId)}/decide`, {
+    method: 'POST',
+    body: { decision: recorded, decidedBy: decidedBy || 'lead', ...(reason ? { reason } : {}) },
+  }).catch(() => { /* 审计镜像失败不影响审批本身 */ });
+  return entry;
+}
+
+function cancelPendingApprovals() {
+  for (const [requestId, entry] of [...pendingApprovals]) {
+    pendingApprovals.delete(requestId);
+    clearTimeout(entry.timer);
+    entry.signal?.removeEventListener?.('abort', entry.onAbort);
+    entry.resolve('cancelled');
+  }
+}
+
+async function notifyLeadOfApproval(s, ctx, req, info) {
+  const subs = subagentsOf(ctx);
+  if (!subs || typeof subs.sendMessage !== 'function' || !req?.agent) return false;
+  const team = await teamOf(s, info.teamId);
+  const leadId = leadByTeam.get(info.teamId)?.id != null
+    ? String(leadByTeam.get(info.teamId).id)
+    : (team.leadSessionId ? String(team.leadSessionId) : null);
+  if (!leadId) return false;
+  const minutes = Math.max(1, Math.round(s.approvalTimeoutMs / 60000));
+  const text = [
+    '【dsh-team 权限审批】',
+    `teamId=${info.teamId}`,
+    `memberId=${info.memberId}`,
+    `memberName=${info.memberName || info.memberId}`,
+    `toolName=${info.toolName || '(unknown)'}`,
+    ...(info.reason ? [`reason：${clip(info.reason, 500)}`] : []),
+    `requestId=${info.requestId}`,
+    '',
+    `成员因 permissionPreset「${info.preset || 'unknown'}」的审批策略暂停，等待你决定。`,
+    `批准本次操作：team_approve({ teamId: "${info.teamId}", requestId: "${info.requestId}", decision: "allow" })`,
+    `拒绝：把 decision 改成 "deny"（可加 reason）。`,
+    `超过 ${minutes} 分钟未决定将自动拒绝。`,
+  ].join('\n');
+  await subs.sendMessage(req.agent, leadId, [{ type: 'text', text }], { signal: AbortSignal.timeout(s.requestTimeoutMs) });
+  return true;
+}
+
+async function onApprovalRequest(s, ctx, req, next) {
+  const sessionId = req?.agent?.id != null ? String(req.agent.id) : null;
+  const binding = sessionId ? sessionMember.get(sessionId) : null;
+  // 不是本插件的成员：交回 DSH 原有审批链路（Lead 自己的审批仍走宿主 UI）。
+  if (!binding) return next();
+
+  const requestId = String(req.id ?? req.requestId ?? `${sessionId}:${Date.now()}`);
+  const info = {
+    requestId,
+    teamId: binding.teamId,
+    memberId: binding.memberId,
+    memberName: binding.name || null,
+    sessionId,
+    toolName: String(req.toolName || ''),
+    reason: String(req.reason || ''),
+    preset: binding.permissionPreset || null,
+  };
+  // 同一个请求重复进入（理论上不会）直接拒绝，避免两个 waiter 争同一个 id。
+  if (pendingApprovals.has(requestId)) return 'rejected';
+
+  // 先镜像到 sidecar，面板/报告可见；失败不影响审批。
+  void request(s, '/api/approvals', {
+    method: 'POST',
+    body: { id: requestId, teamId: info.teamId, memberId: info.memberId, sessionId, toolName: info.toolName, reason: info.reason },
+  }).catch(() => { /* ignore */ });
+
+  const outcome = await new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      if (!pendingApprovals.delete(requestId)) return;
+      resolve('rejected');
+      void request(s, `/api/approvals/${encodeURIComponent(requestId)}/decide`, {
+        method: 'POST', body: { decision: 'expired', decidedBy: 'timeout', reason: 'approval timeout' },
+      }).catch(() => {});
+    }, s.approvalTimeoutMs);
+    timer.unref?.();
+
+    const onAbort = () => {
+      if (!pendingApprovals.delete(requestId)) return;
+      clearTimeout(timer);
+      resolve('cancelled');
+      void request(s, `/api/approvals/${encodeURIComponent(requestId)}/decide`, {
+        method: 'POST', body: { decision: 'cancelled', decidedBy: 'abort', reason: 'member turn aborted' },
+      }).catch(() => {});
+    };
+
+    pendingApprovals.set(requestId, { ...info, resolve, timer, signal: req.signal, onAbort });
+    if (req.signal) req.signal.addEventListener?.('abort', onAbort, { once: true });
+
+    notifyLeadOfApproval(s, ctx, req, info).then((ok) => {
+      if (ok) return;
+      // 通知不到 Lead（服务缺失/没有 lead 会话）：立刻拒绝，别让成员干等。
+      const entry = pendingApprovals.get(requestId);
+      if (entry) settleApproval(s, requestId, 'deny', '无法通知 Lead', 'system');
+    }).catch(() => {
+      const entry = pendingApprovals.get(requestId);
+      if (entry) settleApproval(s, requestId, 'deny', '通知 Lead 失败', 'system');
+    });
+  });
+  return outcome;
 }
 
 /** agent/status 回写 sidecar：idle 时兜底收尾在途任务，running 时置 running。 */
@@ -978,28 +1340,19 @@ async function flushMemberReply(s, sessionId) {
 const PLAN_STEP = {
   type: 'object',
   additionalProperties: true,
-  description: 'One observable action executed by a worker process through the sidecar permission broker.',
+  description: 'One plan step / brief line handed to the member sub-agent. Purely descriptive: the member executes it with its own tools.',
   properties: {
     step: { type: 'string', description: 'Step label, e.g. S1.' },
     phase: {
       type: 'string',
-      description: 'Event phase used in the timeline: init|read|write|exec|net|env|msg|wait|verify|done|fail.',
+      description: 'Optional phase used in the timeline: init|read|write|exec|net|env|msg|wait|verify|done|fail.',
     },
     action: { type: 'string', description: 'Verb shown in the timeline, e.g. write / read / exec.' },
     target: { type: 'string', description: 'File path, command, host, or env name this step touches.' },
-    op: {
-      type: 'object',
-      additionalProperties: true,
-      description: 'The proxied action. kind: fs.read{path} | fs.write{path,content,expectVersion?} | fs.append{path,marker,retries?} | fs.list{path} | exec{argv,cwd?,timeoutMs?} | net{url,method?,headers?,body?} | env{name} | sleep{ms} | escape{} | scope{domain,target,reason,then?} | fail{message,retryable?} | noop.',
-      properties: { kind: { type: 'string' } },
-      required: ['kind'],
-    },
-    onDenied: { type: 'string', enum: ['scope'], description: "Escalate a denied action into a scope request instead of failing the task." },
-    scopeReason: { type: 'string' },
-    scopeTimeoutMs: { type: 'integer' },
+    op: { type: 'object', additionalProperties: true, description: 'Optional legacy detail (ignored by the sidecar).' },
     fatal: { type: 'boolean' },
   },
-  required: ['step', 'op'],
+  required: ['step'],
 };
 
 const MEMBER_FIELDS = {
@@ -1028,14 +1381,15 @@ function buildTools(s, ctx) {
 
   tools.push({
     name: 'team_create',
-    description: 'START HERE to build a working team of agents. Order: team_create({name, workspace, runtime:"agent"}) → team_models() to see the enabled provider/model routes → team_spawn({teamId, name, prompt, agentProvider?, model?, reasoningEffort?}) once per member, choosing a cheap/fast route for mechanical work and a strong-reasoning route for architecture, debugging, or review → team_task({teamId, subject, assignee?, acceptance}) per DAG node → each member finishes by calling team_report_task → inspect with team_status / team_report. `runtime` is the one field that changes what a member IS: `agent` spawns real DSH sub-agent sessions (own model, tools, context) that you talk to and that report back; `worker` (default) creates inert plan-step slots that only run proxied fs/exec/net/env ops from a task `plan` and cannot think. If the user says "create an agent team", pass runtime:"agent". A team owns members, a task DAG, and the four-domain (fs/exec/net/env) permission policy. `workspace` is an absolute directory shared by the members (worker members may only touch it through the sidecar broker; agent members get it as their cwd). Keep teamId from this response (result.team.id): every later call needs it. For the full recipe with per-field pitfalls, load the skill "dsh-agent-team".',
+    description: 'START HERE to build a working team of agents. Order: team_create({name, workspace, permissionPreset?}) → team_models() to see the enabled provider/model routes → team_spawn({teamId, name, prompt, agentProvider?, model?, reasoningEffort?, permissionPreset?}) once per member, choosing a cheap/fast route for mechanical work and a strong-reasoning route for architecture, debugging, or review → team_task({teamId, subject, assignee?, plan, acceptance}) per DAG node → each member finishes by calling team_report_task → inspect with team_status / team_report. Every member is a real DSH sub-agent session (own model, tools, context, message inbox). `permissionPreset` decides the member sandbox + approval policy (DSH permission presets, e.g. workspace-write or danger-full-access); the team value is the default and team_spawn can override it per member. When a member hits an operation its preset requires approval for, the approval is forwarded to the Lead, who decides with team_approve. `workspace` is an absolute directory shared by the members and becomes their cwd. Keep teamId from this response (result.team.id): every later call needs it. For the full recipe with per-field pitfalls, load the skill "dsh-agent-team".',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         name: { type: 'string', description: 'Team name.' },
-        workspace: { type: 'string', description: 'Absolute directory shared by workers; created if missing.' },
-        runtime: { type: 'string', enum: ['worker', 'agent'], description: "Member runtime. `agent` spawns real DSH sub-agent members (real models, real tool calls). Default worker." },
+        workspace: { type: 'string', description: 'Absolute directory shared by members; created if missing.' },
+        permissionPreset: { type: 'string', description: 'Default DSH permission preset for members (sandbox + approval policy). Default workspace-write. team_spawn can override it per member.' },
+        agentPreset: { type: 'string', description: 'Default DSH agent preset (composition: tools/skills/MCP + system prompt) for members. Omit to use the host default. team_spawn can override it per member.' },
         maxMembers: { type: 'integer', description: 'Member cap, 0 means unlimited. Default 64. Extra members are queued, never errors.' },
         maxConcurrency: { type: 'integer', description: 'Max simultaneously running tasks. Default 8.' },
         failurePolicy: { type: 'string', enum: ['continue', 'abort'], description: 'Team-level default failure policy.' },
@@ -1045,12 +1399,15 @@ function buildTools(s, ctx) {
     },
     output: jsonOutput('{ team, panel }'),
     async execute(args, exec) {
+      const permissionPreset = resolvePermissionPreset(ctx, args.permissionPreset, 'workspace-write');
+      const agentPreset = await resolveAgentPreset(ctx, args.agentPreset, null, s);
       const team = await request(s, '/api/teams', {
         method: 'POST',
         body: {
           name: args.name,
           workspace: args.workspace,
-          ...(args.runtime !== undefined ? { runtime: args.runtime } : {}),
+          permissionPreset,
+          ...(agentPreset ? { agentPreset } : {}),
           ...(args.maxMembers !== undefined ? { maxMembers: args.maxMembers } : {}),
           ...(args.maxConcurrency !== undefined ? { maxConcurrency: args.maxConcurrency } : {}),
           ...(args.failurePolicy !== undefined ? { failurePolicy: args.failurePolicy } : {}),
@@ -1058,7 +1415,7 @@ function buildTools(s, ctx) {
           ...(exec?.agent && exec.agent.id != null ? { leadSessionId: String(exec.agent.id) } : {}),
         },
       });
-      runtimeByTeam.set(team.id, team.runtime || 'worker');
+      teamCache.set(team.id, team);
       if (exec?.agent) leadByTeam.set(team.id, exec.agent);
       return { team, panel: panelUrl(s) };
     },
@@ -1066,49 +1423,46 @@ function buildTools(s, ctx) {
 
   tools.push({
     name: 'team_spawn',
-    description: "Add one member to a team; returns the member `id` you use as team_task's `assignee`. On a `worker` team this is a sandboxed Node slot that executes plan steps through the sidecar permission broker. On an `agent` team this SPAWNS A REAL DSH SUB-AGENT session (`subagents.startActivation`, continuable child) that owns its own model, context, tools and message inbox; `prompt` is required there and becomes the member's first instruction — the member cannot see your conversation, so state the team id, its job, the workspace, and end with: finish by calling team_report_task({teamId, taskId, status, summary}). Over the member cap the member becomes `queued` instead of failing. Members are reusable: they run one task at a time and return to `idle`. Model routing (agent teams): call team_models first, then pass `agentProvider` + `model` to fit the task — a cheap/fast route for mechanical edits and lookups, a strong-reasoning route for architecture, debugging, or review. Pass `reasoningEffort` when the model exposes one; omitting it inherits the Lead's effort only while the route stays the same, otherwise the model's default applies. Omit agentProvider/model to inherit the Lead's route.",
+    description: "Add one member to a team; returns the member `id` you use as team_task's `assignee`. This SPAWNS A REAL DSH SUB-AGENT session (`subagents.startActivation`, continuable child) that owns its own model, context, tools and message inbox; `prompt` is required and becomes the member's first instruction — the member cannot see your conversation, so state the team id, its job, the workspace, and end with: finish by calling team_report_task({teamId, taskId, status, summary}). Over the member cap the member becomes `queued` instead of failing. Members are reusable: they run one task at a time and return to `idle`. Model routing: call team_models first, then pass `agentProvider` + `model` to fit the task — a cheap/fast route for mechanical edits and lookups, a strong-reasoning route for architecture, debugging, or review. Pass `reasoningEffort` when the model exposes one; omitting it inherits the Lead's effort only while the route stays the same, otherwise the model's default applies. Omit agentProvider/model to inherit the Lead's route. `permissionPreset` overrides the team default for this member (sandbox + approval policy); approval-required operations are forwarded to the Lead via team_approve.",
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         teamId: { type: 'string', description: 'Team id from team_create.' },
         name: { type: 'string', description: 'Unique member name inside the team; this is the addressable target.' },
-        role: { type: 'string', description: 'Role label, also usable as a policy subject (subjectType=role).' },
-        agentProvider: { type: 'string', description: 'LLM provider route id for an agent member, as returned by team_models. Omit to inherit the Lead\'s provider. Must be an enabled route in the team panel.' },
-        model: { type: 'string', description: 'LLM model id for an agent member, as returned by team_models. On worker teams it is only a display label. Changing the route clears inherited reasoning effort unless reasoningEffort is set explicitly.' },
-        reasoningEffort: { type: 'string', description: 'Adapter-defined reasoning effort id for an agent member (for example low / medium / high, when the model supports them). Omit to inherit the Lead\'s effort while the route is unchanged; a changed route falls back to the model default.' },
-        contextMode: { type: 'string', enum: ['isolated', 'fresh', 'fork'], description: 'Context isolation: `fresh` starts with no Lead history, `fork` inherits completed Lead turns (agent teams only). Default isolated/fresh.' },
-        prompt: { type: 'string', description: 'agent teams only (required there): the member’s first instruction. Tell it its role, workspace, and that it must call team_report_task when done.' },
-        description: { type: 'string', description: 'agent teams only: one-line description of what this member is responsible for.' },
+        role: { type: 'string', description: 'Role label shown on the panel.' },
+        permissionPreset: { type: 'string', description: "DSH permission preset for this member (sandbox + approval policy). Defaults to the team's permissionPreset." },
+        agentPreset: { type: 'string', description: "DSH agent preset (composition: tools/skills/MCP + system prompt). Defaults to the team's agentPreset; omit both to join the host default. Only supported with contextMode 'fresh' (the fork provider inherits the Lead's composition)." },
+        agentProvider: { type: 'string', description: 'LLM provider route id, as returned by team_models. Omit to inherit the Lead\'s provider. Must be an enabled route in the team panel.' },
+        model: { type: 'string', description: 'LLM model id, as returned by team_models. Changing the route clears inherited reasoning effort unless reasoningEffort is set explicitly.' },
+        reasoningEffort: { type: 'string', description: 'Adapter-defined reasoning effort id (for example low / medium / high, when the model supports them). Omit to inherit the Lead\'s effort while the route is unchanged; a changed route falls back to the model default.' },
+        contextMode: { type: 'string', enum: ['isolated', 'fresh', 'fork'], description: 'Context isolation: `fresh` starts with no Lead history, `fork` inherits completed Lead turns. Default isolated/fresh.' },
+        prompt: { type: 'string', description: 'The member’s first instruction. Tell it its role, workspace, and that it must call team_report_task when done.' },
+        description: { type: 'string', description: 'One-line description of what this member is responsible for.' },
       },
-      required: ['teamId', 'name'],
+      required: ['teamId', 'name', 'prompt'],
     },
-    output: jsonOutput('{ member, agent?, panel }'),
+    output: jsonOutput('{ member, agent, panel, permissionPreset, agentPreset, agentPresetWarning?, permissionPresetApplied?, permissionPresetWarning? }'),
     async execute(args, exec) {
-      const runtime = await runtimeOfTeam(s, args.teamId);
-      if (runtime !== 'agent') {
-        const member = await request(s, `/api/teams/${encodeURIComponent(args.teamId)}/members`, {
-          method: 'POST',
-          body: {
-            name: args.name,
-            ...(args.role !== undefined ? { role: args.role } : {}),
-            ...(args.model !== undefined ? { model: args.model } : {}),
-            ...(args.contextMode !== undefined ? { contextMode: args.contextMode } : {}),
-          },
-        });
-        return { member, panel: panelUrl(s) };
-      }
+      const team = await teamOf(s, args.teamId);
+      const permissionPreset = resolvePermissionPreset(ctx, args.permissionPreset, team.permissionPreset);
+      const requestedAgentPreset = await resolveAgentPreset(ctx, args.agentPreset, team.agentPreset, s);
 
-      // ---- agent 团队：用 subagents 服务起一个 continuable 真子会话 ----
+      // ---- 用 subagents 服务起一个 continuable 真子会话 ----
       const subs = subagentsOf(ctx);
       if (!subs || typeof subs.startActivation !== 'function') {
-        throw new Error('subagents 服务不可用：无法在 agent 团队里创建 sub-agent 成员（需要宿主启用 dsh-subagent）。');
+        throw new Error('subagents 服务不可用：无法创建 sub-agent 成员（需要宿主启用 dsh-subagent）。');
       }
       const caller = exec?.agent;
-      if (!caller) throw new Error('team_spawn (agent) 需要 Lead 会话上下文（exec.agent 缺失：不能在非 agent 调用里起成员）。');
-      if (!args.prompt) throw new Error('agent 团队的 team_spawn 需要 prompt（成员的初始指令）。');
+      if (!caller) throw new Error('team_spawn 需要 Lead 会话上下文（exec.agent 缺失：不能在非 agent 调用里起成员）。');
+      if (!args.prompt) throw new Error('team_spawn 需要 prompt（成员的初始指令）。');
 
       const context = args.contextMode === 'fork' ? 'fork' : 'fresh';
+      // fork provider 继承父方组装，DSH 会拒绝独立 agentPreset；这里显式降级为警告而不是静默传。
+      const agentPreset = context === 'fork' ? null : requestedAgentPreset;
+      const agentPresetWarning = context === 'fork' && requestedAgentPreset
+        ? `contextMode=fork 继承 Lead 的组装，agentPreset「${requestedAgentPreset}」未生效`
+        : undefined;
       const provider = providerFor(ctx, s, context);
       // 实际 route：显式参数覆盖 Lead；effort 只在 route 未变时继承（与 DSH 子会话合并规则一致）
       const leadRoute = leadRouteOf(caller);
@@ -1124,7 +1478,6 @@ function buildTools(s, ctx) {
       const memberName = String(args.name).trim();
       const description = String(args.description || args.role || memberName).slice(0, 200);
       const sessionId = randomUUID();
-      const team = await request(s, `/api/teams/${encodeURIComponent(args.teamId)}`).catch(() => null);
       const started = await subs.startActivation({
         delivery: 'parent',
         childId: sessionId,
@@ -1135,12 +1488,14 @@ function buildTools(s, ctx) {
           parent: caller,
           ...(team && team.workspace ? { cwd: team.workspace } : {}),
           ...(Object.keys(agentOptions).length ? { agentOptions } : {}),
+          ...(agentPreset ? { agentPreset } : {}),
         },
         signal: exec.signal || AbortSignal.timeout(s.requestTimeoutMs),
       });
       // 成员跑的是一整轮 agent loop，结果由 team_report_task 汇报；这里只防止未处理的 rejection。
       if (started && started.result && typeof started.result.catch === 'function') started.result.catch(() => {});
-      const spawned = { member: { id: sessionId, name: memberName, role: 'teammate', status: 'running', model: route.model || null, diagnostics: [] } };
+      // 子会话发布后立刻把 preset 落到会话（会覆盖 subagent 继承来的 approval=never）。
+      const presetResult = applyPermissionPreset(ctx, sessionId, permissionPreset);
 
       const registered = await request(s, '/api/agents/register', {
         method: 'POST',
@@ -1149,27 +1504,34 @@ function buildTools(s, ctx) {
           name: memberName,
           sessionId,
           role: args.role || 'teammate',
-          model: args.model || spawned.member.model || null,
+          model: args.model || route.model || null,
           contextMode: context,
+          permissionPreset,
+          ...(agentPreset ? { agentPreset } : {}),
           // 实际生效的思考强度（含从 Lead 继承的值）：面板成员卡片据此展示，之后不可变
           reasoningEffort: route.reasoningEffort || null,
         },
       });
-      rememberMember(sessionId, args.teamId, registered.member.id, team?.workspace);
+      rememberMember(sessionId, args.teamId, registered.member.id, team?.workspace, registered.member.permissionPreset || permissionPreset, memberName);
       leadByTeam.set(args.teamId, caller);
       return {
         member: registered.member,
         agent: {
           sessionId,
-          name: spawned.member.name,
-          status: spawned.member.status,
-          role: spawned.member.role,
+          name: memberName,
+          status: 'running',
+          role: args.role || 'teammate',
           provider,
           context,
           model: route.model || null,
           route,
-          diagnostics: spawned.member.diagnostics || [],
         },
+        permissionPreset: registered.member?.permissionPreset || permissionPreset,
+        agentPreset: registered.member?.agentPreset || agentPreset || null,
+        ...(agentPresetWarning ? { agentPresetWarning } : {}),
+        permissionPresetApplied: presetResult.applied,
+        ...(presetResult.reason ? { permissionPresetWarning: presetResult.reason } : {}),
+        ...(presetResult.error ? { permissionPresetWarning: presetResult.error } : {}),
         panel: panelUrl(s),
       };
     },
@@ -1216,8 +1578,62 @@ function buildTools(s, ctx) {
   });
 
   tools.push({
+    name: 'team_preset',
+    description: 'Create, inspect, list, or delete team-owned agent presets when the host built-ins do not fit. A preset decides what a member OWNS (tool plugins, skill providers, MCP clients, persona/system prompt); permissionPreset decides what it MAY DO. action:list lists host presets plus presets the team already created; action:save writes one JSON document to the fixed team preset directory and registers it with the host immediately (no DSH restart), then the id can be passed to team_create({agentPreset}) / team_spawn({agentPreset}); action:show prints the saved document; action:delete removes a team-owned preset file and unregisters it (host built-ins are read-only). plugins must be a non-empty Cordis entry list, e.g. [{name:"@deepseek-ai/dsh-tool-fs"},{name:"@deepseek-ai/dsh-persona",config:{prefix:"You are a reviewer."}}]. Prefer copying the shape of an existing host preset: call team_preset({action:"show", id:"standard"}) and swap rows.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['action'],
+      properties: {
+        action: { type: 'string', enum: ['list', 'save', 'show', 'delete'], description: 'list：列出可用预设；save：写入固定目录并立刻注册；show：读回已保存的文档；delete：删除团队自建预设并反注册。' },
+        id: { type: 'string', description: '预设 id（save/show 必填），`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`。' },
+        name: { type: 'string', description: '展示名（save 可选）。' },
+        description: { type: 'string', description: '用途说明（save 可选）。' },
+        order: { type: 'number', description: '排序权重（save 可选，越小越靠前）。' },
+        confirm: { type: 'boolean', description: 'save 覆盖同名团队自建预设时必须显式 true；内置预设任何时候都不能覆盖。' },
+        plugins: {
+          type: 'array',
+          description: 'save 必填：Cordis 插件条目列表，每项 { name, config?, id?, disabled? }。',
+          items: {
+            type: 'object',
+            additionalProperties: true,
+            required: ['name'],
+            properties: { name: { type: 'string', description: '插件包名，如 @deepseek-ai/dsh-tool-fs。' } },
+          },
+        },
+      },
+    },
+    output: jsonOutput('list → { dir, presets:[{id,name?,source:"host"|"team",file?,broken?}], errors }；save → { id, file, registered, broken?, warning? }；show → { id, file, doc }；delete → { id, file, removed }'),
+    isConcurrencySafe: () => true,
+    async execute(args = {}) {
+      const action = String(args.action || '');
+      if (action === 'list') return listTeamPresets(s, ctx);
+      if (action === 'show') {
+        const id = String(args.id || '').trim();
+        if (!PRESET_ID_RE.test(id)) throw new Error(`agentPreset 名称非法：「${id}」`);
+        const file = path.join(s.presetDir, `${id}.json`);
+        if (!fs.existsSync(file)) {
+          const svc = ctx.get('agentPresets');
+          let row = null;
+          try { row = (await svc?.list?.() || []).find((r) => r && r.id === id) || null; } catch { row = null; }
+          if (!row) throw new Error(`没有找到 preset「${id}」：既不在 ${s.presetDir}，也不是宿主内置预设`);
+          return { id, source: 'host', preset: row, hint: '宿主内置预设的文档在 DSH bundle 里，不能编辑；需要定制就新建一个 id。' };
+        }
+        return { id, source: 'team', file, doc: JSON.parse(fs.readFileSync(file, 'utf8')) };
+      }
+      if (action === 'save') {
+        const saved = await saveTeamPreset(s, ctx, args);
+        await syncPresetCatalog(s, ctx);
+        return saved;
+      }
+      if (action === 'delete') return deleteTeamPreset(s, ctx, args.id);
+      throw new Error(`未知 action「${action}」：只支持 list / save / show / delete`);
+    },
+  });
+
+  tools.push({
     name: 'team_status',
-    description: 'Read a live snapshot instead of guessing progress. detail=summary returns every member with status/step/seq/percent/next/blockers/lease/stale; detail=dag returns the task DAG with dependencies, readiness, joins and the critical path. `asOf` marks the snapshot time.',
+    description: 'Read a live snapshot instead of guessing progress. detail=summary returns every member with status/step/seq/percent/next/blockers/stale and its permissionPreset; detail=dag returns the task DAG with dependencies, readiness, joins and the critical path. `asOf` marks the snapshot time.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -1239,10 +1655,11 @@ function buildTools(s, ctx) {
         asOf: st.asOf,
         version: st.version,
         panel: panelUrl(s),
-        runtime: st.runtime || runtimeByTeam.get(args.teamId) || 'worker',
         members: (st.members || []).map((m) => ({
           name: m.name,
           model: m.model || null,
+          permissionPreset: m.permissionPreset || null,
+          agentPreset: m.agentPreset || null,
           reasoningEffort: m.reasoningEffort || null,
           status: m.status,
           step: m.step,
@@ -1251,7 +1668,6 @@ function buildTools(s, ctx) {
           next: m.next,
           last: m.last,
           currentTaskId: m.currentTaskId,
-          leaseUntil: m.leaseUntil,
           blockers: m.blockers,
           stale: m.stale,
           agentSessionId: m.agentSessionId || null,
@@ -1265,7 +1681,7 @@ function buildTools(s, ctx) {
 
   tools.push({
     name: 'team_task',
-    description: 'Declare one task (DAG node) and hand it to a member. Two runtimes: on a `worker` team each plan step is one proxied action executed through the sidecar broker (the worker process has no direct IO, so a denied step fails hard); on an `agent` team the plan is a BRIEF sent to the member’s own sub-agent session, which does the work with its own tools and calls team_report_task when finished — write the brief self-contained (the member does not see this conversation). `assignee` takes a member **id** from team_spawn, not its name; omit it to let the scheduler pick an idle member. `deps[].from` takes a **task** id returned by an earlier team_task (member ids are rejected). The scheduler satisfies dependencies itself — never poll. Creating a task on an agent team dispatches it immediately to an idle member when dependencies are already satisfied.',
+    description: 'Declare one task (DAG node) and hand it to a member. The plan is a BRIEF sent to the member’s own sub-agent session, which does the work with its own tools and calls team_report_task when finished — write it self-contained (the member does not see this conversation). `assignee` takes a member **id** from team_spawn, not its name; omit it to let the scheduler pick an idle member. `deps[].from` takes a **task** id returned by an earlier team_task (member ids are rejected). The scheduler satisfies dependencies itself — never poll. The task dispatches immediately to an idle member once dependencies are satisfied; pass dispatch:false to build the DAG first.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -1273,7 +1689,7 @@ function buildTools(s, ctx) {
         teamId: { type: 'string' },
         subject: { type: 'string', description: 'Concise task title.' },
         assignee: { type: 'string', description: 'Member id (not name). Omit to let the scheduler pick an idle member.' },
-        plan: { type: 'array', items: PLAN_STEP, description: 'Ordered steps. Worker teams: proxied actions. Agent teams: the task brief (usually omit and describe the work in `subject` + `acceptance`). May be empty for a pure heartbeat task.' },
+        plan: { type: 'array', items: PLAN_STEP, description: 'Ordered plan steps / brief lines handed to the member. May be empty for a pure heartbeat task.' },
         deps: {
           type: 'array',
           description: 'Upstream dependencies declared atomically with the task: [{from, condition?, artifactPath?}].',
@@ -1288,12 +1704,11 @@ function buildTools(s, ctx) {
             required: ['from'],
           },
         },
-        writeScopes: { type: 'array', items: { type: 'string' }, description: 'Advisory write scope prefixes (sidecar policies are the enforced ones).' },
         acceptance: { type: 'string' },
         priority: { type: 'integer', description: 'Smaller runs first. Default 0.' },
         failurePolicy: { type: 'string', enum: ['continue', 'skip', 'abort_team', 'retry'] },
         maxAttempts: { type: 'integer' },
-        dispatch: { type: 'boolean', description: 'Agent teams only: dispatch immediately after creating (default true). Pass false to build the DAG first and dispatch later with team_dispatch.' },
+        dispatch: { type: 'boolean', description: 'Dispatch immediately after creating (default true). Pass false to build the DAG first and dispatch later with team_dispatch.' },
       },
       required: ['teamId', 'subject', 'plan'],
     },
@@ -1308,14 +1723,13 @@ function buildTools(s, ctx) {
           ...(args.assignee !== undefined ? { assignee: args.assignee } : {}),
           plan: args.plan || [],
           ...(args.deps !== undefined ? { deps: args.deps } : {}),
-          ...(args.writeScopes !== undefined ? { writeScopes: args.writeScopes } : {}),
           ...(args.acceptance !== undefined ? { acceptance: args.acceptance } : {}),
           ...(args.priority !== undefined ? { priority: args.priority } : {}),
           ...(args.failurePolicy !== undefined ? { failurePolicy: args.failurePolicy } : {}),
           ...(args.maxAttempts !== undefined ? { maxAttempts: args.maxAttempts } : {}),
         },
       });
-      if (args.dispatch === false || (await runtimeOfTeam(s, args.teamId)) !== 'agent') return { task };
+      if (args.dispatch === false) return { task };
       await sleep(s.agentSettleMs);
       const dispatched = await dispatchLoop(s, ctx, args.teamId);
       return { task, dispatched };
@@ -1324,7 +1738,7 @@ function buildTools(s, ctx) {
 
   tools.push({
     name: 'team_send',
-    description: "Send a message that a member will actually read. On `agent` teams the text is injected into the target sub-agent's message inbox (a running member sees it at its next step boundary, an idle member is woken); on `worker` teams it is queued on the sidecar and surfaced at the worker's next step boundary. `to` is a member NAME on agent teams (member id also accepted) or '*' to broadcast. Every send is also recorded on the sidecar so the panel shows the conversation.",
+    description: "Send a message that a member will actually read: the text is injected into the target sub-agent's message inbox (a running member sees it at its next step boundary, an idle member is woken). `to` is a member NAME (member id also accepted) or '*' to broadcast; use to:'lead' to reply to the Lead. Every send is also recorded on the sidecar so the panel shows the conversation.",
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -1345,9 +1759,8 @@ function buildTools(s, ctx) {
       if (exec?.agent && !callerMember) leadByTeam.set(args.teamId, exec.agent);
       const from = callerMember ? callerMember.memberId : 'lead';
       const toLead = String(args.to).trim().toLowerCase() === 'lead';
-      const runtime = await runtimeOfTeam(s, args.teamId);
       // sidecar 的收件人只能是成员 id、'*' 或虚拟收件人 'lead'，所以先把 name / id 统一解析成成员行。
-      const st = runtime === 'agent' ? await request(s, `/api/status${qs({ team: args.teamId })}`) : null;
+      const st = await request(s, `/api/status${qs({ team: args.teamId })}`);
       const members = st?.members || [];
       const resolve = (v) => members.find((m) => m.name === v || m.id === v) || null;
       if (!toLead && args.to !== '*' && (members.length ? !resolve(args.to) : false)) {
@@ -1363,8 +1776,8 @@ function buildTools(s, ctx) {
           ...(args.correlationId !== undefined ? { correlationId: args.correlationId } : {}),
         },
       });
-      // 成员→Lead 只落信箱（面板可见），不打扰 Lead 会话；worker 团队也没有可唤醒的 sub-agent。
-      if (runtime !== 'agent' || toLead) return recorded;
+      // 成员→Lead 只落信箱（面板可见），不打扰 Lead 会话。
+      if (toLead) return recorded;
 
       const subs = subagentsOf(ctx);
       // 成员之间互通必须借 Lead 的 agent 句柄：成员会话都挂在 Lead 下，成员直发会「belongs to another parent session」。
@@ -1484,78 +1897,40 @@ function buildTools(s, ctx) {
   });
 
   tools.push({
-    name: 'team_scope',
-    description: 'Four-domain permission workflow. action=list shows pending or decided out-of-scope requests (fs/exec/net/env). action=request files one for a blocked action (the worker normally does this automatically when onDenied="scope"). action=decide approves or denies it: the decision is persisted transactionally and an approval creates a single-use, TTL-bounded grant — the same target needs a fresh request afterwards. Explicit deny always beats allow.',
+    name: 'team_approve',
+    description: 'Decide a permission approval raised by a member. When a member runs an operation its permission preset requires approval for (sandbox escalation / write outside the sandbox), the DSH approval request is forwarded to the Lead and the member is paused. Read the requestId/member/tool/reason from the forwarded message, then call team_approve with decision "allow" (authorize this one operation) or "deny". Only the Lead of that team can decide. If nobody decides before the timeout, the request is rejected automatically.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        action: { type: 'string', enum: ['list', 'request', 'decide'], description: 'Required operation.' },
-        teamId: { type: 'string', description: 'Required for list and request.' },
-        status: { type: 'string', description: 'For list: pending | approved | denied | expired.' },
-        memberId: { type: 'string', description: 'For request: the blocked member.' },
-        domain: { type: 'string', enum: ['fs', 'exec', 'net', 'env'] },
-        target: { type: 'string', description: 'Relative path, argv string, host:port, or env var name.' },
-        reason: { type: 'string' },
-        diffSize: { type: 'integer' },
-        risk: { type: 'string' },
-        blockedStep: { type: 'string' },
-        fallback: { type: 'string', description: 'What the member should do if denied.' },
-        requestId: { type: 'string', description: 'For decide.' },
-        decision: { type: 'string', enum: ['approved', 'denied'], description: 'For decide.' },
-        decidedBy: { type: 'string', description: 'Who decided; defaults to lead.' },
-        ttlSeconds: { type: 'integer', description: 'Grant lifetime in seconds. Default 60.' },
-        singleUse: { type: 'boolean', description: 'Default true: one use, then re-request.' },
+        teamId: { type: 'string', description: 'Team id from the forwarded approval message.' },
+        requestId: { type: 'string', description: 'Approval request id from the forwarded message.' },
+        decision: { type: 'string', enum: ['allow', 'deny'], description: 'allow = authorize this single operation; deny = reject it.' },
+        reason: { type: 'string', description: 'Optional reason shown in the audit trail and to the member.' },
       },
-      required: ['action'],
+      required: ['teamId', 'requestId', 'decision'],
     },
-    output: jsonOutput('{ items? , scopeRequest?, decision?, grant? }'),
-    async execute(args) {
-      const action = args.action;
-      if (action === 'list') {
-        if (!args.teamId) throw new Error('team_scope list requires teamId');
-        return await request(s, `/api/scope-requests${qs({ team: args.teamId, status: args.status })}`);
+    output: jsonOutput('{ requestId, decision, memberId, toolName, reason }'),
+    async execute(args, exec) {
+      const requestId = String(args.requestId || '').trim();
+      if (!requestId) throw new Error('team_approve requires requestId');
+      const entry = pendingApprovals.get(requestId);
+      if (!entry) throw new Error('审批请求不存在或已处理（可能已超时）。请以成员收到的审批消息里的 requestId 为准。');
+      if (String(entry.teamId) !== String(args.teamId)) throw new Error('teamId 与审批请求不匹配');
+      const callerId = exec?.agent?.id != null ? String(exec.agent.id) : null;
+      const team = await teamOf(s, entry.teamId).catch(() => null);
+      const leadId = team?.leadSessionId ? String(team.leadSessionId) : (leadByTeam.get(entry.teamId)?.id != null ? String(leadByTeam.get(entry.teamId).id) : null);
+      if (leadId && callerId && leadId !== callerId) {
+        throw new Error('只有该团队的 Lead 可以审批这个请求');
       }
-      if (action === 'request') {
-        if (!args.teamId || !args.memberId || !args.domain || !args.target) {
-          throw new Error('team_scope request requires teamId, memberId, domain, target');
-        }
-        const scopeRequest = await request(s, '/api/scope-requests', {
-          method: 'POST',
-          body: {
-            memberId: args.memberId,
-            teamId: args.teamId,
-            domain: args.domain,
-            target: args.target,
-            reason: args.reason || '',
-            ...(args.diffSize !== undefined ? { diffSize: args.diffSize } : {}),
-            ...(args.risk !== undefined ? { risk: args.risk } : {}),
-            ...(args.blockedStep !== undefined ? { blockedStep: args.blockedStep } : {}),
-            ...(args.fallback !== undefined ? { fallback: args.fallback } : {}),
-          },
-        });
-        return { scopeRequest };
-      }
-      if (action === 'decide') {
-        if (!args.requestId || !args.decision) throw new Error('team_scope decide requires requestId and decision');
-        return await request(s, `/api/scope-requests/${encodeURIComponent(args.requestId)}/decide`, {
-          method: 'POST',
-          body: {
-            decision: args.decision,
-            decidedBy: args.decidedBy || 'lead',
-            ...(args.reason !== undefined ? { reason: args.reason } : {}),
-            ...(args.ttlSeconds !== undefined ? { ttlSeconds: args.ttlSeconds } : {}),
-            ...(args.singleUse !== undefined ? { singleUse: args.singleUse } : {}),
-          },
-        });
-      }
-      throw new Error(`team_scope unknown action: ${action}`);
+      settleApproval(s, requestId, args.decision, args.reason || '', callerId || 'lead');
+      return { requestId, decision: args.decision, memberId: entry.memberId, toolName: entry.toolName, reason: args.reason || null };
     },
   });
 
   tools.push({
     name: 'team_control',
-    description: 'Control one member. On `agent` teams interrupt aborts the sub-agent’s current turn (`subagents.interrupt`) and marks the member interrupted on the sidecar; resume re-arms it and dispatches the task again. On `worker` teams interrupt writes status synchronously (no zombie `running`) and keeps the task resumable. assign hands a ready task to an idle member on either runtime.',
+    description: 'Control one member. interrupt aborts the sub-agent’s current turn (`subagents.interrupt`) and marks the member interrupted on the sidecar; resume re-arms it; assign hands a ready task to an idle member.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -1573,8 +1948,7 @@ function buildTools(s, ctx) {
       const id = encodeURIComponent(args.memberId);
       if (args.action === 'interrupt') {
         const res = await request(s, `/api/members/${id}/interrupt`, { method: 'POST', body: { reason: args.reason || 'lead interrupt' } });
-        const runtime = args.teamId ? await runtimeOfTeam(s, args.teamId) : 'worker';
-        if (runtime === 'agent' && res?.member?.agentSessionId) {
+        if (res?.member?.agentSessionId) {
           const subs = subagentsOf(ctx);
           const caller = exec?.agent;
           if (subs && caller && typeof subs.interrupt === 'function') {
@@ -1598,7 +1972,7 @@ function buildTools(s, ctx) {
 
   tools.push({
     name: 'team_report',
-    description: 'Export a Markdown run report: members, tasks/DAG, persisted decisions, and the audit table with actor, domain, action, target, and full before/after SHA-256 hashes. Use it for review, handoff, or proving who changed which file.',
+    description: 'Export a Markdown run report: members, tasks/DAG, permission approvals (who asked for what, who decided), and the audit table with actor, action, target, and full before/after SHA-256 hashes. Use it for review, handoff, or proving who changed which file.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -1920,7 +2294,7 @@ export function apply(ctx, config) {
     const disposers = buildTools(s, ctx).map((tool) => ctx.tools.register(tool));
     return () => {
       for (const dispose of disposers.reverse()) { try { dispose(); } catch { /* ignore */ } }
-      leadByTeam.clear(); runtimeByTeam.clear(); sessionMember.clear(); dispatching.clear(); teamBySession.clear(); contextReportAt.clear();
+      leadByTeam.clear(); teamCache.clear(); sessionMember.clear(); dispatching.clear(); teamBySession.clear(); contextReportAt.clear();
       for (const timer of idleTimers.values()) clearTimeout(timer);
       for (const timer of startTimers.values()) clearTimeout(timer);
       idleTimers.clear(); startTimers.clear(); agentStatusBySession.clear(); lastReplyBySession.clear();
@@ -1930,6 +2304,29 @@ export function apply(ctx, config) {
       }
     };
   }, 'dsh-team.tools()');
+
+  // Leader 自建 agentPreset：启动时把固定目录里的 JSON 文档注册进宿主，卸载时反注册。
+  // 注册失败不阻断插件：工具仍可 list/show/save，错误从返回值里看。
+  ctx.effect(() => {
+    teamPresetsReady = null;
+    teamPresetLoading = null;
+    void ensureTeamPresets(s, ctx).then(() => syncPresetCatalog(s, ctx)).catch(() => null);
+    let presetTicks = 0;
+    const presetTimer = setInterval(() => {
+      void processPresetDeletes(s, ctx).catch(() => null);
+      // sidecar 可能比插件晚就绪：每 30s 补一次目录同步，面板不会一直空着。
+      if (++presetTicks % 6 === 0) void syncPresetCatalog(s, ctx).catch(() => null);
+    }, 5000);
+    presetTimer.unref?.();
+    return () => {
+      clearInterval(presetTimer);
+      const pending = [...teamPresetDisposers.values()];
+      teamPresetDisposers.clear();
+      teamPresetsReady = null;
+      teamPresetLoading = null;
+      for (const dispose of pending) { try { void dispose(); } catch { /* ignore */ } }
+    };
+  }, 'dsh-team.presets()');
 
   // 技能：skills 服务在场时把包内 `skills/` 注册成 provider，装上插件就带 `dsh-agent-team` 技能；
   // 服务缺失（老版本/测试假 ctx）时静默跳过，不影响工具面。
@@ -1942,6 +2339,16 @@ export function apply(ctx, config) {
       }));
     });
   }
+
+  // 成员权限审批：preset 的 approval=ask 触发时，把请求转给 Lead，由 team_approve 决定。
+  // 放在最前面（prepend），确保本插件的成员请求不会再弹出宿主审批 UI。
+  ctx.effect(() => {
+    const off = ctx.on('approval/request', (req, next) => onApprovalRequest(s, ctx, req, next), { prepend: true });
+    return () => {
+      try { off?.(); } catch { /* ignore */ }
+      cancelPendingApprovals();
+    };
+  }, 'dsh-team.approval()');
 
   if (s.reportToolCalls) {
     ctx.on('tools/execute', (exec, next) => traceToolCall(s, ctx, exec, next));

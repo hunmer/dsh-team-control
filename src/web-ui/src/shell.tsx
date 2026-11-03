@@ -1,13 +1,12 @@
 /**
  * 全局侧栏导航（PRD FR-3 / FR-5）。
  *
- * 9 个视图（home + 8 个业务视图）按 TAB_ORDER 顺序排列，
+ * 8 个视图（home + 7 个业务视图）按 TAB_ORDER 顺序排列，
  * 徽标数字直接取自 store 里已算好的 useMemo，不新增数据源。
  * 图标来自 lucide-react，外壳由 components/app-shell（coss ui）渲染。
  */
 import type { ReactNode } from 'react';
 import {
-  CheckCheck,
   Clock,
   Database,
   FileDiff,
@@ -15,8 +14,8 @@ import {
   Layers,
   LayoutDashboard,
   Mail,
+  Boxes,
   Network,
-  ShieldCheck,
   type LucideIcon,
 } from 'lucide-react';
 import type { NavGroup, NavItem } from '@/components/app-shell';
@@ -30,9 +29,8 @@ export const TAB_LABELS: Record<TabName, string> = {
   dag: '依赖 DAG',
   timeline: '时间线',
   models: '模型路由',
-  permissions: '权限矩阵',
-  approvals: '审批队列',
   messages: '消息',
+  presets: '组合预设',
 };
 
 const TAB_ICONS: Record<TabName, LucideIcon> = {
@@ -43,17 +41,12 @@ const TAB_ICONS: Record<TabName, LucideIcon> = {
   dag: Network,
   timeline: Clock,
   models: Database,
-  permissions: ShieldCheck,
-  approvals: CheckCheck,
   messages: Mail,
+  presets: Boxes,
 };
 
-/**
- * FR-3.2：主页在前，其余沿用 TAB_NAMES 的顺序。
- * 审批队列已收进顶栏通知按钮（TopBar 的 ApprovalsDock），不再作为侧栏路由；
- * TAB_LABELS / TAB_ICONS 仍保留 'approvals'，旧 hash 深链落到整页视图也不会报错。
- */
-export const TAB_ORDER: TabName[] = ['home', 'board', 'review', 'context', 'dag', 'timeline', 'models', 'permissions', 'messages'];
+/** FR-3.2：主页在前，其余沿用 TAB_NAMES 的顺序。 */
+export const TAB_ORDER: TabName[] = ['home', 'board', 'review', 'context', 'dag', 'timeline', 'models', 'messages', 'presets'];
 
 export type TabBadges = Partial<Record<TabName, number | null>>;
 

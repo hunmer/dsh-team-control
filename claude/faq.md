@@ -1,5 +1,7 @@
 # FAQ
 
+> **v2 变更（2026-11）**：worker 运行时与四域 broker 已移除；成员一律是真 sub-agent，权限由 DSH 权限预设按成员分配，成员审批经 `team_approve` 转发给 Lead。下文涉及 `worker` / `broker` / `policy` / `scope` 的段落为历史记录，以 [CONTRACT.md](../docs/CONTRACT.md) 与 [README](../README.md) 为准。
+
 **Q：`npm start` 后没有输出，也没端口？**
 sidecar 的 ready 横幅是 **stdout 第一行单行 JSON**。若前面有任何 `console.log`（含第三方警告），解析就失败。看 `home/logs/`，并用 `node bin/dsh-team.mjs up --foreground` 前台复现。
 

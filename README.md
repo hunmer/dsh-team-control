@@ -2,7 +2,7 @@
 
 [![node](https://img.shields.io/badge/node-%E2%89%A522.15-brightgreen)](#安装) [![deps](https://img.shields.io/badge/dependencies-0-brightgreen)](#安装) [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-**一句话**：给 DeepSeek Harness 的 Agent Team 加一个独立 sidecar——成员上限可配、DAG 依赖自动派发、`fs/exec/net/env` 四域强制执行权限、事件流可回放、SSE 实时面板。
+**一句话**：给 DeepSeek Harness 的 Agent Team 加一个独立 sidecar——成员上限可配、DAG 依赖自动派发、按成员分配 DSH 权限预设（permission presets）、成员审批转发给 Lead 决定、事件流可回放、SSE 实时面板。
 
 ## 截图
 
@@ -46,8 +46,8 @@ dsh plugin --profile web add dsh-team-control-ui   # 可选：GUI 看板
 
 ```bash
 cd ~/dsh-team-control
-node demo/run-demo.mjs     # 3 成员 + DAG + 一次越界审批 + 一次 interrupt/resume
-node tests/run-all.mjs     # AC-1 ~ AC-15 与插件/面板/路由/CLI 全量验收
+node demo/run-demo.mjs     # 3 成员 + DAG + 一次审批 + 一次 interrupt/resume
+node tests/run-all.mjs     # AC-1 ~ AC-17 与插件/面板/路由/CLI 全量验收
 ```
 
 ## 示例用法
@@ -57,11 +57,12 @@ node tests/run-all.mjs     # AC-1 ~ AC-15 与插件/面板/路由/CLI 全量验�
 ```text
 你：用 dsh-team 起个 3 人团队，写一篇 800 字的短文并互审。
 
-team_create  { name: "essay", workspace: "D:/work/essay", runtime: "agent", maxMembers: 3 }
+team_create  { name: "essay", workspace: "D:/work/essay", permissionPreset: "workspace-write",
+               agentPreset: "standard", maxMembers: 3 }
               → { team: { id: "team_x1" } }
 
-team_spawn   { teamId: "team_x1", name: "writer",   role: "writer" }
-team_spawn   { teamId: "team_x1", name: "reviewer", role: "reviewer" }
+team_spawn   { teamId: "team_x1", name: "writer",   role: "writer",   prompt: "你是 writer…" }
+team_spawn   { teamId: "team_x1", name: "reviewer", role: "reviewer", prompt: "你是 reviewer…" }
 
 team_task    { teamId: "team_x1", subject: "01 写初稿", assignee: "<writer 的 id>",
                acceptance: "draft.md 存在且 ≥800 字" }
@@ -70,7 +71,7 @@ team_task    { teamId: "team_x1", subject: "02 审稿", assignee: "<reviewer 的
                acceptance: "review.md 含 3 条以上具体意见，引用 draft.md 原句" }
 
 成员干完各自 team_report_task({ teamId, taskId, status, summary })，
-调度器按 DAG 自动派下一波；越界动作会变成 blocked → scope 请求 → 你 approve 后单次 grant。
+调度器按 DAG 自动派下一波；需要审批的操作会转发给 Lead，由 team_approve 放行或拒绝。
 
 team_status  { teamId: "team_x1", detail: "dag" }   // 看成员状态与 DAG 关键路径
 team_report  { teamId: "team_x1" }                  // 导出 Markdown 运行报告与审计表
@@ -85,38 +86,37 @@ team_report  { teamId: "team_x1" }                  // 导出 Markdown 运行报
 Lead Agent ──REST / CLI / SSE──▶ dsh-team sidecar (127.0.0.1:4317)
                                   ├ Scheduler   DAG 求值 + 自动派发
                                   ├ EventStore  event 只增流 + 状态物化
-                                  ├ PermBroker  四域唯一 IO 出口 + 审计
+                                  ├ Approval    成员审批镜像与决策审计
                                   ├ MessageBus  持久信箱 + 三态回执
                                   ├ SSE Hub     lastEventId 断线续传
                                   └ Web UI      面板 /panel（Trace 瀑布 / DAG / 审批）
 
-Worker × N    ◀──stdio NDJSON RPC────────────────┘  runtime=worker：沙箱 Node 进程，只能走 broker
-DSH agent × N ◀──subagents.startActivation / sendMessage── dsh-plugin/  runtime=agent：真子会话
+DSH agent × N ◀──subagents.startActivation / sendMessage── dsh-plugin/  真子会话成员
 ```
 
 - 状态只有一根主轴：所有变更写 `event`，`member_state` 是它的物化视图，崩溃后可完整重建。
-- 越界即 `blocked` → `scope_request` → 落盘 `decision` → 单次 `grant` → 重试 → `audit` 记前后 hash。
+- 权限不再由 sidecar 判定：`permissionPreset` 落到实处子会话，审批经插件转发给 Lead，
+  `approval` 表只做镜像与审计（`team_approve` → 宿主 `allowed-once`/`rejected`）。
+- 工具/skill/MCP 由 `agentPreset`（DSH 组合预设）决定，按团队默认、成员覆盖；
+  `fork` 继承 Lead 组合，`fresh` 才支持独立预设。
 - 契约：[`docs/CONTRACT.md`](docs/CONTRACT.md)；每条偏离一份 [`docs/adr/`](docs/adr/)。
 
 ## 文件地图
 
 | 路径 | 作用 |
 |---|---|
-| `bin/dsh-team.mjs` | CLI：`up` / `down` / `status` / `dag` / `logs` / `approve` / `report` |
+| `bin/dsh-team.mjs` | CLI：`up` / `down` / `status` / `dag` / `logs` / `approvals` / `report` |
 | `src/core.mjs` | 组合根、业务查询、报告导出 |
 | `src/db.mjs` | SQLite schema / 事务 / 轻量迁移 |
 | `src/eventstore.mjs` | 事件流 `append` / `rebuild` / `verify` |
-| `src/policy.mjs` | 四域策略纯求值器（默认拒绝、deny 优先） |
-| `src/broker.mjs` | 四域唯一 IO 出口：grant、审计、CAS 写 |
-| `src/scheduler.mjs` | DAG 求值、派发、并发上限、失败策略、环检测 |
-| `src/runner.mjs` | Worker 子进程、租约、同步中断、崩溃恢复 |
+| `src/scheduler.mjs` | DAG 求值、就绪推进、失败策略、环检测 |
+| `src/approval` 相关 | core 的 `createApproval` / `decideApproval` 镜像宿主审批 |
 | `src/bus.mjs` | 持久信箱与回执 |
 | `src/sse.mjs` | SSE hub 与断线续传 |
 | `src/server.mjs` | REST + SSE + 静态面板（仅回环监听） |
-| `src/worker/worker.mjs` | 受限 Worker（单文件，仅 `import node:module`） |
 | `src/web/` | 面板构建产物（`panel.html` + `assets/`） |
 | `src/web-ui/` | 面板源码（React + coss ui，含 Trace 瀑布） |
-| `dsh-plugin/` | DSH Host bundle：11 个 `team_*` 工具 + sidecar 生命周期 + agent 成员调度 |
+| `dsh-plugin/` | DSH Host bundle：13 个 `team_*` 工具 + sidecar 生命周期 + 子会话成员调度 + 审批转发 |
 | `dsh-plugin-ui/` | GUI 看板 bundle：better-sidebar 页签 / 侧栏入口 |
 | `skills/dsh-agent-team/` | 给模型看的调用配方 skill |
 | `tests/` | `ac-*.mjs` 验收脚本 + harness + `run-all.mjs` |

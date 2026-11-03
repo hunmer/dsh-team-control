@@ -18,10 +18,9 @@ import { ReviewView } from '@/views/Review';
 import { ContextView } from '@/views/Context';
 import { DagView } from '@/views/Dag';
 import { TimelineView } from '@/views/Timeline';
-import { PermissionsView } from '@/views/Permissions';
 import { ModelsView } from '@/views/Models';
-import { ApprovalsView } from '@/views/Approvals';
 import { MessagesView } from '@/views/Messages';
+import { PresetsView } from '@/views/Presets';
 
 function Banner() {
   const { state, memberName } = usePanel();
@@ -50,9 +49,8 @@ function ActiveView({ tab }: { tab: TabName }) {
     case 'dag': return <DagView />;
     case 'timeline': return <TimelineView />;
     case 'models': return <ModelsView />;
-    case 'permissions': return <PermissionsView />;
-    case 'approvals': return <ApprovalsView />;
     case 'messages': return <MessagesView />;
+    case 'presets': return <PresetsView />;
     case 'home': return <HomeView />;
   }
 }
@@ -76,14 +74,13 @@ function SidebarSettings() {
 
 export default function App() {
   const { state, setTab } = usePanel();
-  const { tab, members, scopeRequests, messages } = state;
+  const { tab, members, messages } = state;
 
   // FR-5：徽标数据源保持不变，只是渲染位置从横向 Tabs 换到左侧导航。
   const badges = useMemo<Partial<Record<TabName, number | null>>>(() => ({
     board: members.length || null,
-    approvals: scopeRequests.length || null,
     messages: messages.filter(isUnacked).length || null,
-  }), [members.length, scopeRequests.length, messages]);
+  }), [members.length, messages]);
 
   const chrome: ShellChrome = {
     nav: buildNav(badges),

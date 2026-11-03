@@ -1,11 +1,9 @@
-// core.mjs — 组合根：装配 StateStore/EventStore/PermBroker/Scheduler/Runner/Bus/SSE，并承载业务查询
+// core.mjs — 组合根：装配 StateStore/EventStore/Scheduler/Bus/SSE，并承载业务查询
 import fs from 'node:fs';
 import path from 'node:path';
 import { openDb, closeDb, q, tx } from './db.mjs';
 import { EventStore, rowToEvent } from './eventstore.mjs';
-import { PermBroker } from './broker.mjs';
 import { Scheduler, rowToTask } from './scheduler.mjs';
-import { WorkerRunner } from './runner.mjs';
 import { MessageBus, rowToMessage } from './bus.mjs';
 import { SseHub } from './sse.mjs';
 import { LlmCatalog } from './llm.mjs';
@@ -13,21 +11,28 @@ import {
   ERR, now, nowIso, newId, json, parseJson, clamp, redactor, REDACTED,
   isSensitiveName, percentile, sha256, truncate,
 } from './util.mjs';
-import { DOMAINS, OPS_BY_DOMAIN } from './policy.mjs';
 
 const STATUSES = ['queued', 'provisioning', 'idle', 'running', 'blocked', 'done', 'failed', 'interrupted', 'retired'];
 
-/** 成员运行时：worker = 沙箱 Node 进程（sidecar 内派发）；agent = 真 DSH sub-agent（Host 插件派发） */
-export const RUNTIMES = ['worker', 'agent'];
-
-const runtimeOf = (team) => (team && team.runtime) || 'worker';
-/** status() 里附加 runtime；未知团队退回 'worker'，不让一次查询失败。 */
-const safeRuntimeOf = (core, teamId) => {
-  try { return runtimeOf(core.getTeam(teamId)); } catch { return 'worker'; }
+/** 默认权限预设：Leader 不指定时成员在 workspace-write 沙箱里跑，越界操作走审批。 */
+export const DEFAULT_PERMISSION_PRESET = 'workspace-write';
+const PRESET_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const normalizePreset = (name) => {
+  const v = String(name ?? '').trim();
+  if (!v) return DEFAULT_PERMISSION_PRESET;
+  if (!PRESET_RE.test(v)) throw ERR.bad('permissionPreset must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}');
+  return v;
+};
+/** agent 组合预设：NULL/空 = 不指定（沿用宿主默认），非空按同一套命名规则校验。 */
+const normalizeAgentPreset = (name) => {
+  const v = String(name ?? '').trim();
+  if (!v) return null;
+  if (!PRESET_RE.test(v)) throw ERR.bad('agentPreset must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}');
+  return v;
 };
 
 export class DshTeam {
-  constructor({ home, log = () => {}, leaseMs = 15000 } = {}) {
+  constructor({ home, log = () => {} } = {}) {
     this.home = home;
     this.log = log;
     this.db = openDb(path.join(home, 'team.db'));
@@ -35,21 +40,13 @@ export class DshTeam {
     this.llm = new LlmCatalog(this.db, this.get);
     this.sse = null;
     this.events = new EventStore(this.db, { onEvent: (ev) => { try { this.sse?.broadcastEvent(ev); } catch { /* ignore */ } } });
-    this.broker = new PermBroker(this.db, { events: this.events, log });
     this.sse = new SseHub({ events: this.events, log });
-    this.runner = new WorkerRunner({ db: this.db, events: this.events, broker: this.broker, bus: null, home, leaseMs, log });
     this.bus = new MessageBus(this.db, {
       log,
       onDeliver: (m) => { try { this.sse.broadcastSynthetic('message.delivered', { teamId: m.teamId, memberId: m.to, messageId: m.id, to: m.to, status: 'delivered' }, { teamId: m.teamId }); } catch { /* ignore */ } },
       onWake: (memberId) => { try { this.wakeMember(memberId); } catch { /* ignore */ } },
     });
-    this.runner.bus = this.bus;
-    this.scheduler = new Scheduler({ db: this.db, events: this.events, runner: this.runner, sse: this.sse, broker: this.broker, log });
-    this.runner.attach({
-      onTaskDone: (ctx, args) => this.scheduler.onTaskDone(ctx, args),
-      onTaskFailed: (ctx, args) => this.scheduler.onTaskFailed(ctx, args),
-      onWorkerGone: (memberId, why) => this.onWorkerGone(memberId, why),
-    });
+    this.scheduler = new Scheduler({ db: this.db, events: this.events, sse: this.sse, log });
     this.registerSecretsFromEnv();
     this.recovered = this.recoverAll();
   }
@@ -62,19 +59,19 @@ export class DshTeam {
   }
 
   // ---------- 团队 ----------
-  createTeam({ name, workspace, maxMembers = 64, maxConcurrency = 8, failurePolicy = 'continue', maxAttempts = 3, autoApprove = null, runtime = 'worker', leadSessionId = null }) {
+  createTeam({ name, workspace, maxMembers = 64, maxConcurrency = 8, failurePolicy = 'continue', maxAttempts = 3, permissionPreset = DEFAULT_PERMISSION_PRESET, agentPreset = null, leadSessionId = null }) {
     if (!name) throw ERR.bad('name required');
     if (!workspace) throw ERR.bad('workspace required');
-    if (!RUNTIMES.includes(runtime)) throw ERR.bad(`runtime must be one of ${RUNTIMES.join('|')}`);
+    const preset = normalizePreset(permissionPreset);
+    const agent = normalizeAgentPreset(agentPreset);
     const abs = path.resolve(workspace);
     fs.mkdirSync(abs, { recursive: true });
     const id = newId('team');
     const t = nowIso();
     this.get(
-      `INSERT INTO team (id, name, workspace, max_members, max_concurrency, failure_policy, max_attempts, auto_approve_json, runtime, lead_session_id, created_at, updated_at)
+      `INSERT INTO team (id, name, workspace, max_members, max_concurrency, failure_policy, max_attempts, permission_preset, agent_preset, lead_session_id, created_at, updated_at)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
-    ).run(id, name, abs, Number(maxMembers), Number(maxConcurrency), failurePolicy, Number(maxAttempts), autoApprove ? json(autoApprove) : null, runtime, leadSessionId ? String(leadSessionId) : null, t, t);
-    this.seedDefaultPolicies(id);
+    ).run(id, name, abs, Number(maxMembers), Number(maxConcurrency), failurePolicy, Number(maxAttempts), preset, agent, leadSessionId ? String(leadSessionId) : null, t, t);
     return this.teamView(this.get('SELECT * FROM team WHERE id=?').get(id));
   }
 
@@ -88,23 +85,6 @@ export class DshTeam {
     return row ? this.teamView(row) : null;
   }
 
-  /** 默认策略：工作区读允许、写默认拒绝；deny 规则展示 deny>allow（PRD FR-3 表） */
-  seedDefaultPolicies(teamId) {
-    const mk = (subjectType, subjectId, domain, matcher, ops, mode, constraints = null) => {
-      const id = newId('pol');
-      this.get(
-        `INSERT INTO policy (id, team_id, subject_type, subject_id, domain, matcher, ops_json, mode, constraints_json, expires_at, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,NULL,?)`
-      ).run(id, teamId, subjectType, subjectId, domain, matcher, json(ops), mode, constraints ? json(constraints) : null, nowIso());
-      return id;
-    };
-    mk('team', teamId, 'fs', '**', ['read', 'list'], 'allow');
-    mk('team', teamId, 'fs', '.git/**', ['write', 'delete', 'rename', 'read'], 'deny');
-    mk('team', teamId, 'fs', '**/.env*', ['read', 'write'], 'deny');
-    mk('team', teamId, 'env', '**', ['read'], 'deny', { sensitive: true });
-    return this.listPolicies(teamId);
-  }
-
   teamView(t) {
     if (!t) return null;
     return {
@@ -112,9 +92,8 @@ export class DshTeam {
       leadSessionId: t.lead_session_id || null,
       maxMembers: Number(t.max_members), maxConcurrency: Number(t.max_concurrency),
       failurePolicy: t.failure_policy, maxAttempts: Number(t.max_attempts),
-      autoApprove: parseJson(t.auto_approve_json, null),
-      autoTakeover: Number(t.auto_takeover) === 1,
-      runtime: runtimeOf(t),
+      permissionPreset: t.permission_preset || DEFAULT_PERMISSION_PRESET,
+      agentPreset: t.agent_preset || null,
       archivedAt: t.archived_at || null,
       createdAt: t.created_at,
       ...this.teamRunState(t.id),
@@ -156,14 +135,13 @@ export class DshTeam {
 
   patchTeam(id, body = {}) {
     const t = this.getTeam(id);
-    if (body.runtime !== undefined && !RUNTIMES.includes(body.runtime)) throw ERR.bad(`runtime must be one of ${RUNTIMES.join('|')}`);
-    const map = { name: 'name', workspace: 'workspace', maxMembers: 'max_members', maxConcurrency: 'max_concurrency', failurePolicy: 'failure_policy', maxAttempts: 'max_attempts', runtime: 'runtime' };
+    const map = { name: 'name', workspace: 'workspace', maxMembers: 'max_members', maxConcurrency: 'max_concurrency', failurePolicy: 'failure_policy', maxAttempts: 'max_attempts' };
     const sets = []; const args = [];
     for (const [k, col] of Object.entries(map)) {
       if (body[k] !== undefined) { sets.push(`${col}=?`); args.push(body[k]); }
     }
-    if (body.autoApprove !== undefined) { sets.push('auto_approve_json=?'); args.push(body.autoApprove ? json(body.autoApprove) : null); }
-    if (body.autoTakeover !== undefined) { sets.push('auto_takeover=?'); args.push(body.autoTakeover ? 1 : 0); }
+    if (body.permissionPreset !== undefined) { sets.push('permission_preset=?'); args.push(normalizePreset(body.permissionPreset)); }
+    if (body.agentPreset !== undefined) { sets.push('agent_preset=?'); args.push(normalizeAgentPreset(body.agentPreset)); }
     if (!sets.length) return this.teamView(t);
     sets.push('updated_at=?'); args.push(nowIso(), id);
     this.get(`UPDATE team SET ${sets.join(', ')} WHERE id=?`).run(...args);
@@ -186,21 +164,14 @@ export class DshTeam {
     return { ...this.teamView(this.getTeam(teamId)), stopped };
   }
 
-  /** 删除团队：先杀掉 worker 进程/租约，再在一个事务里清掉所有 team_id 相关行（库无外键，手工级联）。 */
+  /** 删除团队：在一个事务里清掉所有 team_id 相关行（库无外键，手工级联）。 */
   deleteTeam(teamId, { confirm = false } = {}) {
     const t = this.getTeam(teamId);
     if (!confirm) throw ERR.bad('delete requires confirm=1');
     const memberIds = this.get('SELECT id FROM member WHERE team_id=?').all(teamId).map((r) => r.id);
-    for (const id of memberIds) {
-      try { this.runner.killWorker(id, { hard: true }); } catch { /* ignore */ }
-      try { this.runner.clearLease(id); } catch { /* ignore */ }
-    }
     tx(this.db, () => {
-      for (const id of memberIds) {
-        this.get('DELETE FROM member_state WHERE member_id=?').run(id);
-        this.get('DELETE FROM member_runtime WHERE member_id=?').run(id);
-      }
-      for (const table of ['member', 'task', 'dep', 'event', 'policy', 'scope_request', 'scope_grant', 'decision', 'message', 'todo', 'audit', 'span', 'artifact']) {
+      for (const id of memberIds) this.get('DELETE FROM member_state WHERE member_id=?').run(id);
+      for (const table of ['member', 'task', 'dep', 'event', 'approval', 'message', 'todo', 'audit', 'span', 'artifact', 'member_change', 'context_snapshot']) {
         this.get(`DELETE FROM ${table} WHERE team_id=?`).run(teamId);
       }
       this.get('DELETE FROM team WHERE id=?').run(teamId);
@@ -294,7 +265,7 @@ export class DshTeam {
     ).get(teamId).c);
   }
 
-  addMember(teamId, { name, role = 'worker', model = null, contextMode = 'isolated', defaultPlan = null, agentSessionId = null, reasoningEffort = null }) {
+  addMember(teamId, { name, role = 'teammate', model = null, contextMode = 'isolated', defaultPlan = null, agentSessionId = null, reasoningEffort = null, permissionPreset = null, agentPreset = null }) {
     const team = this.getTeam(teamId);
     if (!name) throw ERR.bad('name required');
     const dup = this.get('SELECT id FROM member WHERE team_id=? AND name=?').get(teamId, name);
@@ -305,14 +276,14 @@ export class DshTeam {
     const id = newId('m');
     const t = nowIso();
     this.get(
-      `INSERT INTO member (id, team_id, name, role, model, context_mode, default_plan_json, quota_json, agent_session_id, reasoning_effort, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,NULL,?,?,?,?)`
-    ).run(id, teamId, name, role, model, contextMode, defaultPlan ? json(defaultPlan) : null, agentSessionId ? String(agentSessionId) : null, reasoningEffort ? String(reasoningEffort) : null, t, t);
+      `INSERT INTO member (id, team_id, name, role, model, context_mode, default_plan_json, quota_json, agent_session_id, reasoning_effort, permission_preset, agent_preset, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,NULL,?,?,?,?,?,?)`
+    ).run(id, teamId, name, role, model, contextMode, defaultPlan ? json(defaultPlan) : null, agentSessionId ? String(agentSessionId) : null, reasoningEffort ? String(reasoningEffort) : null, permissionPreset ? normalizePreset(permissionPreset) : null, normalizeAgentPreset(agentPreset), t, t);
     this.events.append({
       teamId, memberId: id, taskId: null, phase: 'init', action: 'member.create',
       target: name, result: 'OK', next: status === 'queued' ? 'wait for capacity' : 'wait for task',
       status, blockers: status === 'queued' ? [{ kind: 'quota', detail: `maxMembers=${team.max_members}` }] : [],
-      meta: { stepIndex: -1, role, contextMode, runtime: runtimeOf(team), sessionId: agentSessionId ? String(agentSessionId) : null },
+      meta: { stepIndex: -1, role, contextMode, sessionId: agentSessionId ? String(agentSessionId) : null },
     });
     if (status === 'idle') this.scheduler.wake(id);
     return this.memberView(id);
@@ -322,7 +293,7 @@ export class DshTeam {
     const m = this.get('SELECT * FROM member WHERE id=?').get(id);
     if (!m) return null;
     const st = this.events.state(id) || { seq: 0, step: null, status: 'queued', last: null, next: null, blockers: [], asOf: null, stale: false };
-    const rt = this.runner.runtime(id);
+    const team = this.get('SELECT permission_preset, agent_preset FROM team WHERE id=?').get(m.team_id);
     const task = this.get("SELECT * FROM task WHERE assignee=? AND status='running' ORDER BY updated_at DESC LIMIT 1").get(id);
     const last = this.events.lastEvent(id);
     const total = task ? parseJson(this.get('SELECT plan_json FROM task WHERE id=?').get(task.id)?.plan_json, []).length : null;
@@ -338,11 +309,13 @@ export class DshTeam {
     if (pct == null && task) pct = 0.5;
     return {
       id: m.id, teamId: m.team_id, name: m.name, role: m.role, model: m.model, contextMode: m.context_mode,
-      // 派发时确定、之后不可变的思考强度（agent 成员才有；worker 成员为 null）
+      // 派发时确定、之后不可变的思考强度
       reasoningEffort: m.reasoning_effort ?? null,
       createdAt: m.created_at,
       agentSessionId: m.agent_session_id ?? null,
-      status: st.status, leaseUntil: rt.leaseUntil, currentTaskId: task?.id ?? null,
+      permissionPreset: m.permission_preset || team?.permission_preset || DEFAULT_PERMISSION_PRESET,
+      agentPreset: m.agent_preset || team?.agent_preset || null,
+      status: st.status, currentTaskId: task?.id ?? null,
       step: st.step, seq: st.seq, last: st.last, next: st.next,
       blockers: st.blockers || [], stale: !!st.stale, asOf: st.asOf,
       // 进度比例 0..1（契约 §3.2：优先「已完成 step 数 / 计划 step 总数」）
@@ -362,7 +335,6 @@ export class DshTeam {
       if (!confirm) throw ERR.bad('remove requires confirm=1');
       this.get('DELETE FROM member WHERE id=?').run(id);
       this.get('DELETE FROM member_state WHERE member_id=?').run(id);
-      this.get('DELETE FROM member_runtime WHERE member_id=?').run(id);
       this.promoteQueued(m.team_id);
       return { removed: true, id };
     }
@@ -371,7 +343,6 @@ export class DshTeam {
       target: m.name, result: 'OK', next: null, status: 'retired', blockers: [],
       meta: { stepIndex: -1 },
     });
-    this.runner.killWorker(id, { hard: true });
     this.promoteQueued(m.team_id);
     return this.memberView(id);
   }
@@ -397,14 +368,30 @@ export class DshTeam {
   }
 
   interruptMember(id, reason = 'lead interrupt') {
-    this.memberRow(id);
-    const ev = this.runner.interrupt(id, reason);
+    const m = this.memberRow(id);
+    const task = this.get("SELECT * FROM task WHERE assignee=? AND status='running' ORDER BY updated_at DESC LIMIT 1").get(id);
+    if (task) {
+      this.get("UPDATE task SET status='ready', updated_at=? WHERE id=?").run(nowIso(), task.id);
+      this.scheduler.emitTaskState(m.team_id, task.id, 'ready', id);
+    }
+    const ev = this.events.append({
+      teamId: m.team_id, memberId: id, taskId: task?.id ?? null, phase: 'wait', action: 'agent.interrupt',
+      target: m.name, result: 'OK', next: reason, status: 'interrupted',
+      blockers: [{ kind: 'interrupt', detail: reason }], meta: { stepIndex: -1 },
+    });
+    this.scheduler.evaluate(m.team_id);
     return { member: this.memberView(id), event: ev };
   }
 
   resumeMember(id) {
-    const out = this.runner.resume(id);
-    return { member: this.memberView(id), resumeFrom: out.resumeFrom, task: rowToTask(out.task) };
+    const m = this.memberRow(id);
+    this.events.append({
+      teamId: m.team_id, memberId: id, taskId: null, phase: 'init', action: 'agent.resume',
+      target: m.name, result: 'OK', next: 'wait for task', status: 'idle', blockers: [],
+      meta: { stepIndex: -1 },
+    });
+    this.scheduler.evaluate(m.team_id);
+    return { member: this.memberView(id), resumeFrom: null, task: null };
   }
 
   assign(memberId, taskId) {
@@ -420,46 +407,12 @@ export class DshTeam {
     return { member: this.memberView(memberId), task: rowToTask(this.get('SELECT * FROM task WHERE id=?').get(taskId)) };
   }
 
-  /**
-   * FR-4.2：idle 成员被消息唤醒。
-   * - 有 ready 任务 → 交给调度器立即派发；
-   * - 无任务 → 拉起一个「收件 worker」，在 step 边界消费信箱并回执，随后回到 idle。
-   */
+  /** 成员被消息唤醒：agent 成员由 Host 插件通过 subagents.sendMessage 唤醒，sidecar 只推进 DAG。 */
   wakeMember(memberId) {
     const m = this.get('SELECT * FROM member WHERE id=?').get(memberId);
     if (!m) return { woken: false, reason: 'member_not_found' };
-    // agent 团队的成员是 DSH sub-agent，由 Host 插件用 sendMessage 唤醒，sidecar 不拉 worker
-    if (runtimeOf(this.get('SELECT * FROM team WHERE id=?').get(m.team_id)) === 'agent') {
-      return { woken: false, reason: 'agent_runtime' };
-    }
-    const existing = this.runner.workers.get(memberId);
-    if (existing && !existing.exited) return { woken: false, reason: 'running' };
-    const st = this.events.state(memberId);
-    if (!st || st.status !== 'idle') return { woken: false, reason: st?.status || 'unknown' };
-    const ready = this.get("SELECT id FROM task WHERE assignee=? AND status='ready'").get(memberId);
-    if (ready) { this.scheduler.evaluate(m.team_id); return { woken: true, via: 'scheduler', taskId: ready.id }; }
-    const wakeTask = {
-      id: `wake_${memberId}`,
-      subject: 'inbox',
-      plan: [{ step: 'S1', phase: 'msg', action: 'drain', target: 'inbox', op: { kind: 'noop' } }],
-      write_scopes_json: '[]',
-    };
-    this.events.append({
-      teamId: m.team_id, memberId, taskId: null, phase: 'init', action: 'wake',
-      target: 'message', result: 'OK', next: 'drain inbox', status: 'running', blockers: [],
-      meta: { stepIndex: -1, stepTotal: 1, reason: 'message' },
-    });
-    this.runner.start(memberId, null, { taskOverride: wakeTask });
-    return { woken: true, via: 'worker' };
-  }
-
-  onWorkerGone(memberId, why) {    try {
-      const m = this.get('SELECT id, team_id FROM member WHERE id=?').get(memberId);
-      if (!m) return;
-      const tasks = this.get("SELECT id FROM task WHERE assignee=? AND status='running'").all(memberId);
-      for (const t of tasks) this.get("UPDATE task SET status='ready', updated_at=? WHERE id=?").run(nowIso(), t.id);
-      this.scheduler.evaluate(m.team_id);
-    } catch (e) { this.log({ level: 'error', msg: 'onWorkerGone', err: String(e.message) }); }
+    this.scheduler.evaluate(m.team_id);
+    return { woken: false, reason: 'agent_runtime' };
   }
 
   // ---------- Agent 运行时：成员是真 DSH sub-agent（Host 插件派发） ----------
@@ -476,7 +429,7 @@ export class DshTeam {
    * 幂等 upsert——同名成员已存在时只更新 session，不重复建行。
    */
   registerAgent(input = {}) {
-    const { teamId, name, sessionId = null, role = 'teammate', model = null, contextMode = 'fresh', reasoningEffort = null } = input;
+    const { teamId, name, sessionId = null, role = 'teammate', model = null, contextMode = 'fresh', reasoningEffort = null, permissionPreset = null, agentPreset = null } = input;
     if (!teamId) throw ERR.bad('teamId required');
     if (!name) throw ERR.bad('name required');
     const team = this.getTeam(teamId);
@@ -484,10 +437,10 @@ export class DshTeam {
     let id;
     if (existing) {
       id = existing.id;
-      this.get('UPDATE member SET agent_session_id=?, role=COALESCE(?, role), model=COALESCE(?, model), reasoning_effort=COALESCE(?, reasoning_effort), updated_at=? WHERE id=?')
-        .run(sessionId != null ? String(sessionId) : existing.agent_session_id, role || null, model || null, reasoningEffort ? String(reasoningEffort) : null, nowIso(), id);
+      this.get('UPDATE member SET agent_session_id=?, role=COALESCE(?, role), model=COALESCE(?, model), reasoning_effort=COALESCE(?, reasoning_effort), permission_preset=?, agent_preset=?, updated_at=? WHERE id=?')
+        .run(sessionId != null ? String(sessionId) : existing.agent_session_id, role || null, model || null, reasoningEffort ? String(reasoningEffort) : null, permissionPreset ? normalizePreset(permissionPreset) : existing.permission_preset, normalizeAgentPreset(agentPreset) ?? existing.agent_preset, nowIso(), id);
     } else {
-      id = this.addMember(teamId, { name, role, model, contextMode, agentSessionId: sessionId, reasoningEffort }).id;
+      id = this.addMember(teamId, { name, role, model, contextMode, agentSessionId: sessionId, reasoningEffort, permissionPreset, agentPreset }).id;
     }
     const st = this.events.state(id);
     // 重新报到（Host/DSH 重启后 sub-agent session 仍活着）：只要没有在途任务就回到 idle
@@ -495,10 +448,10 @@ export class DshTeam {
       this.events.append({
         teamId, memberId: id, taskId: null, phase: 'init', action: 'agent.spawn',
         target: name, result: 'OK', next: 'wait for task', status: 'idle', blockers: [],
-        meta: { stepIndex: -1, runtime: runtimeOf(team), sessionId: sessionId != null ? String(sessionId) : null, model: model ?? null },
+        meta: { stepIndex: -1, sessionId: sessionId != null ? String(sessionId) : null, model: model ?? null },
       });
     }
-    return { member: this.memberView(id), runtime: runtimeOf(team) };
+    return { member: this.memberView(id) };
   }
 
   /** 该团队里可以接活的 agent 成员（idle 且没有在跑的任务）。 */
@@ -526,7 +479,7 @@ export class DshTeam {
     const readyTasks = dag.nodes
       .filter((n) => n.ready && (n.status === 'ready' || n.status === 'pending'))
       .map((n) => ({ taskId: n.taskId, subject: n.subject, assignee: n.assignee, planSize: n.planSize }));
-    return { teamId, runtime: runtimeOf(team), asOf: nowIso(), version: this.scheduler.version(teamId), idleMembers, readyTasks };
+    return { teamId, asOf: nowIso(), version: this.scheduler.version(teamId), idleMembers, readyTasks };
   }
 
   /**
@@ -535,7 +488,6 @@ export class DshTeam {
    */
   dispatchAgentTask(teamId) {
     const team = this.getTeam(teamId);
-    if (runtimeOf(team) !== 'agent') throw ERR.bad('team runtime is not agent');
     this.scheduler.evaluate(teamId);
     const running = Number(this.get("SELECT COUNT(*) AS c FROM task WHERE team_id=? AND status='running'").get(teamId).c);
     const maxConc = Number(team.max_concurrency) || 8;
@@ -573,7 +525,7 @@ export class DshTeam {
         teamId, memberId: member.id, taskId: task.id,
         phase: 'init', action: 'task.dispatch', target: task.subject, result: 'OK',
         next: 'agent turn', status: 'running', blockers: [],
-        meta: { stepIndex: -1, step: 'S0', stepTotal: 0, taskId: task.id, attempt: task.attempts + 1, runtime: 'agent', sessionId: member.agentSessionId },
+        meta: { stepIndex: -1, step: 'S0', stepTotal: 0, taskId: task.id, attempt: task.attempts + 1, sessionId: member.agentSessionId },
       });
       this.scheduler.emitTaskState(teamId, task.id, 'running', member.id);
       try { this.sse.broadcastSynthetic('member.state', { teamId, memberId: member.id, status: 'running' }, { teamId, memberId: member.id }); } catch { /* ignore */ }
@@ -655,7 +607,7 @@ export class DshTeam {
         teamId: m.team_id, memberId, taskId: task.id, phase: 'wait', action: 'agent.blocked', target: task.subject,
         result: 'BLOCKED', next: 'await lead', status: 'blocked',
         blockers: [{ kind: 'agent', detail: summary || 'agent reported blocked' }],
-        meta: { stepIndex: -1, summary, runtime: 'agent' },
+        meta: { stepIndex: -1, summary },
       });
       this.scheduler.evaluate(m.team_id);
       return { ok: true, task: rowToTask(this.get('SELECT * FROM task WHERE id=?').get(task.id)), status: 'blocked', summary };
@@ -705,7 +657,6 @@ export class DshTeam {
       asOf: nowIso(),
       version: teamId ? this.scheduler.version(teamId) : this.events.lastEventId(),
       members,
-      ...(teamId ? { runtime: safeRuntimeOf(this, teamId) } : {}),
       staleMembers: members.filter((m) => m.stale).map((m) => m.id),
       degraded: members.some((m) => m.stale),
     };
@@ -733,13 +684,16 @@ export class DshTeam {
     const lat = this.bus.latencyStats(teamId);
     const conflicts = Number(this.get("SELECT COUNT(*) AS c FROM audit WHERE team_id=? AND result='CONFLICT'").get(teamId).c);
     const denials = Number(this.get("SELECT COUNT(*) AS c FROM audit WHERE team_id=? AND result='DENIED'").get(teamId).c);
-    const grants = Number(this.get('SELECT COUNT(*) AS c FROM scope_grant WHERE team_id=?').get(teamId).c);
+    const approvals = this.get("SELECT status, COUNT(*) AS c FROM approval WHERE team_id=? GROUP BY status").all(teamId);
+    const approvalCount = (st) => Number(approvals.find((r) => r.status === st)?.c || 0);
     const writes = Number(this.get("SELECT COUNT(*) AS c FROM audit WHERE team_id=? AND domain='fs' AND result='OK'").get(teamId).c);
     return {
       asOf: nowIso(), version: this.scheduler.version(teamId),
       eventCount: evCount, messageCount: msg.total, messagesAcked: msg.acked,
       deliveryP50: lat.p50, deliveryP95: lat.p95, deliverySamples: lat.count,
-      conflicts, denials, grants, writes,
+      conflicts, denials, writes,
+      approvals: approvals.reduce((n, r) => n + Number(r.c), 0),
+      approvalsPending: approvalCount('pending'), approvalsAllowed: approvalCount('allowed'), approvalsRejected: approvalCount('rejected') + approvalCount('expired') + approvalCount('cancelled'),
       conflictRate: writes + conflicts > 0 ? Number((conflicts / (writes + conflicts)).toFixed(4)) : 0,
       sseClients: this.sse.size,
     };
@@ -1121,103 +1075,156 @@ export class DshTeam {
     return { asOf: nowIso(), teamId, checked: rows.length + untracked.length, diffs: [...diffs, ...untracked], ok: diffs.length === 0 && untracked.length === 0 };
   }
 
-  // ---------- 策略 ----------
-  createPolicy(input = {}) {
-    const { teamId, subjectType, subjectId, domain, matcher, ops, mode = 'allow', constraints = null, expiresAt = null } = input;
-    this.getTeam(teamId);
-    if (!['team', 'member', 'role', 'task'].includes(subjectType)) throw ERR.bad('invalid subjectType');
-    if (!subjectId) throw ERR.bad('subjectId required');
-    if (!DOMAINS.includes(domain)) throw ERR.bad('invalid domain');
-    if (!matcher) throw ERR.bad('matcher required');
-    const opList = Array.isArray(ops) ? ops : [];
-    if (!opList.length || opList.some((o) => !OPS_BY_DOMAIN[domain].includes(o))) throw ERR.bad(`ops must be subset of ${OPS_BY_DOMAIN[domain].join(',')}`);
-    if (!['allow', 'deny'].includes(mode)) throw ERR.bad('mode must be allow|deny');
-    const id = newId('pol');
-    this.get(
-      `INSERT INTO policy (id, team_id, subject_type, subject_id, domain, matcher, ops_json, mode, constraints_json, expires_at, created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
-    ).run(id, teamId, subjectType, subjectId, domain, matcher, json(opList), mode, constraints ? json(constraints) : null, expiresAt, nowIso());
-    return this.policyView(this.get('SELECT * FROM policy WHERE id=?').get(id));
-  }
-
-  policyView(r) {
-    return {
-      id: r.id, teamId: r.team_id, subjectType: r.subject_type, subjectId: r.subject_id,
-      domain: r.domain, matcher: r.matcher, ops: parseJson(r.ops_json, []), mode: r.mode,
-      constraints: parseJson(r.constraints_json, null),
-      expiresAt: r.expires_at == null ? null : Number(r.expires_at), createdAt: r.created_at,
-    };
-  }
-
-  listPolicies(teamId) {
-    return this.get('SELECT * FROM policy WHERE team_id=? ORDER BY created_at ASC').all(teamId).map((r) => this.policyView(r));
-  }
-
-  deletePolicy(id) {
-    const p = this.get('SELECT * FROM policy WHERE id=?').get(id);
-    if (!p) throw ERR.notFound('policy');
-    this.get('DELETE FROM policy WHERE id=?').run(id);
-    return { ok: true, id };
-  }
-
-  permissionMatrix(teamId) {
-    this.getTeam(teamId);
-    return { asOf: nowIso(), version: this.scheduler.version(teamId), items: this.broker.matrix(teamId) };
-  }
-
-  // ---------- 审批 ----------
-  scopeRequestView(r) {
+  // ---------- 审批（permission preset 的 approval=ask 触发） ----------
+  approvalView(r) {
     if (!r) return null;
     return {
-      id: r.id, teamId: r.team_id, memberId: r.member_id, domain: r.domain, target: r.target,
-      reason: r.reason, diffSize: r.diff_size, risk: r.risk, blockedStep: r.blocked_step,
-      fallback: r.fallback, status: r.status, decisionId: r.decision_id, grantId: r.grant_id,
-      createdAt: r.created_at, decidedAt: r.decided_at,
+      id: r.id, teamId: r.team_id, memberId: r.member_id, sessionId: r.session_id,
+      toolName: r.tool_name, reason: r.reason, status: r.status,
+      decidedBy: r.decided_by, decidedAt: r.decided_at,
+      createdAt: r.created_at, updatedAt: r.updated_at,
     };
   }
 
-  listScopeRequests({ teamId, status = null } = {}) {
-    let sql = 'SELECT * FROM scope_request WHERE 1=1'; const args = [];
+  listApprovals({ teamId = null, status = null } = {}) {
+    let sql = 'SELECT * FROM approval WHERE 1=1'; const args = [];
     if (teamId) { sql += ' AND team_id=?'; args.push(teamId); }
     if (status) { sql += ' AND status=?'; args.push(status); }
     sql += ' ORDER BY created_at DESC LIMIT 500';
-    return { asOf: nowIso(), version: this.events.lastEventId(teamId || null), items: this.get(sql).all(...args).map((r) => this.scopeRequestView(r)) };
+    return { asOf: nowIso(), version: this.events.lastEventId(teamId || null), items: this.get(sql).all(...args).map((r) => this.approvalView(r)) };
   }
 
-  createScopeRequest(input = {}) {
-    const m = this.memberRow(input.memberId);
-    const ctx = { teamId: m.team_id, memberId: m.id, role: m.role, taskId: input.taskId ?? null, workspace: this.getTeam(m.team_id).workspace, stepIndex: -1 };
-    // 同步返回 pending 状态（不阻塞 HTTP）；Worker 侧走 RPC 的阻塞语义
-    const { domain, target, reason, diffSize = null, risk = null, blockedStep = null, fallback = null } = input;
-    if (!DOMAINS.includes(domain)) throw ERR.bad('invalid domain');
-    if (!target) throw ERR.bad('target required');
-    const id = newId('sr');
+  /** Host 插件在把审批转给 Lead 之前先登记一条 pending（面板可见 / 重启后可收敛）。 */
+  createApproval(input = {}) {
+    const { id, teamId, memberId = null, sessionId = null, toolName = '', reason = '' } = input;
+    if (!id) throw ERR.bad('id required');
+    this.getTeam(teamId);
+    const m = memberId ? this.memberRow(memberId) : null;
+    if (m && m.team_id !== teamId) throw ERR.bad('cross-team approval');
+    const t = nowIso();
+    const safeTool = redactor.str(String(toolName || '')).slice(0, 200);
+    const safeReason = redactor.str(String(reason || '')).slice(0, 2000);
     this.get(
-      `INSERT INTO scope_request (id, team_id, member_id, domain, target, reason, diff_size, risk, blocked_step, fallback, status, created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,'pending',?)`
-    ).run(id, m.team_id, m.id, domain, target, String(reason || ''), diffSize, risk, blockedStep, fallback, nowIso());
-    this.events.append({
-      teamId: m.team_id, memberId: m.id, taskId: input.taskId ?? null,
-      phase: 'wait', action: 'scope.request', target, result: 'BLOCKED',
-      next: `await decision for ${id}`, status: 'blocked',
-      blockers: [{ kind: 'scope_request', id, detail: `${domain}:${target}` }],
-      meta: { stepIndex: -1, requestId: id, domain },
-    });
-    return this.scopeRequestView(this.get('SELECT * FROM scope_request WHERE id=?').get(id));
+      `INSERT INTO approval (id, team_id, member_id, session_id, tool_name, reason, status, created_at, updated_at)
+       VALUES (?,?,?,?,?,?, 'pending', ?, ?)
+       ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at`
+    ).run(String(id), teamId, m?.id ?? null, sessionId != null ? String(sessionId) : null, safeTool, safeReason, t, t);
+    if (m) {
+      const st = this.events.state(m.id);
+      this.events.append({
+        teamId, memberId: m.id, taskId: null,
+        phase: 'wait', action: 'approval.request', target: safeTool || 'tool',
+        result: 'PENDING', next: 'await lead decision',
+        status: st?.status || 'idle',
+        blockers: [{ kind: 'approval', id: String(id), detail: safeTool }],
+        meta: { stepIndex: -1, approvalId: String(id), sessionId: sessionId != null ? String(sessionId) : null },
+      });
+    }
+    return this.approvalView(this.get('SELECT * FROM approval WHERE id=?').get(String(id)));
   }
 
-  decideScopeRequest(id, body = {}) {
-    const req = this.get('SELECT * FROM scope_request WHERE id=?').get(id);
-    if (!req) throw ERR.notFound('scope_request');
-    const m = this.get('SELECT * FROM member WHERE id=?').get(req.member_id);
-    const ctx = { teamId: req.team_id, memberId: req.member_id, role: m?.role, taskId: null, workspace: this.getTeam(req.team_id).workspace, stepIndex: -1 };
-    const out = this.broker.decide(ctx, id, body);
-    this.scheduler.evaluate(req.team_id);
+  /** 记录插件侧的最终决定（真正放行/拒绝发生在插件，这里只落审计镜像）。 */
+  decideApproval(id, body = {}) {
+    const row = this.get('SELECT * FROM approval WHERE id=?').get(String(id));
+    if (!row) throw ERR.notFound('approval');
+    const raw = String(body.decision || body.status || '').toLowerCase();
+    const status = ['allowed', 'approved', 'allow'].includes(raw) ? 'allowed'
+      : ['cancelled', 'canceled'].includes(raw) ? 'cancelled'
+        : ['expired'].includes(raw) ? 'expired' : 'rejected';
+    const t = nowIso();
+    this.get('UPDATE approval SET status=?, decided_by=?, decided_at=?, updated_at=? WHERE id=?')
+      .run(status, body.decidedBy != null ? String(body.decidedBy).slice(0, 200) : null, t, t, String(id));
+    if (row.member_id) {
+      const st = this.events.state(row.member_id);
+      this.events.append({
+        teamId: row.team_id, memberId: row.member_id, taskId: null,
+        phase: 'wait', action: 'approval.decide', target: row.tool_name || 'tool',
+        result: status === 'allowed' ? 'ALLOWED' : 'REJECTED', next: null,
+        status: st?.status || 'idle', blockers: [],
+        meta: { stepIndex: -1, approvalId: String(id), reason: body.reason != null ? String(body.reason).slice(0, 500) : null },
+      });
+    }
+    return this.approvalView(this.get('SELECT * FROM approval WHERE id=?').get(String(id)));
+  }
+
+  // ---------- agentPreset 目录（Host 插件同步；删除由面板排队、插件执行） ----------
+  presetView(r) {
+    if (!r) return null;
+    return { id: r.id, name: r.name, description: r.description, order: r.ord, source: r.source, file: r.file, broken: r.broken, updatedAt: r.updated_at };
+  }
+
+  getPreset(id) {
+    const row = this.get('SELECT * FROM preset WHERE id=?').get(String(id));
+    if (!row) throw ERR.notFound('preset');
+    let doc = null;
+    if (row.doc_json) { try { doc = JSON.parse(row.doc_json); } catch { doc = null; } }
+    return { preset: this.presetView(row), doc };
+  }
+
+  /** 插件把 host + team 两边的预设目录整体推过来；这里按 id 覆盖并清掉已消失的 team 行。 */
+  syncPresets(input = {}) {
+    const presets = Array.isArray(input.presets) ? input.presets : [];
+    const t = nowIso();
+    const keep = new Set();
+    tx(this.db, () => {
+      for (const p of presets) {
+        const id = String(p?.id || '').trim();
+        if (!id) continue;
+        keep.add(id);
+        this.get(
+          `INSERT INTO preset (id, name, description, ord, source, file, broken, doc_json, updated_at) VALUES (?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(id) DO UPDATE SET name=excluded.name, description=excluded.description, ord=excluded.ord,
+             source=excluded.source, file=excluded.file, broken=excluded.broken,
+             doc_json=excluded.doc_json, updated_at=excluded.updated_at`
+        ).run(id, p.name != null ? String(p.name) : null, p.description != null ? String(p.description) : null,
+          Number.isFinite(Number(p.order)) ? Number(p.order) : null, p.source === 'team' ? 'team' : 'host',
+          p.file != null ? String(p.file) : null, p.broken != null ? String(p.broken) : null,
+          p.doc ? JSON.stringify(p.doc) : null, t);
+      }
+      const rows = this.get('SELECT id FROM preset').all();
+      for (const r of rows) if (!keep.has(r.id)) this.get('DELETE FROM preset WHERE id=?').run(r.id);
+    });
+    return this.listPresets();
+  }
+
+  listPresets() {
+    const items = this.get('SELECT * FROM preset ORDER BY source DESC, ord ASC, id ASC').all().map((r) => this.presetView(r));
+    const pendingDeletes = this.get('SELECT id FROM preset_delete ORDER BY requested_at ASC').all().map((r) => r.id);
+    return { asOf: nowIso(), items, pendingDeletes };
+  }
+
+  /** 面板点删除：只对团队自建（source='team'）排队，等插件下一次同步执行。 */
+  requestPresetDelete(id) {
+    const row = this.get('SELECT * FROM preset WHERE id=?').get(String(id));
+    if (!row) throw ERR.notFound('preset');
+    if (row.source !== 'team') throw ERR.bad('内置预设只读，不能从面板删除');
+    this.get(`INSERT INTO preset_delete (id, requested_at, attempts, last_error) VALUES (?,?,0,NULL)
+      ON CONFLICT(id) DO UPDATE SET requested_at=excluded.requested_at, attempts=0, last_error=NULL`).run(String(id), nowIso());
+    return { id: String(id), pending: true };
+  }
+
+  pendingPresetDeletes() {
     return {
-      scopeRequest: this.scopeRequestView(this.get('SELECT * FROM scope_request WHERE id=?').get(id)),
-      decision: out.decision,
-      grant: out.grant,
+      items: this.get('SELECT * FROM preset_delete ORDER BY requested_at ASC').all()
+        .map((r) => ({ id: r.id, requestedAt: r.requested_at, attempts: Number(r.attempts) || 0, lastError: r.last_error })),
     };
+  }
+
+  /** 成功 → 删队列与目录行；失败 → 累加 attempts 并留错误，插件达到重试上限后停止。 */
+  ackPresetDelete(id, body = {}) {
+    const key = String(id);
+    const row = this.get('SELECT * FROM preset_delete WHERE id=?').get(key);
+    if (!row) return { id: key, removed: false, missing: true };
+    if (body.error != null) {
+      const attempts = (Number(row.attempts) || 0) + 1;
+      this.get('UPDATE preset_delete SET attempts=?, last_error=? WHERE id=?').run(attempts, String(body.error).slice(0, 1000), key);
+      return { id: key, removed: false, attempts, error: String(body.error) };
+    }
+    tx(this.db, () => {
+      this.get('DELETE FROM preset_delete WHERE id=?').run(key);
+      this.get('DELETE FROM preset WHERE id=?').run(key);
+    });
+    return { id: key, removed: true };
   }
 
   // ---------- 消息 ----------
@@ -1555,7 +1562,7 @@ export class DshTeam {
     const tasks = this.get('SELECT * FROM task WHERE team_id=? ORDER BY created_at ASC').all(teamId).map(rowToTask);
     const audit = this.auditList(teamId, 500);
     const metrics = this.metrics(teamId);
-    const decisions = this.get('SELECT * FROM decision WHERE team_id=? ORDER BY decided_at ASC').all(teamId);
+    const approvals = this.get('SELECT * FROM approval WHERE team_id=? ORDER BY created_at ASC').all(teamId);
     const events = this.events.countEvents(teamId);
     const lines = [];
     lines.push(`# dsh-team 运行报告：${team.name}`);
@@ -1565,7 +1572,7 @@ export class DshTeam {
     lines.push(`- 生成时间: ${nowIso()}`);
     lines.push(`- 事件总数: ${events}`);
     lines.push(`- 成员: ${members.length} / 任务: ${tasks.length} / 审计: ${audit.length}`);
-    lines.push(`- 写冲突: ${metrics.conflicts} / 权限拒绝: ${metrics.denials} / 授权: ${metrics.grants}`);
+    lines.push(`- 写冲突: ${metrics.conflicts} / 审批: ${metrics.approvals}（通过 ${metrics.approvalsAllowed}，拒绝 ${metrics.approvalsRejected}）`);
     lines.push(`- 消息: ${metrics.messageCount}（已 ack ${metrics.messagesAcked}），投递 p95 ${metrics.deliveryP95 ?? '-'}ms`);
     lines.push('');
     lines.push('## 成员');
@@ -1578,12 +1585,12 @@ export class DshTeam {
     lines.push('|---|---|---|---|---|---|');
     for (const t of tasks) lines.push(`| \`${t.id}\` | ${t.subject} | ${t.status} | ${t.assignee ?? '-'} | ${t.attempts} | ${t.plan.length} |`);
     lines.push('');
-    lines.push('## 决策（落盘对象）');
-    if (!decisions.length) lines.push('_无_');
+    lines.push('## 审批（permission preset 触发）');
+    if (!approvals.length) lines.push('_无_');
     else {
-      lines.push('| 时间 | 类型 | 结论 | 决策人 | 理由 |');
-      lines.push('|---|---|---|---|---|');
-      for (const d of decisions) lines.push(`| ${d.decided_at} | ${d.kind} | ${d.chosen} | ${d.decided_by} | ${redactor.str(String(d.reason ?? ''))} |`);
+      lines.push('| 时间 | 成员 | 工具 | 原因 | 结论 | 决策人 | 决策时间 |');
+      lines.push('|---|---|---|---|---|---|---|');
+      for (const a of approvals) lines.push(`| ${a.created_at} | ${a.member_id ?? '-'} | ${a.tool_name || '-'} | ${a.reason || '-'} | ${a.status} | ${a.decided_by ?? '-'} | ${a.decided_at ?? '-'} |`);
     }
     lines.push('');
     lines.push('## 审计（谁在何时改了哪个文件 / hash 前后值）');
@@ -1607,24 +1614,22 @@ export class DshTeam {
         recovered += r.requeued;
       } catch (e) { this.log({ level: 'error', msg: 'recover failed', teamId: t.id, err: String(e.message) }); }
     }
-    // 进程重启后，内存里等待决策的 scope 请求已经没有任何 Worker 在等：
-    // 留着会让面板出现「点了也没用的幽灵审批」，统一收敛为 expired。
+    // 进程重启后，插件内存里的等待队列已经不存在：pending 审批统一收敛为 expired，
+    // 避免面板出现「点了也没用」的幽灵审批。
     let expired = 0;
     try {
-      const rows = this.get("SELECT id, team_id, member_id, target FROM scope_request WHERE status='pending'").all();
+      const rows = this.get("SELECT id, team_id, member_id, tool_name FROM approval WHERE status='pending'").all();
       for (const r of rows) {
-        this.get("UPDATE scope_request SET status='expired', decided_at=? WHERE id=?").run(nowIso(), r.id);
-        this.audit({ teamId: r.team_id, actor: 'system', domain: 'scope', action: 'recover', target: r.target, result: 'EXPIRED', detail: { requestId: r.id, memberId: r.member_id, reason: 'sidecar restart' } });
+        this.get("UPDATE approval SET status='expired', decided_at=?, updated_at=? WHERE id=?").run(nowIso(), nowIso(), r.id);
         expired++;
       }
-    } catch (e) { this.log({ level: 'error', msg: 'expire pending scopes failed', err: String(e.message) }); }
-    if (expired) this.log({ level: 'info', msg: 'expired pending scope requests', count: expired });
+    } catch (e) { this.log({ level: 'error', msg: 'expire pending approvals failed', err: String(e.message) }); }
+    if (expired) this.log({ level: 'info', msg: 'expired pending approvals', count: expired });
     this.events.verifyAll(null);
     return recovered;
   }
 
   close() {
-    try { this.runner.shutdown(); } catch { /* ignore */ }
     try { this.scheduler.shutdown(); } catch { /* ignore */ }
     try { this.sse.close(); } catch { /* ignore */ }
     closeDb(this.db);

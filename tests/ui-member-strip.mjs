@@ -258,7 +258,7 @@ assert.ok(card, '卡片展开时浮层渲染');
 // 卡片必须贴着胶囊按钮（bottom 40 / right 1200，视口 1280）下方弹出，而不是钉在窗口右上角
 assert.equal(card.props.style.top, '48px', '浮层贴在按钮下方（bottom 40 + 8）');
 assert.equal(card.props.style.right, '80px', '浮层右边与按钮右边对齐（视口 1280 - 1200）');
-assert.equal(card.props.style['--dsht-dock-max'], '736px', '卡片高度上限按剩余视口算');
+assert.equal(card.props.style['--dsht-dock-max'], '640px', '卡片高度上限 = 80% 视口');
 assert.equal(card.props['data-dsh-team-card'], TEAM.id);
 const afc = byClass(card, 'ui-afc')[0];
 assert.ok(afc, '卡片本体是 affectui AgentFindings');
@@ -334,8 +334,8 @@ assert.ok(stopBtn, '停靠栏有「停止团队」图标按钮');
 assert.equal(textOf(stopBtn), '', '按钮只有图标，没有文字');
 assert.ok(byClass(stopBtn, 'svg').length >= 0 && stopBtn.children.length === 1, '图标按钮内含一个 SVG');
 const actions = byClass(card, 'dsht-afc-dock-actions')[0];
-assert.deepEqual(actions.children.map((c) => c.props.className), ['dsht-afc-dock-stop', 'dsht-afc-dock-close'],
-  '停止图标与 × 并排、都在最右侧');
+assert.deepEqual(actions.children.map((c) => c.props.className), ['dsht-afc-dock-open', 'dsht-afc-dock-stop', 'dsht-afc-dock-close'],
+  '打开面板 / 停止 / × 并排、都在最右侧');
 assert.equal(stopBtn.props.disabled, false, '有成员在跑时可停止');
 stopBtn.props.onClick();
 const modal = byClass(dock.component({}), 'dsht-afc-modal')[0];

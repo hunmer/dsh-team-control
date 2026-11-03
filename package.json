@@ -2,7 +2,7 @@
   "name": "dsh-team-control-cli",
   "version": "0.1.7",
   "type": "module",
-  "description": "Agent 编排协同开发：可配置上限、DAG 自动派发、四域强制权限、SSE 实时可观测（PRD v1.0 实现）",
+  "description": "Agent 编排协同开发：可配置上限、DAG 自动派发、DSH 权限预设按成员分配、审批转发 Lead、SSE 实时可观测",
   "bin": {
     "dsh-team": "bin/dsh-team.mjs"
   },
@@ -10,7 +10,6 @@
     "bin",
     "src/*.mjs",
     "src/web",
-    "src/worker",
     "skills",
     "demo",
     "docs/CONTRACT.md",

@@ -19,13 +19,13 @@ const check = (name, ok, detail = '') => { console.log(`${ok ? 'PASS' : 'FAIL'} 
 try {
   s = await startSidecar({ dataDir: tmp.dataDir, ws: tmp.ws });
   const team = await s.api.post('/api/teams', { name: 'cli-team', workspace: tmp.ws, maxMembers: 4 });
-  await s.api.post('/api/policies', { teamId: team.id, subjectType: 'team', subjectId: team.id, domain: 'fs', matcher: '**', ops: ['write'], mode: 'allow' });
   const m = await s.api.post(`/api/teams/${team.id}/members`, { name: 'cli-alpha' });
   const task = await s.api.post('/api/tasks', {
     teamId: team.id, subject: 'cli task', assignee: m.id,
-    plan: [{ step: 'S1', phase: 'write', action: 'write', target: 'cli.txt', op: { kind: 'fs.write', args: { path: 'cli.txt', content: 'cli-ok\n' } } }],
+    plan: [{ step: 'S1', detail: '由 CLI 冒烟检查' }],
   });
-  await waitFor('task done', async () => (await s.api.get(`/api/tasks/${task.id}`)).status === 'done', { timeout: 20000 });
+  await s.api.post('/api/messages', { teamId: team.id, from: m.id, to: m.id, payload: { text: 'hello from cli smoke' } });
+  await waitFor('task ready', async () => (await s.api.get(`/api/tasks/${task.id}`)).status === 'ready', { timeout: 10000, interval: 50 });
 
   // status
   const st = await cli(['status', team.id], tmp.dataDir);
@@ -39,26 +39,24 @@ try {
 
   // logs
   const logs = await cli(['logs', m.id], tmp.dataDir);
-  check('logs', logs.stdout.includes('#1') && logs.stdout.includes('task.done'));
+  check('logs', logs.stdout.includes('task'), logs.stdout.trim().slice(0, 120));
 
   // report
   const outFile = path.join(tmp.root, 'run.md');
   const rep = await cli(['report', team.id, '-o', outFile], tmp.dataDir);
   const md = fs.readFileSync(outFile, 'utf8');
-  check('report -o', rep.stdout.includes('报告已写入') && md.includes('before_hash') && md.includes('cli-alpha'));
+  check('report -o', rep.stdout.includes('报告已写入') && md.includes('cli-alpha'));
 
-  // approve：造一个 pending scope request
-  const sr = await s.api.post('/api/scope-requests', { memberId: m.id, domain: 'fs', target: 'config/x.json', reason: 'cli approve test', diffSize: 10 });
-  check('scope pending', sr.status === 'pending');
-  const ap = await cli(['approve', sr.id, '--ttl', '30'], tmp.dataDir);
-  check('approve', ap.stdout.includes('approved') && ap.stdout.includes('grant='), ap.stdout.trim());
-  const after = await s.api.get(`/api/scope-requests?team=${team.id}&status=approved`);
-  check('decision persisted', after.items.some((x) => x.id === sr.id));
-
-  // deny 路径
-  const sr2 = await s.api.post('/api/scope-requests', { memberId: m.id, domain: 'exec', target: 'whoami', reason: 'deny test' });
-  const dn = await cli(['approve', sr2.id, '--deny', '--reason', 'no'], tmp.dataDir);
-  check('approve --deny', dn.stdout.includes('denied'), dn.stdout.trim());
+  // approvals：pending 列表 → API 决策 → 已决列表
+  const apr = await s.api.post('/api/approvals', { id: 'apr_cli_1', teamId: team.id, memberId: m.id, toolName: 'exec', reason: 'cli approve test' });
+  check('approval pending', apr.status === 'pending');
+  const listed = await cli(['approvals', team.id], tmp.dataDir);
+  check('approvals list', listed.stdout.includes('apr_cli_1') && listed.stdout.includes('pending'), listed.stdout.trim());
+  await s.api.post('/api/approvals/apr_cli_1/decide', { decision: 'allowed', decidedBy: 'lead' });
+  const allowed = await cli(['approvals', team.id, '--status', 'allowed'], tmp.dataDir);
+  check('approvals --status', allowed.stdout.includes('apr_cli_1') && allowed.stdout.includes('allowed'), allowed.stdout.trim());
+  const aprJson = await cli(['approvals', team.id, '--json'], tmp.dataDir);
+  check('approvals --json', JSON.parse(aprJson.stdout).items.some((x) => x.id === 'apr_cli_1'));
 
   // down
   const down = await cli(['down'], tmp.dataDir);

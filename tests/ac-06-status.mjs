@@ -1,8 +1,8 @@
 // tests/ac-06-status.mjs — AC-6 运行中查状态
-// 成员跑 6 个 sleep 150ms 的步骤；running 期间连续 10 次 GET /api/status?team=：
+// agent 成员被派发任务后保持 running；期间连续 10 次 GET /api/status?team=：
 // ① 每次耗时 < 1000ms；② 每次返回的成员对象都含 status/step/seq/next/blockers/asOf/stale，seq>0，blockers 是数组。
-// 全流程真实 sidecar + 真实子进程 Worker。
-import { runAc, mkTmp, startSidecar, waitFor, assert, assertEqual } from './lib/harness.mjs';
+// 全流程真实 sidecar + 真实 agent 会话登记。
+import { runAc, mkTmp, startSidecar, waitFor, assert, assertEqual, sleep } from './lib/harness.mjs';
 
 const AC = 'AC-6';
 const one = (r, key) => (r && typeof r === 'object' && r[key] ? r[key] : r);
@@ -20,17 +20,16 @@ runAc(AC, async () => {
     const team = one(await api.post('/api/teams', {
       name: 'ac06-status', workspace: tmp.ws, maxMembers: 2, maxConcurrency: 2,
     }), 'team');
-    const member = one(await api.post(`/api/teams/${team.id}/members`, { name: 'status-worker' }), 'member');
+    const member = one(await api.post('/api/agents/register', { teamId: team.id, name: 'status-agent', sessionId: 'sess_ac06' }), 'member');
 
-    // 6 × 150ms = 900ms 的可观测运行窗口
-    const plan = Array.from({ length: 6 }, (_, i) => ({
-      step: `S${i + 1}`, phase: 'wait', action: 'sleep', target: `nap-${i + 1}`,
-      op: { kind: 'sleep', args: { ms: 150 } },
-    }));
+    const plan = Array.from({ length: 6 }, (_, i) => ({ step: `S${i + 1}`, detail: `第 ${i + 1} 步` }));
     const task = one(await api.post('/api/tasks', {
       teamId: team.id, subject: 'six-naps', assignee: member.id, plan,
     }), 'task');
     assert(task.id, '任务已创建');
+    await sleep(400);
+    const claimed = await api.post('/api/agents/dispatch', { teamId: team.id });
+    assert(claimed.task?.id === task.id, '任务应派发给 agent');
 
     await waitFor('成员进入 running', async () => {
       const st = await api.get(`/api/status?member=${member.id}`);
@@ -65,14 +64,14 @@ runAc(AC, async () => {
       assert(typeof m.stale === 'boolean', 'stale 应为布尔');
       assert(Number.isFinite(Date.parse(m.asOf)), `asOf 应为可解析时间，实际 ${m.asOf}`);
       assertEqual(m.status, 'running', `第 ${i + 1} 次查询应在 running 期间`);
-      assert(typeof m.step === 'string' && /^S\d+$/.test(m.step), `step 应为 S<n>，实际 ${m.step}`);
+      assert(m.step === null || typeof m.step === 'string', `step 应为字符串或 null，实际 ${m.step}`);
       assert(typeof m.next === 'string', `next 应为字符串，实际 ${m.next}`);
       seqSeen = Math.max(seqSeen, m.seq);
     }
 
-    // 收尾前等任务自然完成（验证这段状态查询不影响执行）
-    await waitFor('six-naps 任务完成', async () => (await api.get(`/api/tasks/${task.id}`)).status === 'done',
-      { timeout: 15000, interval: 50 });
+    // 收尾：成员上报完成（验证状态查询不影响任务归属）
+    await api.post('/api/agents/report', { sessionId: 'sess_ac06', taskId: task.id, status: 'done', summary: 'ok' });
+    assertEqual((await api.get(`/api/tasks/${task.id}`)).status, 'done', '任务完成');
 
     const elapsed = Date.now() - startedAt;
     ok = true;
