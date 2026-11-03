@@ -100,6 +100,9 @@ export interface ContextMapProps {
 
 const FREE_ID = "__free";
 
+/** tooltip 明细最多列这么多条，剩下的折成「+N more」，避免长列表撑破悬浮框 */
+const TIP_ITEMS_MAX = 8;
+
 const KIND_LABEL: Record<ContextBlockKind, string> = {
   system: "System prompt",
   tools: "Tools",
@@ -655,7 +658,7 @@ export function ContextMap({
             ) : null}
             {activeBlock.items && activeBlock.items.length > 0 ? (
               <ul className="ui-cmc__tip-items">
-                {activeBlock.items.map((item) => (
+                {activeBlock.items.slice(0, TIP_ITEMS_MAX).map((item) => (
                   <li key={item.label}>
                     {item.icon ? (
                       <span className="ui-cmc__logo" aria-hidden="true">
@@ -665,6 +668,9 @@ export function ContextMap({
                     {item.label}
                   </li>
                 ))}
+                {activeBlock.items.length > TIP_ITEMS_MAX ? (
+                  <li className="ui-cmc__tip-more">+{activeBlock.items.length - TIP_ITEMS_MAX} more</li>
+                ) : null}
               </ul>
             ) : null}
           </div>
