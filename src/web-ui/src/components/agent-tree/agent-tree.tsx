@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { AGENT_TREE_CSS } from "./agent-tree-css";
+import { AGENT_TREE_VERTICAL_CSS } from "./agent-tree-vertical-css";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
@@ -47,6 +48,8 @@ export interface AgentTreeProps {
   formatCost?: (amount: number) => string;
   title?: string;
   className?: string;
+  /** force the vertical layout: children stack to the right of each card, connectors leave the card's right edge */
+  vertical?: boolean;
 }
 
 const STATUS_LABEL: Record<AgentStatus, string> = {
@@ -258,6 +261,7 @@ export function AgentTree({
   formatCost: fmtCost = formatCost,
   title = `Agents`,
   className,
+  vertical = false,
 }: AgentTreeProps) {
   const treeRef = useRef<HTMLDivElement | null>(null);
   const [uncontrolled, setUncontrolled] = useState(defaultCollapsed);
@@ -306,19 +310,20 @@ export function AgentTree({
   const renderRoot = weave(shown);
   const flatNodes = flattenShown(renderRoot);
 
-  // wide mode: first level side by side fits
+  // wide mode: first level side by side fits (vertical view never goes wide)
   const [metrics, setMetrics] = useState<{ w: number; card: number; indent: number } | null>(null);
   const wide =
-    !metrics ||
-    metrics.w >=
-      Math.max(
-        560,
-        renderRoot.kids.reduce(
-          (sum, k) => sum + metrics.card + metrics.indent * Math.max(1, depthOf(k)),
-          0,
-        ) +
-          Math.max(0, renderRoot.kids.length - 1) * 8,
-      );
+    !vertical &&
+    (!metrics ||
+      metrics.w >=
+        Math.max(
+          560,
+          renderRoot.kids.reduce(
+            (sum, k) => sum + metrics.card + metrics.indent * Math.max(1, depthOf(k)),
+            0,
+          ) +
+            Math.max(0, renderRoot.kids.length - 1) * 8,
+        ));
 
   // enter delays for cards that just appeared (staggered, one after another)
   const enterDelays = useRef(new Map<string, number>());
@@ -339,6 +344,7 @@ export function AgentTree({
   const linkFirstSeen = useRef(new Map<string, number>());
 
   const layoutKey = JSON.stringify([
+    vertical,
     wide,
     collapsedList,
     flatNodes.map((n) => [
@@ -384,7 +390,23 @@ export function AgentTree({
             leaving: kid.leaving,
             enter: enterDelays.current.get(kid.agent.id) ?? 0,
           };
-          if (wide && depth === 0) {
+          if (vertical) {
+            // vertical: out of the parent card's right edge, elbow into the child's left
+            // (affectui agent-fleet wide-branch geometry)
+            const px = Math.round(p.x + p.w);
+            const py = Math.round(p.y + p.h / 2);
+            const cx = c.x;
+            const cy = c.y + 21;
+            const mid = Math.round(px + (cx - px) / 2);
+            const dy = cy - py;
+            const r = Math.max(0, Math.min(8, Math.abs(dy) / 2, (cx - px) / 4));
+            const s = Math.sign(dy);
+            const d =
+              Math.abs(dy) < 1
+                ? `M${px} ${py}H${cx}`
+                : `M${px} ${py}H${mid - r}Q${mid} ${py} ${mid} ${py + s * r}V${cy - s * r}Q${mid} ${cy} ${mid + r} ${cy}H${cx}`;
+            segs.push({ ...base, d, dot: [px, py] });
+          } else if (wide && depth === 0) {
             // side by side: a shared stem under the root, then an S-curve
             const px = Math.round(p.x + p.w / 2);
             const py = p.y + p.h;
@@ -758,9 +780,12 @@ export function AgentTree({
   }
 
   return (
-    <div className={[`ui-agtc`, className].filter(Boolean).join(` `)} data-wide={wide ? `` : void 0}>
+    <div className={[`ui-agtc`, className].filter(Boolean).join(` `)} data-wide={wide ? `` : void 0} data-vertical={vertical ? `` : void 0}>
       <style href="ui-agent-tree-clean" precedence="default">
         {AGENT_TREE_CSS}
+      </style>
+      <style href="ui-agent-tree-vertical" precedence="default">
+        {AGENT_TREE_VERTICAL_CSS}
       </style>
       <header ref={barRef} className="ui-agtc__bar">
         <span className="ui-agtc__spark">
