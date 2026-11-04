@@ -39,7 +39,7 @@ dsh plugin --profile web add dsh-team-control
 dsh plugin --profile web add dsh-team-control-ui   # 可选：GUI 看板
 ```
 
-装完**重启 DSH**（或到 设置 → 插件 里禁用/启用一次），`team_*` 工具与「编排」面板才会出现。卸载：
+装完**重启 DSH**（或到 设置 → 插件 里禁用/启用一次），`team_*` 工具与「编排」「任务看板」两个独立入口才会出现。
 `dsh plugin --profile web remove dsh-team-control`（UI 包同理）。
 
 ### 2. 验证
@@ -116,7 +116,7 @@ DSH agent × N ◀──subagents.startActivation / sendMessage── dsh-plugin
 | `src/server.mjs` | REST + SSE + 静态面板（仅回环监听） |
 | `src/web/` | 面板构建产物（`panel.html` + `assets/`） |
 | `src/web-ui/` | 面板源码（React + coss ui，含 Trace 瀑布） |
-| `dsh-plugin/` | DSH Host bundle：13 个 `team_*` 工具 + sidecar 生命周期 + 子会话成员调度 + 审批转发 |
+| `dsh-plugin/` | DSH Host bundle：13 个 `team_*` + 2 个 `board_*` 工具 + sidecar 生命周期 + 子会话成员调度 + 审批转发 |
 | `dsh-plugin-ui/` | GUI 看板 bundle：better-sidebar 页签 / 侧栏入口 |
 | `skills/dsh-agent-team/` | 给模型看的调用配方 skill |
 | `tests/` | `ac-*.mjs` 验收脚本 + harness + `run-all.mjs` |

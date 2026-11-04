@@ -27,7 +27,7 @@ dsh-team-control 给 DeepSeek Harness（DSH）的 Agent Team 加一层**独立�
 | [开发约定](claude/conventions.md) | 命令、风格、禁止事项、兼容性提醒 | 动手前后各看一次 |
 | [模块职责](claude/module-responsibilities.md) | 各模块边界与所有权 | 判断改动该落在哪个目录 |
 | [入口与启动](claude/entrypoints.md) | CLI / sidecar / 插件 / 面板的启动链路 | 排查「起不来」「没端口」 |
-| [对外接口](claude/public-interfaces.md) | REST、SSE、CLI、13 个 `team_*` 工具 | 加接口或改契约 |
+| [对外接口](claude/public-interfaces.md) | REST、SSE、CLI、13 个 `team_*` + 2 个 `board_*` 工具 | 加接口或改契约 |
 | [依赖与配置](claude/dependencies-and-config.md) | Node 版本、环境变量、插件 config 字段 | 换机器、改端口/数据目录 |
 | [数据模型](claude/data-model.md) | SQLite schema v9、枚举、事件溯源 | 改表、改状态机 |
 | [测试与质量](claude/testing-and-quality.md) | AC 脚本矩阵（AC-01~17）、harness、演示 | 加测试或复现 bug |
@@ -52,7 +52,7 @@ graph LR
 |---|---|---|---|
 | 编排内核 | `src/` | 组合根、SQLite、事件流、审批镜像、调度器、信箱、SSE、HTTP 服务 | [src/CLAUDE.md](src/CLAUDE.md) |
 | CLI | `bin/dsh-team.mjs` | `up/down/status/dag/logs/approvals/report`，通过 `run/sidecar.json` 发现端口 | 见 [入口与启动](claude/entrypoints.md) |
-| Host 插件 | `dsh-plugin/` | 13 个 `team_*` 工具（含 `team_approve`）、sidecar 生命周期、成员派发与权限预设下发、审批转发、trace/改动/产物上报 | [dsh-plugin/CLAUDE.md](dsh-plugin/CLAUDE.md) |
+| Host 插件 | `dsh-plugin/` | 13 个 `team_*` 工具（含 `team_approve`）+ 2 个 `board_*` 工具、sidecar 生命周期、成员派发与权限预设下发、审批转发、trace/改动/产物上报 | [dsh-plugin/CLAUDE.md](dsh-plugin/CLAUDE.md) |
 | GUI 面板插件 | `dsh-plugin-ui/` | 把面板挂成 better-sidebar 页签/侧栏入口，同源代理到 sidecar | [dsh-plugin-ui/CLAUDE.md](dsh-plugin-ui/CLAUDE.md) |
 | 面板前端 | `src/web-ui/` | React + coss ui 面板源码，构建到 `src/web/` | [src/web-ui/CLAUDE.md](src/web-ui/CLAUDE.md) |
 | 验收脚本 | `tests/` | AC-01~AC-17 + 插件/面板/路由/CLI/迁移脚本，真 sidecar + 假 ctx | [tests/CLAUDE.md](tests/CLAUDE.md) |
@@ -67,4 +67,4 @@ graph LR
 - 已扫描范围：根目录全部 `*.md`/配置；`src/*.mjs`（9 个）；`bin/dsh-team.mjs`；`dsh-plugin/`（`index.js` 2126 行通读结构 + `changes.js`/`pricing.js` 导出面）；`dsh-plugin-ui/`（`index.js`/`client.js` 结构）；`src/web-ui/src`（`App.tsx`、`store.tsx`、`shell.tsx`、`types.ts`、`lib/api.ts`、`views/`、`components/`、配置）；`tests/`（`run-all.mjs`、`lib/harness.mjs` 全导出、各脚本命名与覆盖）；`docs/CONTRACT.md` 全文；`docs/adr/` 11 份标题与状态；`prd/`、`skills/`、`demo/` 摘要。
 - 跳过范围：`src/web-ui/node_modules/`（依赖）、`src/web/assets` 构建产物内容、`screenshots/*.png`、`work/essay-team/`（演示产物）、`docs/handoffs/` 正文（仅读标题）。
 - 覆盖度量：仓库非忽略文件 231 个；`src/**` 与 `dsh-plugin/**` 源码全部纳入；文档覆盖 6 个模块根 + 根目录。
-- 下一步建议：`src/web-ui/src/views/Home.tsx` 与 `store.tsx`（约 1000 行）只看结构未逐行读；`dsh-plugin/index.js` 的 `buildTools` 内 13 个工具 execute 细节按需补扫；`docs/handoffs/` 三份交接正文如需复现历史事故再展开。
+- 下一步建议：`src/web-ui/src/views/Home.tsx` 与 `store.tsx`（约 1000 行）只看结构未逐行读；`dsh-plugin/index.js` 的 `buildTools` 内 15 个工具 execute 细节按需补扫；`docs/handoffs/` 三份交接正文如需复现历史事故再展开。

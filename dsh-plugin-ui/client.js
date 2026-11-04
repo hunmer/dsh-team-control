@@ -15,6 +15,10 @@ window.__ModuleLoader__.load({
         title: 'dsh-team 编排控制台',
         subtitle: '成员看板（Trace 瀑布）、DAG、时间线、权限与审批；数据来自本地 sidecar，经 Host 代理',
         side_nav: '编排',
+        board_nav: '看板',
+        board_title: '任务看板',
+        board_desc: '按工作区管理任务队列与自动执行',
+        board_guide_desc: '工作区任务队列、并发与自动执行',
         panel_loading: '正在查找该会话的团队…',
         guide_desc: '团队成员、任务 DAG 与实时进度',
         members_title: '团队成员',
@@ -57,6 +61,10 @@ window.__ModuleLoader__.load({
         title: 'dsh-team console',
         subtitle: 'Trace waterfall, DAG, timeline, permissions and approvals (local sidecar via Host proxy)',
         side_nav: 'Team',
+        board_nav: 'Board',
+        board_title: 'Task board',
+        board_desc: 'Workspace task queue and automatic execution',
+        board_guide_desc: 'Workspace task queue, concurrency and automatic execution',
         panel_loading: 'Looking up this session’s team…',
         guide_desc: 'Team members, task DAG and live progress',
         members_title: 'Team members',
@@ -236,9 +244,9 @@ window.__ModuleLoader__.load({
     }
 
     // ---------- dsh-better-sidebar 页签（可选宿主，装了就把入口交给它） ----------
-    /** 看板在 better-sidebar 里的页签描述：原生右侧栏的 guide 胶囊 + 插件底部工作台的 + 菜单同源。 */
-    function betterTabDescriptor(t, getService) {
-      return {
+    /** 编排页签：原生右侧栏的 guide 胶囊 + 插件底部工作台的 + 菜单同源。 */
+    function betterTabDescriptors(t, getService) {
+      return [{
         id: 'dsh-team:panel',
         title: () => t('side_nav'),
         description: () => t('subtitle'),
@@ -246,7 +254,15 @@ window.__ModuleLoader__.load({
         order: 30,
         single: true,
         component: () => h(TeamView, { t, compact: true, getService }),
-      };
+      }, {
+        id: 'dsh-team:board',
+        title: () => t('board_nav'),
+        description: () => t('board_desc'),
+        icon: (size) => h(BoardIcon, { size: size || 16 }),
+        order: 31,
+        single: true,
+        component: () => h(BoardView, { t, getService }),
+      }];
     }
 
     /** 自动打开面板时希望面板直接选中的团队（TeamView 渲染时带上 &team=）。 */
@@ -264,6 +280,7 @@ window.__ModuleLoader__.load({
       const LAST_TEAM_KEY = 'dsh-team:last-team';
       let active = null;
       let lastTeamId = null;
+      let forcedTeamId = null;
       try { lastTeamId = window.sessionStorage.getItem(LAST_TEAM_KEY) || null; } catch { /* ignore */ }
       const emit = () => {
         for (const fn of listeners) { try { fn(); } catch { /* 单个订阅出错不影响其他 */ } }
@@ -273,6 +290,17 @@ window.__ModuleLoader__.load({
           const next = sessionId || null;
           if (active === next) return;
           active = next;
+          forcedTeamId = null;
+          emit();
+        },
+        /** 看板详情里点「打开编排」：强制本次面板显示指定团队，直到切会话。 */
+        focusTeam(teamId) {
+          const next = teamId || null;
+          forcedTeamId = next;
+          if (next) {
+            lastTeamId = next;
+            try { window.sessionStorage.setItem(LAST_TEAM_KEY, next); } catch { /* ignore */ }
+          }
           emit();
         },
         /** teamId 为 null 表示「查过了，这个会话没有团队」；重复写入相同值不触发渲染。 */
@@ -297,7 +325,7 @@ window.__ModuleLoader__.load({
          * 页签，它会把 active 切成子会话；这时编排页沿用上一次的团队，而不是空等或跳回
          * 第一个工作区。
          */
-        snapshot() { return { sessionId: active, info: (active && byId.get(active)) || null, lastTeamId }; },
+        snapshot() { return { sessionId: active, info: (active && byId.get(active)) || null, lastTeamId, forcedTeamId }; },
       };
     })();
 
@@ -312,7 +340,7 @@ window.__ModuleLoader__.load({
       // 当前会话自己的团队优先；没有（子 agent 聊天页签、还没查完）就沿用最近一次的团队，
       // 再没有才回落到 pendingTeamId。绝不能退回「空 team」——那会让面板跳去第一个工作区。
       const ownTeam = (sessionTeam.info && sessionTeam.info.teamId) || '';
-      const teamParam = ownTeam || sessionTeam.lastTeamId || pendingTeamId || '';
+      const teamParam = sessionTeam.forcedTeamId || ownTeam || sessionTeam.lastTeamId || pendingTeamId || '';
       // 一个团队都还不知道、但已经在等查询结果时才显示占位，避免先用空 team 加载一屏再重载。
       const waitingTeam = !teamParam && !!sessionTeam.sessionId && !sessionTeam.info;
       const frameSrc = '/dsh-team-api/panel?api=/dsh-team-api&embed=1'
@@ -351,6 +379,44 @@ window.__ModuleLoader__.load({
               title: t('title'),
               src: frameSrc,
             })));
+    }
+
+    /** 独立任务看板：整页 iframe 指向 #/board，不继承任何 team。 */
+    function BoardView({ t, getService }) {
+      const frameRef = React.useRef(null);
+      // 看板详情里点「打开编排」→ 在 Host 侧切到编排页，并把 iframe 指到对应团队。
+      React.useEffect(() => {
+        const onMessage = (event) => {
+          const frame = frameRef.current;
+          if (!frame || !event || event.source !== frame.contentWindow) return;
+          const data = event.data;
+          if (!data || data.type !== 'dsh-team:open-team') return;
+          const teamId = typeof data.teamId === 'string' ? data.teamId : '';
+          if (!teamId) return;
+          openTeamForTeam(getService, teamId, typeof data.sessionId === 'string' ? data.sessionId : '');
+        };
+        window.addEventListener('message', onMessage);
+        return () => window.removeEventListener('message', onMessage);
+      }, [getService]);
+      return h('div', { className: 'dsht-page dsht-page--board' },
+        h('iframe', {
+          ref: frameRef,
+          className: 'dsht-frame',
+          title: t('board_title'),
+          src: '/dsh-team-api/panel?api=/dsh-team-api&embed=1#/board',
+        }));
+    }
+
+    function BoardIcon({ size }) {
+      const s = size || 16;
+      return h('svg', {
+        width: s, height: s, viewBox: '0 0 16 16', fill: 'none',
+        stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round',
+        'aria-hidden': true,
+      },
+        h('rect', { x: 2, y: 2.5, width: 3.4, height: 11, rx: 1 }),
+        h('rect', { x: 6.3, y: 2.5, width: 3.4, height: 7, rx: 1 }),
+        h('rect', { x: 10.6, y: 2.5, width: 3.4, height: 9, rx: 1 }));
     }
 
     // ---------- 会话右上角：当前会话的运行中成员（点击在右侧栏内嵌该成员对话） ----------
@@ -432,6 +498,7 @@ window.__ModuleLoader__.load({
      * client.js 兜底分支注册的 'dsh-team'。kind 未注册会抛错，所以逐个尝试。
      */
     function openTeamPanel(getService, sessionId) {
+      if (typeof getService !== 'function') return false;
       const right = getService('sidebarRight');
       if (right && typeof right.openTab === 'function') {
         for (const kind of ['dsh-team:panel', 'dsh-team']) {
@@ -445,6 +512,14 @@ window.__ModuleLoader__.load({
         try { better.openTab({ type: 'dsh-team:panel' }, { sessionId }); return true; } catch (e) { console.warn('[dsh-team] openTab failed', e); }
       }
       return false;
+    }
+
+    /** 看板详情 → 编排侧栏：先锁定团队，再打开原生右侧栏页签。 */
+    function openTeamForTeam(getService, teamId, sessionId) {
+      if (!teamId || typeof getService !== 'function') return false;
+      pendingTeamId = teamId;
+      sessionTeamStore.focusTeam(teamId);
+      return openTeamPanel(getService, sessionId);
     }
 
     /** 本会话是否已经自动推开过一次（用户手动收起后不再打扰）。 */
@@ -1404,7 +1479,7 @@ window.__ModuleLoader__.load({
         // 注册全部挂在 effect 作用域内：插件卸载/热替换时自动撤销（含 ctx.inject 派生的等待 fiber）
         ctx.effect(() => {
           const disposers = [];
-          let betterDispose = null;
+          let betterDispose = [];
           const release = () => {
             for (const dispose of disposers.splice(0).reverse()) {
               try { dispose(); } catch { /* ignore */ }
@@ -1415,28 +1490,30 @@ window.__ModuleLoader__.load({
            * 装了 better-sidebar 也照样保留 DSH 原生侧栏入口，两边都能进。
            */
           const useBetterSidebar = (service) => {
-            if (betterDispose) return true;
+            if (betterDispose.length) return true;
             if (!service || typeof service.registerTab !== 'function') return false;
-            try {
-              betterDispose = service.registerTab(betterTabDescriptor(t, getService));
-              return true;
-            } catch (e) {
-              console.warn('[dsh-team] betterSidebar.registerTab failed', e);
-              return false;
+            for (const descriptor of betterTabDescriptors(t, getService)) {
+              try {
+                betterDispose.push(service.registerTab(descriptor));
+              } catch (e) {
+                console.warn('[dsh-team] betterSidebar.registerTab failed', descriptor.id, e);
+              }
             }
+            return betterDispose.length > 0;
           };
           /** better-sidebar 晚于本插件加载时补注册（原生入口不动） */
           const watchBetterSidebar = () => {
             if (typeof ctx.inject !== 'function') return;
             ctx.inject(['betterSidebar'], (child) => {
-              betterDispose = null; // 服务实例变化时重新注册（旧注册随旧实例失效）
+              for (const dispose of betterDispose.splice(0)) {
+                try { dispose(); } catch { /* ignore */ }
+              }
               useBetterSidebar(child.betterSidebar);
             });
           };
           const cleanup = () => {
-            if (betterDispose) {
-              try { betterDispose(); } catch { /* ignore */ }
-              betterDispose = null;
+            for (const dispose of betterDispose.splice(0)) {
+              try { dispose(); } catch { /* ignore */ }
             }
             release();
           };
@@ -1462,6 +1539,19 @@ window.__ModuleLoader__.load({
                   icon: () => h(TeamIcon, { size: 22 }),
                 }],
               }));
+              disposers.push(tabs.register({
+                id: 'dsh-team-board',
+                kind: 'dsh-team-board',
+                priority: 'extension',
+                title: () => t('board_nav'),
+                guide: [{
+                  id: 'dsh-team-board',
+                  order: 41,
+                  title: () => t('board_nav'),
+                  description: () => t('board_guide_desc'),
+                  icon: () => h(BoardIcon, { size: 22 }),
+                }],
+              }));
             } catch (e) {
               console.warn('[dsh-team] sidebarRightTabs.register failed', e);
             }
@@ -1476,6 +1566,10 @@ window.__ModuleLoader__.load({
             name: 'sidebar.right.pane.tab',
             key: 'dsh-team',
           }, () => h(TeamView, { t, compact: true, getService }))));
+          disposers.push(ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
+            name: 'sidebar.right.pane.tab',
+            key: 'dsh-team-board',
+          }, () => h(BoardView, { t, getService }))));
 
           // 2) 老宿主（没有 ctx.inject，服务只能同步取）且既无右侧栏页签也无 better-sidebar：
           //    中央停靠面板兜底（与「插件」页同级）。有 ctx.inject 时不再走这里 —— 冷启动

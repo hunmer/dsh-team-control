@@ -34,6 +34,8 @@ export interface ToastItem { id: number; message: string; kind: 'ok' | 'warn' | 
 export type Errors = Partial<Record<'status' | 'dag' | 'messages' | 'timeline' | 'trace' | 'tasks' | 'todos' | 'artifacts' | 'changes' | 'contexts' | 'presets', string | null>>;
 
 interface PanelState {
+  /** 顶层页面：编排面板（team 维度）或独立任务看板（workspace 维度）。 */
+  page: 'panel' | 'board';
   teamId: string | null;
   team: Team | null;
   teams: Team[];
@@ -80,6 +82,7 @@ interface PanelState {
 }
 
 const initialState: PanelState = {
+  page: 'panel',
   teamId: null, team: null, teams: [], workspaces: [], workspaceId: null, noTeams: false,
   members: [], staleMembers: new Set(), degraded: false, snapshot: null,
   dag: null, tasks: [], todos: [], artifacts: [], changes: [], contexts: [], contextLead: null, trace: null, traceWindow: 30, traceHasOlder: false, traceLoadingOlder: false, messages: [], presets: [],
@@ -97,6 +100,8 @@ export interface PanelActions {
   selectTeam(teamId: string): Promise<void>;
   /** 切换工作区：只会选中该工作区下的团队（没有则进入空态）。 */
   selectWorkspace(workspaceId: string, opts?: { push?: boolean }): Promise<void>;
+  /** 独立看板页切换工作区（不改团队、不离开 board 路由）。 */
+  selectBoardWorkspace(workspaceId: string): void;
   refreshWorkspaces(): Promise<Workspace[]>;
   /** 当前工作区下的团队；workspaceId 为空（未同步到工作区）时返回全部。 */
   teamsInWorkspace(workspaceId?: string | null): Team[];
@@ -163,13 +168,18 @@ function loadUiState() {
 
 /* ---------- 面板内路由（hash）：#/w/<workspaceId>/t/<teamId>/<tab> ---------- */
 
-interface PanelRoute { ws: string | null; team: string | null; tab: TabName | null }
+interface PanelRoute { page: 'panel' | 'board'; ws: string | null; team: string | null; tab: TabName | null }
 
 const TAB_LOOKUP = new Set<string>([...TAB_NAMES, 'home']);
 
 function parseRoute(hash: string = location.hash): PanelRoute {
-  const route: PanelRoute = { ws: null, team: null, tab: null };
+  const route: PanelRoute = { page: 'panel', ws: null, team: null, tab: null };
   const segs = hash.replace(/^#\/?/, '').split('/').filter(Boolean);
+  if (segs[0] === 'board') {
+    route.page = 'board';
+    if (segs[1]) route.ws = decodeURIComponent(segs[1]);
+    return route;
+  }
   for (let i = 0; i < segs.length; i += 1) {
     const seg = segs[i];
     if (seg === 'w' && segs[i + 1]) { route.ws = decodeURIComponent(segs[i + 1]); i += 1; }
@@ -180,6 +190,7 @@ function parseRoute(hash: string = location.hash): PanelRoute {
 }
 
 function buildRoute(route: PanelRoute): string {
+  if (route.page === 'board') return route.ws ? '#/board/' + encodeURIComponent(route.ws) : '#/board';
   const parts: string[] = [];
   if (route.ws) parts.push('w', encodeURIComponent(route.ws));
   if (route.team) parts.push('t', encodeURIComponent(route.team));
@@ -337,6 +348,7 @@ export function PanelProvider({ children }: { children: ReactNode }) {
   const writeRoute = useCallback((patch: Partial<PanelRoute> = {}, push = false) => {
     const cur = stateRef.current;
     applyRoute({
+      page: patch.page !== undefined ? patch.page : cur.page,
       ws: patch.ws !== undefined ? patch.ws : cur.workspaceId,
       team: patch.team !== undefined ? patch.team : cur.teamId,
       tab: patch.tab !== undefined ? patch.tab : cur.tab,
@@ -755,6 +767,14 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     void refreshTeams().catch(() => undefined);
   }, [patchUi, refreshTeams, selectTeam, stopPlayback, teamsInWorkspace, writeRoute]);
 
+  /** 独立看板页：只改 workspaceId，保持 #/board/<ws>，不触发团队选择。 */
+  const selectBoardWorkspace = useCallback((workspaceId: string) => {
+    const wsId = workspaceId || null;
+    patchUi({ page: 'board', workspaceId: wsId });
+    stateRef.current = { ...stateRef.current, page: 'board', workspaceId: wsId };
+    writeRoute({ page: 'board', ws: wsId, team: null, tab: null }, false);
+  }, [patchUi, writeRoute]);
+
   const stopTeam = useCallback(async (teamId?: string) => {
     const id = teamId || stateRef.current.teamId;
     if (!id) { toast('请先选择团队', 'warn'); return; }
@@ -839,6 +859,16 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     setBootError(null);
     try {
       const route = parseRoute();
+      // 独立看板页：只解析工作区，不选团队、不连 SSE，也不把 URL 改写成编排路由。
+      if (route.page === 'board') {
+        const workspaces = await refreshWorkspaces().catch(() => [] as Workspace[]);
+        const wsId = route.ws && (route.ws === OTHER_WORKSPACE_ID || workspaces.some((w) => w.id === route.ws))
+          ? route.ws
+          : workspaces[0]?.id ?? null;
+        patchUi({ page: 'board', workspaceId: wsId, conn: 'live' });
+        stateRef.current = { ...stateRef.current, page: 'board', workspaceId: wsId, conn: 'live' };
+        return;
+      }
       const { ui, lastEventId } = loadUiState();
       pausedRef.current = ui.paused;
       lastEventIdRef.current = lastEventId;
@@ -969,6 +999,18 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     const onRouteChange = () => {
       const route = parseRoute();
       const cur = stateRef.current;
+      if (route.page === 'board') {
+        const nextWs = route.ws ?? cur.workspaceId;
+        if (cur.page !== 'board' || nextWs !== cur.workspaceId) {
+          patchUi({ page: 'board', workspaceId: nextWs });
+          stateRef.current = { ...stateRef.current, page: 'board', workspaceId: nextWs };
+        }
+        return;
+      }
+      if (cur.page === 'board') {
+        patchUi({ page: 'panel' });
+        stateRef.current = { ...stateRef.current, page: 'panel' };
+      }
       if (route.tab && route.tab !== cur.tab) setTab(route.tab, { route: false });
       if (route.ws && route.ws !== cur.workspaceId) { void selectWorkspace(route.ws, { push: false }); return; }
       if (route.team && route.team !== cur.teamId && stateRef.current.teams.some((t) => t.id === route.team)) {
@@ -977,7 +1019,7 @@ export function PanelProvider({ children }: { children: ReactNode }) {
     };
     window.addEventListener('hashchange', onRouteChange);
     return () => window.removeEventListener('hashchange', onRouteChange);
-  }, [setTab, selectWorkspace, selectTeam]);
+  }, [patchUi, setTab, selectWorkspace, selectTeam]);
 
   const exportReport = useCallback(async () => {
     const teamId = stateRef.current.teamId;
@@ -1034,11 +1076,11 @@ export function PanelProvider({ children }: { children: ReactNode }) {
 
   const actions = useMemo<PanelActions>(() => ({
     state, toasts, authOverlay, bootError, memberName, toast,
-    selectTeam, refreshTeams, selectWorkspace, refreshWorkspaces, teamsInWorkspace, stopTeam, archiveTeam, deleteTeam, refreshAll, refreshMessages, refreshPresets, deletePreset, refreshChanges, refreshContexts, refreshStatus, refreshTrace, setTraceWindow, loadOlderTrace,
+    selectTeam, refreshTeams, selectWorkspace, selectBoardWorkspace, refreshWorkspaces, teamsInWorkspace, stopTeam, archiveTeam, deleteTeam, refreshAll, refreshMessages, refreshPresets, deletePreset, refreshChanges, refreshContexts, refreshStatus, refreshTrace, setTraceWindow, loadOlderTrace,
     setTab, setPaused, setSpeed, setFilterMember, setFilterPhase, exportReport,
     focusReview, clearReviewFocus,
     retryBoot, submitToken,
-  }), [state, toasts, authOverlay, bootError, memberName, toast, selectTeam, refreshTeams, selectWorkspace, refreshWorkspaces, teamsInWorkspace, stopTeam, archiveTeam, deleteTeam, refreshAll, refreshMessages, refreshPresets, deletePreset, refreshChanges, refreshContexts, refreshStatus, refreshTrace, setTraceWindow, loadOlderTrace, setTab, setPaused, setSpeed, setFilterMember, setFilterPhase, exportReport, focusReview, clearReviewFocus, retryBoot, submitToken]);
+  }), [state, toasts, authOverlay, bootError, memberName, toast, selectTeam, refreshTeams, selectWorkspace, selectBoardWorkspace, refreshWorkspaces, teamsInWorkspace, stopTeam, archiveTeam, deleteTeam, refreshAll, refreshMessages, refreshPresets, deletePreset, refreshChanges, refreshContexts, refreshStatus, refreshTrace, setTraceWindow, loadOlderTrace, setTab, setPaused, setSpeed, setFilterMember, setFilterPhase, exportReport, focusReview, clearReviewFocus, retryBoot, submitToken]);
 
   return <PanelContext.Provider value={actions}>{children}</PanelContext.Provider>;
 }

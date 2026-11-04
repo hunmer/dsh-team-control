@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -222,7 +222,64 @@ CREATE TABLE IF NOT EXISTS llm_route (
   PRIMARY KEY (provider, model)
 );
 CREATE INDEX IF NOT EXISTS idx_llm_route_enabled ON llm_route(enabled);
+
+-- ---------- 工作区任务看板（v12） ----------
+-- 与 team 内 DAG 的 task 无关：这里一行 = 用户创建的一张看板任务卡。
+CREATE TABLE IF NOT EXISTS board_settings (
+  workspace_id TEXT PRIMARY KEY,
+  workspace_path TEXT NOT NULL DEFAULT '',
+  planning_concurrency INTEGER NOT NULL DEFAULT 1,
+  inprogress_concurrency INTEGER NOT NULL DEFAULT 1,
+  plan_provider TEXT, plan_model TEXT, plan_reasoning_effort TEXT,
+  lead_provider TEXT, lead_model TEXT, lead_reasoning_effort TEXT,
+  plan_permission_preset TEXT NOT NULL DEFAULT 'read-only',
+  lead_permission_preset TEXT NOT NULL DEFAULT 'danger-full-access',
+  plan_agent_preset TEXT, lead_agent_preset TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS board_task (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  workspace_path TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'todo',
+  auto INTEGER NOT NULL DEFAULT 0,
+  execution_mode TEXT NOT NULL DEFAULT 'same',
+  priority INTEGER NOT NULL DEFAULT 0,
+  position INTEGER NOT NULL DEFAULT 0,
+  plan_provider TEXT, plan_model TEXT, plan_reasoning_effort TEXT,
+  lead_provider TEXT, lead_model TEXT, lead_reasoning_effort TEXT,
+  team_models_json TEXT,
+  plan_md TEXT, plan_summary TEXT,
+  planning_session_id TEXT, lead_session_id TEXT,
+  claim_token TEXT, claimed_at TEXT,
+  stop_requested INTEGER NOT NULL DEFAULT 0,
+  resumed INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  archived_at TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, done_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_board_task_ws ON board_task(workspace_id, status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_board_task_plan_session ON board_task(planning_session_id);
+CREATE INDEX IF NOT EXISTS idx_board_task_lead_session ON board_task(lead_session_id);
+
+CREATE TABLE IF NOT EXISTS board_task_team (
+  task_id TEXT NOT NULL, team_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (task_id, team_id)
+);
+CREATE INDEX IF NOT EXISTS idx_board_task_team_team ON board_task_team(team_id);
+
+CREATE TABLE IF NOT EXISTS board_event (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id TEXT NOT NULL, workspace_id TEXT NOT NULL,
+  kind TEXT NOT NULL, detail_json TEXT, created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_board_event_task ON board_event(task_id, id);
 `;
+
 
 const stmtCache = new WeakMap();
 
@@ -262,6 +319,7 @@ export function openDb(file) {
   ensureColumn(db, 'artifact', 'added', 'INTEGER');
   ensureColumn(db, 'artifact', 'deleted', 'INTEGER');
   ensureColumn(db, 'preset', 'doc_json', 'TEXT');
+  ensureColumn(db, 'board_task', 'resumed', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'preset_delete', 'attempts', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'preset_delete', 'last_error', 'TEXT');
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_todo_task ON todo(task_id, order_no)'); } catch { /* ignore */ }

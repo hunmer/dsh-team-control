@@ -122,6 +122,7 @@ export function apiClient(baseUrl, token) {
     get: (p) => call('GET', p),
     post: (p, body) => call('POST', p, body ?? {}),
     patch: (p, body) => call('PATCH', p, body ?? {}),
+    put: (p, body) => call('PUT', p, body ?? {}),
     del: (p) => call('DELETE', p),
     raw: async (p) => {
       const res = await fetch(baseUrl + p, { headers: token ? { Authorization: `Bearer ${token}` } : {} });

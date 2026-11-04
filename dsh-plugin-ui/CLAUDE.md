@@ -2,7 +2,7 @@
 
 ## 项目简单介绍
 
-`dsh-plugin-ui/`（`dsh-team-control-ui` v0.1.7）把 sidecar 自带的面板挂进 DSH GUI。它分两半：Host half（`index.js`，`inject:['webServer']`）挂一个**同源代理** `/dsh-team-api/*` 转发到 sidecar 并代填 token；Client half（`client.js`，1532 行）在浏览器里注册入口——优先 better-sidebar 页签，退化到右侧栏 + 底栏按钮，再退化到 main panel，内容统一是 iframe 指向代理。
+`dsh-plugin-ui/`（`dsh-team-control-ui` v0.1.7）把 sidecar 自带的面板挂进 DSH GUI。它分两半：Host half（`index.js`，`inject:['webServer']`）挂一个**同源代理** `/dsh-team-api/*` 转发到 sidecar 并代填 token；Client half（`client.js`）在浏览器里注册两个独立入口——「编排」（team 维度）与「任务看板」（workspace 维度，路由 `#/board[/<ws>]`）；优先 better-sidebar 页签，退化到右侧栏 + 底栏按钮，再退化到 main panel，内容统一是 iframe 指向代理。
 
 这样**浏览器永远拿不到 sidecar token**（ADR-008）。
 

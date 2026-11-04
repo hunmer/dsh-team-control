@@ -2,7 +2,7 @@
 
 ## 项目简单介绍
 
-`src/` 是 dsh-team 的 sidecar 内核：一个零依赖 Node ESM 进程，持有 SQLite（WAL，schema v9）、事件流、审批镜像、DAG 调度、持久信箱、SSE Hub 和 HTTP 服务。它不认识 LLM，不保存任何 API Key，只做「谁在跑、卡在哪个审批、做到哪、留下什么证据」。
+`src/` 是 dsh-team 的 sidecar 内核：一个零依赖 Node ESM 进程，持有 SQLite（WAL，schema v12）、事件流、审批镜像、DAG 调度、持久信箱、SSE Hub 和 HTTP 服务。它不认识 LLM，不保存任何 API Key，只做「谁在跑、卡在哪个审批、做到哪、留下什么证据」。
 
 `core.mjs` 是唯一的组合根，把 `db / eventstore / scheduler / bus / sse / llm` 装配起来并暴露给 `server.mjs` 的路由层；成员是 Host 侧的 sub-agent，sidecar 不管理任何子进程。除 `web/`（面板静态产物）外，本目录没有子模块再分层。
 
@@ -29,7 +29,7 @@
 
 | 路径 | 职责 | 文档 |
 |---|---|---|
-| `src/*.mjs` | 9 个内核模块（见上表） | [模块职责](claude/module-responsibilities.md) |
+| `src/*.mjs` | 10 个内核模块（含 `board.mjs` 看板状态机） | [模块职责](claude/module-responsibilities.md) |
 | `src/scheduler.mjs` | 依赖推进与重试计时，不启动进程 | [模块职责](claude/module-responsibilities.md) |
 | `src/web/` | 面板构建产物，被 `server.mjs` 静态托管 | [../src/web-ui/CLAUDE.md](../src/web-ui/CLAUDE.md) |
 | `src/web-ui/` | 面板源码（独立子模块） | [../src/web-ui/CLAUDE.md](../src/web-ui/CLAUDE.md) |
