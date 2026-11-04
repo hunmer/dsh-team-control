@@ -3,12 +3,13 @@
  * DAG（多父依赖）映射为树：每个任务挂在它的第一个上游依赖下，
  * 其余上游在卡片 tiles 里以 "↑N" 标注；READY / BLOCKED / CP 同样以 tile 呈现。
  */
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { usePanel } from '@/store';
 import { truncate } from '@/lib/format';
 import type { DagData, DagNode } from '@/types';
 import { AgentTree, type AgentStatus, type TreeAgent } from '@/components/agent-tree/agent-tree';
 import { EmptyState, MetaLine, SectionHead } from '@/components/Bits';
+import { Button } from '@/components/ui/button';
 import { DotPattern } from '@/components/DotPattern';
 import { modelAvatar } from '@/components/ModelAvatar';
 
@@ -104,11 +105,14 @@ export function dagToTree(
   };
 }
 
+type DagLayout = 'horizontal' | 'vertical';
+
 export function DagView() {
   const { state, memberName } = usePanel();
   const { dag, teamId, errors, members } = state;
   const nodes = dag?.nodes ?? [];
   const edges = dag?.edges ?? [];
+  const [layout, setLayout] = useState<DagLayout>('horizontal');
 
   const modelByMember = useMemo(() => new Map(members.map((m) => [m.id, m.model ?? null])), [members]);
   const tree = useMemo(
@@ -133,11 +137,30 @@ export function DagView() {
         cr={1}
         className="fill-muted-foreground/30 [mask-image:radial-gradient(ellipse_at_center,black,transparent_85%)]"
       />
+      <div className="relative z-10 flex items-center justify-end gap-1" role="group" aria-label="视图方向">
+        <Button
+          size="xs"
+          variant={layout === 'horizontal' ? 'secondary' : 'ghost'}
+          aria-pressed={layout === 'horizontal'}
+          onClick={() => setLayout('horizontal')}
+        >
+          横向
+        </Button>
+        <Button
+          size="xs"
+          variant={layout === 'vertical' ? 'secondary' : 'ghost'}
+          aria-pressed={layout === 'vertical'}
+          onClick={() => setLayout('vertical')}
+        >
+          纵向
+        </Button>
+      </div>
       <div className="relative flex min-h-0 flex-1 flex-col">
         <AgentTree
           root={tree}
           title="依赖 DAG"
           formatCost={() => ''}
+          vertical={layout === 'vertical'}
         />
       </div>
     </section>

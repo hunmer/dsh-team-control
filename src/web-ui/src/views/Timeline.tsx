@@ -1,13 +1,12 @@
 /**
- * 时间线 —— 单列竖向时间轴（参考 Trace 瀑布的紧凑行样式）。
- * 一条竖线 + 左侧时间，事件按时间正序逐行展开；不再提供时间窗缩放 / 横向回看，
- * 所有事件都在同一页里纵向滚动，信息再多也不出屏。
+ * 时间线 —— 单列竖向时间轴（行样式参考 agent-checkpoints 的卡片行）。
+ * 一条竖线 + 行内白芯圆点，事件按时间正序逐行展开；hover 行浮起胶囊背景。
+ * 所有事件同页纵向滚动。
  */
 import { useEffect, useMemo, useRef } from 'react';
 import { PHASES, usePanel } from '@/store';
 import { fmtClockSec, fmtDateTime, safeToken } from '@/lib/format';
 import type { Member, TimelineEntry } from '@/types';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { modelAvatar } from '@/components/ModelAvatar';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -15,42 +14,42 @@ import { EmptyState, MetaLine, SectionHead } from '@/components/Bits';
 
 const FILTER_ALL = '__all__';
 
-/** phase → 事件节点颜色（竖线上的圆点） */
-const PHASE_DOT: Record<string, string> = {
-  init: 'bg-muted-foreground/50',
-  read: 'bg-sky-500',
-  write: 'bg-amber-500',
-  exec: 'bg-violet-500',
-  net: 'bg-cyan-500',
-  env: 'bg-teal-500',
-  msg: 'bg-blue-500',
-  wait: 'bg-muted-foreground/50',
-  verify: 'bg-indigo-500',
-  interrupt: 'bg-orange-500',
-  resume: 'bg-lime-500',
-  done: 'bg-emerald-500',
-  fail: 'bg-red-500',
-  decision: 'bg-fuchsia-500',
-  recover: 'bg-yellow-500',
+/** phase → 圆点描边色（竖线上的节点；最新一条固定 primary 实心，见 tl-dot-head） */
+const PHASE_RING: Record<string, string> = {
+  init: 'border-foreground/35',
+  read: 'border-sky-500/80',
+  write: 'border-amber-500/80',
+  exec: 'border-violet-500/80',
+  net: 'border-cyan-500/80',
+  env: 'border-teal-500/80',
+  msg: 'border-blue-500/80',
+  wait: 'border-foreground/35',
+  verify: 'border-indigo-500/80',
+  interrupt: 'border-orange-500/90',
+  resume: 'border-lime-500/80',
+  done: 'border-emerald-500/90',
+  fail: 'border-red-500/90',
+  decision: 'border-fuchsia-500/80',
+  recover: 'border-yellow-600/80',
 };
 
-/** phase → 徽章描边色 */
-const PHASE_TONE: Record<string, string> = {
-  init: 'border-border',
-  read: 'border-sky-500/40',
-  write: 'border-amber-500/40',
-  exec: 'border-violet-500/40',
-  net: 'border-cyan-500/40',
-  env: 'border-teal-500/40',
-  msg: 'border-blue-500/40',
-  wait: 'border-border',
-  verify: 'border-indigo-500/40',
-  interrupt: 'border-orange-500/50',
-  resume: 'border-lime-500/40',
-  done: 'border-emerald-500/50',
-  fail: 'border-red-500/60',
-  decision: 'border-fuchsia-500/40',
-  recover: 'border-yellow-500/40',
+/** phase → 徽章软底色 chip（弱化底色 + 同系文字色） */
+const PHASE_CHIP: Record<string, string> = {
+  init: 'bg-foreground/[0.06] text-foreground/60',
+  read: 'bg-sky-500/10 text-sky-600 dark:text-sky-400',
+  write: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
+  exec: 'bg-violet-500/10 text-violet-600 dark:text-violet-400',
+  net: 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400',
+  env: 'bg-teal-500/10 text-teal-600 dark:text-teal-400',
+  msg: 'bg-blue-500/10 text-blue-600 dark:text-blue-400',
+  wait: 'bg-foreground/[0.06] text-foreground/60',
+  verify: 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400',
+  interrupt: 'bg-orange-500/10 text-orange-600 dark:text-orange-400',
+  resume: 'bg-lime-500/10 text-lime-600 dark:text-lime-400',
+  done: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
+  fail: 'bg-red-500/10 text-red-600 dark:text-red-400',
+  decision: 'bg-fuchsia-500/10 text-fuchsia-600 dark:text-fuchsia-400',
+  recover: 'bg-yellow-500/10 text-yellow-700 dark:text-yellow-400',
 };
 
 const dayOf = (ts: string) => (ts || '').slice(0, 10);
@@ -103,7 +102,7 @@ export function TimelineView() {
       <SectionHead
         title="时间线"
         meta={<MetaLine>
-          {rows.length}/{timeline.length} 条事件
+          <span className="tabular-nums">{rows.length}/{timeline.length}</span> 条事件
           {paused ? ' · 已暂停（实时更新冻结）' : ' · 按时间正序'}
         </MetaLine>}
         controls={
@@ -142,9 +141,11 @@ export function TimelineView() {
               <div
                 ref={listRef}
                 onScroll={onScroll}
-                className="max-h-[calc(100vh-13rem)] overflow-auto rounded-xl border bg-card/30"
+                className="max-h-[calc(100vh-13rem)] overflow-auto overscroll-contain rounded-xl bg-card
+                  shadow-[0_0_0_0.5px_var(--color-border),0_1px_2px_-1px_rgb(0_0_0/0.07),0_1px_3px_0_rgb(0_0_0/0.05)]
+                  dark:shadow-[0_0_0_0.5px_var(--color-border),0_2px_6px_-1px_rgb(0_0_0/0.4)]"
               >
-                <ol className="relative ms-[5.5rem] me-3 border-s border-border/70 py-2">
+                <ol className="tl-list relative ms-4 me-1 border-s border-border/60 py-1.5">
                   {rows.map((entry, index) => {
                     const prev = index > 0 ? rows[index - 1] : null;
                     const newDay = !prev || dayOf(prev.ts) !== dayOf(entry.ts);
@@ -171,45 +172,52 @@ function TimelineRow({ entry, newDay, member, memberName }: {
   member?: Member;
   memberName: (id?: string | null) => string;
 }) {
-  const tone = PHASE_DOT[safeToken(entry.phase)] ?? 'bg-muted-foreground/50';
+  const name = memberName(entry.memberId);
+  const avatar = modelAvatar(member?.model, member?.name, undefined, 11);
+  const chip = PHASE_CHIP[safeToken(entry.phase)] ?? PHASE_CHIP.init;
+  const hasMeta = Boolean(entry.result || entry.next || entry.taskId);
   return (
     <>
       {newDay ? (
-        <li className="relative -ms-px list-none py-2 ps-3">
-          <span className="text-[11px] font-medium text-muted-foreground">{fmtDateTime(entry.ts).slice(0, 10)}</span>
+        <li className="tl-day sticky top-0 z-[2] -ms-px list-none bg-card/95 py-1.5 ps-3 backdrop-blur-sm">
+          <span className="text-[11px] font-medium tracking-wide text-muted-foreground/90">{fmtDateTime(entry.ts).slice(0, 10)}</span>
         </li>
       ) : null}
-      <li className="relative list-none py-1 ps-4 pe-2">
+      <li className="tl-row group relative list-none py-1 ps-4 pe-3">
         <span
           aria-hidden="true"
-          className={`absolute size-2 rounded-full ring-2 ring-background ${tone}`}
-          style={{ insetInlineStart: -5, top: 9 }}
+          className={`tl-dot absolute z-[1] size-[9px] rounded-full border-[1.5px] border bg-card ${PHASE_RING[safeToken(entry.phase)] ?? 'border-foreground/35'}`}
+          style={{ insetInlineStart: -5.25, top: 9 }}
         />
-        <time
-          className="absolute top-[3px] text-right font-mono text-[11px] tabular-nums text-muted-foreground"
-          style={{ insetInlineStart: '-5rem', width: '4.25rem' }}
-          title={fmtDateTime(entry.ts)}
-        >
-          {fmtClockSec(entry.ts)}
-        </time>
-        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-          <span className="flex min-w-0 shrink-0 items-center gap-1 text-foreground/75" title={member?.model ? `${memberName(entry.memberId)} · ${member.model}` : memberName(entry.memberId)}>
-            {member ? modelAvatar(member.model, member.name, undefined, 13) : null}
-            <span className="max-w-[9rem] truncate">{memberName(entry.memberId)}</span>
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
+          <span
+            className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[5px] bg-card shadow-[0_0_0_0.5px_var(--color-border),0_1px_1px_-1px_rgb(0_0_0/0.09)]"
+            title={member?.model ? `${name} · ${member.model}` : name}
+          >
+            {avatar ?? <span className="text-[9px] leading-none font-medium text-muted-foreground">{name.slice(0, 1)}</span>}
           </span>
-          <Badge variant="outline" className={`shrink-0 text-[10px] ${PHASE_TONE[safeToken(entry.phase)] ?? 'border-border'}`}>
+          <span className="max-w-[9rem] shrink-0 truncate text-foreground/70" title={name}>{name}</span>
+          <span className={`h-[18px] shrink-0 rounded-[5px] px-1.5 text-[11px] leading-[18px] font-medium ${chip}`}>
             {entry.phase || '—'}
-          </Badge>
-          <span className="min-w-0 truncate font-medium" title={entry.action || ''}>{entry.action || '—'}</span>
+          </span>
+          <span className="min-w-0 truncate font-medium text-foreground/90" title={entry.action || ''}>{entry.action || '—'}</span>
           {entry.target ? (
-            <span className="min-w-0 truncate text-muted-foreground" title={entry.target}>· {entry.target}</span>
+            <span className="min-w-0 max-w-[38%] truncate text-muted-foreground/85" title={entry.target}>· {entry.target}</span>
           ) : null}
+          <time
+            className="ms-auto shrink-0 pl-3 font-mono text-[11px] tabular-nums text-muted-foreground/70"
+            title={fmtDateTime(entry.ts)}
+          >
+            {fmtClockSec(entry.ts)}
+          </time>
         </div>
-        <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
-          {entry.result ? <span className="min-w-0 truncate" title={entry.result}>result {entry.result}</span> : null}
-          {entry.next ? <span className="min-w-0 truncate" title={entry.next}>next {entry.next}</span> : null}
-          {entry.taskId ? <span className="min-w-0 truncate font-mono opacity-70" title={entry.taskId}>{entry.taskId}</span> : null}
-        </div>
+        {hasMeta ? (
+          <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 ps-[26px] text-[11px] text-muted-foreground/75">
+            {entry.result ? <span className="min-w-0 truncate" title={entry.result}>result {entry.result}</span> : null}
+            {entry.next ? <span className="min-w-0 truncate" title={entry.next}>next {entry.next}</span> : null}
+            {entry.taskId ? <span className="min-w-0 truncate font-mono opacity-60" title={entry.taskId}>{entry.taskId}</span> : null}
+          </div>
+        ) : null}
       </li>
     </>
   );

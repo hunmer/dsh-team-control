@@ -63,17 +63,47 @@
   fill: var(--color-primary);
 }
 
-/* 时间线新事件闪一下 */
-@keyframes tl-new {
+/* 时间线（行样式参考 agent-checkpoints）：hover 胶囊背景 + 行/圆点入场动画 + 当前节点扫光 */
+.tl-list {
+  isolation: isolate;
+}
+.tl-row {
+  animation: tl-rise 180ms cubic-bezier(0.32, 0.72, 0.24, 1) both;
+}
+.tl-row::before {
+  content: "";
+  position: absolute;
+  inset: 1px 4px;
+  z-index: -1;
+  border-radius: 7px;
+  background: color-mix(in oklab, var(--color-foreground) 4%, transparent);
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+.tl-row:hover::before,
+.tl-row:focus-visible::before {
+  opacity: 1;
+}
+.tl-dot {
+  animation: tl-pop 180ms cubic-bezier(0.32, 0.72, 0.24, 1) both;
+}
+@keyframes tl-rise {
   from {
-    background-color: color-mix(in oklab, var(--color-primary) 18%, transparent);
-  }
-  to {
-    background-color: transparent;
+    opacity: 0;
+    transform: translateY(4px);
   }
 }
-.tl-row.is-new {
-  animation: tl-new 1.6s ease-out;
+@keyframes tl-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tl-row,
+  .tl-dot {
+    animation: none;
+  }
 }
 
 /* agent-tree（DAG 视图）：卡片用固定宽度并整体居中，
