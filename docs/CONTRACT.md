@@ -56,12 +56,13 @@ CLI 通过 `<home>/run/sidecar.json` 发现端口，读 `<home>/token` 鉴权；
 
 - `member.status`：`queued | provisioning | idle | running | blocked | done | failed | interrupted | retired`
 - `task.status`：`pending | ready | running | done | failed | skipped | blocked`
+- `board.task.status`：`todo | planning | planned | inprogress | done | failed`（看板任务，独立于 team 内 DAG 的 `task.status`）
 - `approval.status`：`pending | allowed | rejected | cancelled | expired`
 - `dep.condition`：`all_success | any_success | on_failure | artifact_exists`
 - `phase`（event）：`init | read | write | exec | net | env | msg | wait | verify | interrupt | resume | done | fail | decision | recover`
 - `domain`：`fs | exec | net | env`
 - `ops`：fs `read|write|delete|rename|list`；exec `spawn`；net `connect`；env `read|write`
-- SSE `event`：`member.status | step.append | task.state | task.dispatch | message.delivered | approval.request | approval.decide | span.append | artifact.added | change.added | context.update`
+- SSE `event`：`member.status | step.append | task.state | task.dispatch | message.delivered | approval.request | approval.decide | span.append | artifact.added | change.added | context.update | board.task`
 - 错误码：`E_DENIED | E_UNAUTHORIZED | E_NOT_FOUND | E_CONFLICT | E_VERSION | E_TIMEOUT | E_BAD_REQUEST | E_QUOTA | E_INTERRUPTED | E_CYCLE | E_INVALID_STATE`
 
 ---
@@ -299,6 +300,35 @@ root(run:team)                         ← 团队整体
 `change = {id, teamId, taskId, memberId, path, kind, diff, added, deleted, createdAt}`；`kind` 取 `add` / `edit`（其它值一律落为 `edit`）。单条 `diff` 超 2000 行或 400 KB 会被截断并追加省略说明；一次 `POST`最多收 50 条。
 
 数据来源是 Host 插件：成员会话（只要已绑定成员）调用 `write`/`edit`/`apply_patch` 等文件工具时，插件在 `tools/execute` 前后各读一次磁盘算 unified diff，`POST` 到这里。只采集子成员，Lead 自己的改动不进审阅；工具失败或无内容变化不上报。上报失败不影响工具调用。
+
+### 3.13 工作区看板（board）
+
+看板任务以 `workspace_id` 隔离，独立于团队内 DAG 的 `task`。状态机：`todo → planning → planned → inprogress → done | failed`；`planned` 不占 planning 槽位，只等 inprogress 槽位。`auto=1` 的任务才会被 Host 插件 claim；`execution_mode=same` 时首轮执行复用规划会话，`new` 时另建 Lead 会话。任务进入 `done/failed` 后用户再次发消息，状态回到 `inprogress`，并复用已有 `lead_session_id`（不再新建会话）；此时 `resumed=1`，泵只 attach、不重复注入执行 prompt。
+
+| 方法 路径 | 请求 | 响应 |
+|---|---|---|
+| `GET /api/board?workspaceId=&archived=0|1` | — | `{workspace, settings, counts, slots, tasks}` |
+| `GET /api/board/live` | — | `{tasks}`，含 planning/planned/inprogress，以及仍有 `lead_session_id` 的 done/failed（供插件重启后继续监听追问） |
+| `GET /api/board/by-session/:sessionId` | — | board task 或 `{ok:false,reason}` |
+| `GET /api/board/by-team/:teamId` | — | board task 或 `{ok:false,reason}` |
+| `GET/PUT /api/board/settings` | `{workspaceId, planningConcurrency?, inprogressConcurrency?, planProvider?, planModel?, planReasoningEffort?, leadProvider?, leadModel?, leadReasoningEffort?, planPermissionPreset?, leadPermissionPreset?, planAgentPreset?, leadAgentPreset?}` | settings |
+| `POST /api/board/tasks` | `{workspaceId, title, description?, auto?, executionMode?, priority?, planRoute?, leadRoute?, teamModels?}` | board task |
+| `PATCH /api/board/tasks/:id` | 同上字段 | board task |
+| `POST /api/board/tasks/:id/start|stop|retry|archive|restore` | `{executionMode?}` / `{reason?}` | board task |
+| `POST /api/board/tasks/:id/teams` | `{teamId}` | board task（幂等绑定） |
+| `POST /api/board/claim` | `{kind:'planning'|'inprogress'}` | `{item:{task,workspace,settings,fence}}` 或 `{item:null}`；内部接口 |
+| `POST /api/board/tasks/:id/attach` | `{kind,sessionId,fence}` | board task；写 `planning_session_id` 或 `lead_session_id` |
+| `POST /api/board/tasks/:id/release` | `{kind,error}` | board task → failed |
+| `POST /api/board/agents/plan` | `{sessionId,plan,summary?}` | board task → planned（same 模式同时写 lead_session_id） |
+| `POST /api/board/agents/status` | `{sessionId,status:'done'|'failed'|'inprogress',summary?}` | board task |
+
+`fence` 是 claim 令牌（DB 列 `claim_token`），只出现在 claim 响应里；因全局脱敏规则，任何含 `token` 的字段都会被替换成 `<redacted>`，所以对外叫 `fence`。
+
+Host 插件默认 `boardEnabled=true`（显式 `false` 可关闭），每 `boardDispatchMs` 跑一次泵：`claim planning` → `ctx.agents.create`（cwd=workspace path）→ `attach` → `followup` 投规划 prompt；规划会话调 `board_plan_submit` 后进入 `planned`，泵再 `claim inprogress`。规划会话权限默认 `read-only`，执行默认 `danger-full-access`；规划阶段的审批请求由插件直接拒绝，避免无人值守卡住。规划超时（`boardPlanningTimeoutMs`，默认 30 分钟）自动置 failed。
+
+GUI 入口：`dsh-plugin-ui` 把「编排」与「任务看板」注册成两个独立页签（原生右侧栏对应 `dsh-team` / `dsh-team-board`）。看板页路由为 `#/board[/<workspaceId>]`，不渲染编排侧栏、不依赖当前 team；切换工作区只改 `workspaceId` 与 URL。编排页不再包含任务看板页签。看板任务详情里的「关联团队」按钮通过 `postMessage`（`dsh-team:open-team`）让 Host 切到「编排」页签并锁定该 team；独立浏览器页面无 Host 时提示改用侧栏。
+
+新增工具：`board_plan_submit({plan,summary?})`、`board_task_status({status,summary?})`。`team_create` 在 Lead 会话里创建团队后会自动把 team 绑到该会话对应的 board task；`team_spawn` 在该 task 配了 `teamModels` 时把成员 route 限制在白名单内（未指定 model 取第一条）。
 
 ---
 

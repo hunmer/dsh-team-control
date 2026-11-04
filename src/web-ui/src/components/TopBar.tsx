@@ -20,7 +20,7 @@ const CONN_CLASS = {
 
 export function TopBar() {
   const { state } = usePanel();
-  const { conn } = state;
+  const { conn, teamId } = state;
   const [theme, toggleTheme, followingHost] = useTheme();
 
   return (
@@ -28,7 +28,7 @@ export function TopBar() {
       {/* 团队切换从侧栏移到这里：只展示当前工作区下的团队 */}
       <TeamSelect className="w-52 max-w-[40%] shrink-0" />
       <div className="flex min-w-0 items-center justify-end gap-2">
-      {conn !== 'live' ? (
+      {teamId && conn !== 'live' ? (
         <div
           className={`flex flex-none items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs ${CONN_CLASS[conn]}`}
           role="status"

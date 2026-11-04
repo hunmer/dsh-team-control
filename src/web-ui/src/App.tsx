@@ -14,6 +14,7 @@ import { ToastProvider } from '@/components/ui/toast';
 import { buildNav, TAB_LABELS, tabFromLabel, type ShellChrome } from '@/shell';
 import { HomeView } from '@/views/Home';
 import { BoardView } from '@/views/Board';
+import { BoardPage } from '@/views/BoardPage';
 import { ReviewView } from '@/views/Review';
 import { ContextView } from '@/views/Context';
 import { DagView } from '@/views/Dag';
@@ -94,6 +95,16 @@ export default function App() {
     sidebarTop: <WorkspaceSelect />,
     footer: <SidebarSettings />,
   };
+
+  if (state.page === 'board') {
+    return (
+      <ToastProvider>
+        <div className="fixed inset-x-0 top-0 z-50"><BootErrorOverlay /></div>
+        <BoardPage />
+        <Toaster />
+      </ToastProvider>
+    );
+  }
 
   return (
     <ToastProvider>

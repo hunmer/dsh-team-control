@@ -7,6 +7,7 @@ import { Scheduler, rowToTask } from './scheduler.mjs';
 import { MessageBus, rowToMessage } from './bus.mjs';
 import { SseHub } from './sse.mjs';
 import { LlmCatalog } from './llm.mjs';
+import { Board } from './board.mjs';
 import {
   ERR, now, nowIso, newId, json, parseJson, clamp, redactor, REDACTED,
   isSensitiveName, percentile, sha256, truncate,
@@ -47,6 +48,7 @@ export class DshTeam {
       onWake: (memberId) => { try { this.wakeMember(memberId); } catch { /* ignore */ } },
     });
     this.scheduler = new Scheduler({ db: this.db, events: this.events, sse: this.sse, log });
+    this.board = new Board({ db: this.db, get: this.get, sse: this.sse, log });
     this.registerSecretsFromEnv();
     this.recovered = this.recoverAll();
   }

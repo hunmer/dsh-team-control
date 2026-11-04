@@ -85,6 +85,12 @@ function resolveConfig(config) {
     // spawnTeammate 的 provider：默认与 dsh-experimental-tool-agent-team 一致
     freshProvider: String(c.freshProvider || 'spawn'),
     forkProvider: String(c.forkProvider || 'fork'),
+    // 工作区看板：Host 侧调度器（claim → 建会话 → 投 prompt）。
+    // 默认开启；只有 auto=1 或用户点「开始执行」的任务才会入队，显式 false 可关闭。
+    boardEnabled: c.boardEnabled !== false,
+    boardDispatchMs: Number(c.boardDispatchMs) || 2000,
+    boardIdleGraceMs: c.boardIdleGraceMs == null ? 6000 : Math.max(0, Number(c.boardIdleGraceMs) || 0),
+    boardPlanningTimeoutMs: Number(c.boardPlanningTimeoutMs) || 30 * 60 * 1000,
   };
 }
 
@@ -1375,6 +1381,306 @@ const textOutput = () => ({
   render: (_args, value) => [{ type: 'text', text: String(value?.markdown ?? value) }],
 });
 
+
+// ---------------------------------------------------------------------------
+// 工作区看板：Host 侧调度
+//
+// sidecar 只负责状态/并发/claim；这里按 claim 结果创建根会话并投 prompt。
+// 规划默认只读，执行用 danger-full-access（无人值守会话不能停在审批 UI）。
+// ---------------------------------------------------------------------------
+const boardSessions = new Map(); // sessionId -> { taskId, phase, handle, sawRunning }
+const boardSessionIds = new Set();
+
+function boardUserMessage(text) {
+  return {
+    id: randomUUID(),
+    role: 'user',
+    content: [{ type: 'text', text: String(text) }],
+    source: { kind: 'user' },
+  };
+}
+
+function boardRoute(task, settings, kind) {
+  const one = (provider, model, reasoningEffort) => (model
+    ? { ...(provider ? { provider } : {}), model, ...(reasoningEffort ? { reasoningEffort } : {}) }
+    : null);
+  const list = kind === 'planning'
+    ? [
+      [task.planRoute?.provider, task.planRoute?.model, task.planRoute?.reasoningEffort],
+      [settings.planProvider, settings.planModel, settings.planReasoningEffort],
+      [task.leadRoute?.provider, task.leadRoute?.model, task.leadRoute?.reasoningEffort],
+      [settings.leadProvider, settings.leadModel, settings.leadReasoningEffort],
+    ]
+    : [
+      [task.leadRoute?.provider, task.leadRoute?.model, task.leadRoute?.reasoningEffort],
+      [settings.leadProvider, settings.leadModel, settings.leadReasoningEffort],
+    ];
+  for (const [provider, model, effort] of list) {
+    const route = one(provider, model, effort);
+    if (route) return route;
+  }
+  return undefined;
+}
+
+function boardRouteOrDefault(ctx, task, settings, kind) {
+  const route = boardRoute(task, settings, kind);
+  if (route) return route;
+  try {
+    const cur = ctx.get('agentDefaultModel')?.currentSelection?.();
+    if (cur?.model) return { ...(cur.provider ? { provider: cur.provider } : {}), model: cur.model };
+  } catch { /* ignore */ }
+  return undefined;
+}
+
+function boardSetPermission(ctx, agent, preset) {
+  if (!preset) return { applied: false };
+  const svc = permissionPresetsOf(ctx);
+  if (!svc || typeof svc.set !== 'function') return { applied: false, reason: 'permissionPresets 不可用' };
+  try {
+    svc.set(agent.session, preset);
+    return { applied: true, preset };
+  } catch (err) {
+    return { applied: false, preset, error: String(err?.message || err) };
+  }
+}
+
+function boardPlanningPrompt(task, settings) {
+  const models = Array.isArray(task.teamModels) && task.teamModels.length
+    ? task.teamModels.map((m) => (typeof m === 'string' ? m : `${m.provider ? m.provider + '/' : ''}${m.model}`)).join('\n')
+    : '不限制';
+  return [
+    `你是「${task.title}」的规划 Agent。只做规划，不写代码、不修改文件、不创建团队。`,
+    '规划完成后不要开始执行；调度器会在执行槽位空出后，在同一会话里让你继续。',
+    '',
+    `工作区：${task.workspacePath}`,
+    '任务描述：',
+    task.description || '(无)',
+    '',
+    '可用模型（成员分配只能从这里选）：',
+    models,
+    '',
+    '请先阅读必要文件，然后输出一份可执行计划，必须包含：',
+    '1. 目标与验收标准',
+    '2. 实施步骤（到文件/模块级）',
+    '3. 团队与成员建议（每个成员的角色、模型、依赖关系）',
+    '4. 风险与回滚',
+    '',
+    '最后必须调用 board_plan_submit({ plan: "<完整 markdown>", summary: "<一句话>" })。',
+    '不要只把计划写在回复里。提交后停下，等待执行指令。',
+  ].join('\n');
+}
+
+function boardLeadPrompt(task, sameSession) {
+  const models = Array.isArray(task.teamModels) && task.teamModels.length
+    ? task.teamModels.map((m) => (typeof m === 'string' ? m : `${m.provider ? m.provider + '/' : ''}${m.model}`)).join('\n')
+    : '不限制';
+  return [
+    `你是任务「${task.title}」的 Lead。工作区：${task.workspacePath}`,
+    sameSession ? '你刚刚在同一会话完成了规划，现在开始执行。' : '以下是规划会话产出的计划，现在开始执行。',
+    '',
+    '任务描述：',
+    task.description || '(无)',
+    '',
+    '已确认的计划：',
+    task.planMd || '(无)',
+    '',
+    '规则：',
+    '1. 先调用 team_create 创建团队；name 用任务标题，workspace 用上面的路径。需要多个团队就多次创建，所有团队都会自动绑定到本任务。',
+    '2. 调用 team_models 查看可用路由；只能使用以下模型：',
+    models,
+    '3. 用 team_task 拆解并派发；用 team_status / team_report 跟踪。不要自己写代码，不要重复成员的工作。',
+    '4. 全部任务成功后，必须调用 board_task_status({ status: "done", summary: "<完成摘要>" })。',
+    '5. 无法完成时调用 board_task_status({ status: "failed", summary: "<原因>" })。',
+    '6. 之后如果用户再次发消息，先调用 board_task_status({ status: "inprogress" })，再继续处理。',
+  ].join('\n');
+}
+
+async function boardTaskOf(s, sessionId) {
+  if (!sessionId) return null;
+  try {
+    const r = await request(s, `/api/board/by-session/${encodeURIComponent(sessionId)}`);
+    return r && r.id ? r : null;
+  } catch { return null; }
+}
+
+async function bindBoardTeam(s, exec, teamId) {
+  const sessionId = exec?.agent?.id != null ? String(exec.agent.id) : null;
+  if (!sessionId || !teamId) return;
+  try {
+    const task = await boardTaskOf(s, sessionId);
+    if (task) await request(s, `/api/board/tasks/${encodeURIComponent(task.id)}/teams`, { method: 'POST', body: { teamId } });
+  } catch { /* 绑定失败不影响团队创建 */ }
+}
+
+async function spawnBoardSession(s, ctx, item) {
+  const { task, workspace, settings, fence } = item;
+  const agents = (() => { try { return ctx.get('agents'); } catch { return undefined; } })();
+  if (!agents || typeof agents.create !== 'function') throw new Error('agents 服务不可用：无法创建看板会话');
+
+  const kind = task.status === 'planning' ? 'planning' : 'inprogress';
+  // 任何已有 Lead 会话的 inprogress 都复用该会话：same 模式的首轮、
+  // 以及 new 模式完成后用户追问，都不能再新建会话。
+  const sameSession = kind === 'inprogress' && !!task.leadSessionId;
+
+  // 同会话执行：复用规划会话，只切权限 + 投执行 prompt。
+  if (sameSession) {
+    const sessionId = String(task.leadSessionId);
+    let agent = boardSessions.get(sessionId)?.handle?.agent;
+    if (!agent && typeof agents.get === 'function') {
+      try { agent = agents.get(sessionId); } catch { agent = undefined; }
+    }
+    if (!agent) {
+      await request(s, `/api/board/tasks/${encodeURIComponent(task.id)}/release`, {
+        method: 'POST', body: { kind: 'inprogress', error: 'session_not_live' },
+      }).catch(() => {});
+      return;
+    }
+    await request(s, `/api/board/tasks/${encodeURIComponent(task.id)}/attach`, {
+      method: 'POST', body: { kind: 'inprogress', sessionId, fence },
+    });
+    boardSetPermission(ctx, agent, settings.leadPermissionPreset);
+    const rec = boardSessions.get(sessionId) || { taskId: task.id, handle: { agent }, sawRunning: false };
+    rec.phase = 'execution';
+    rec.sawRunning = false;
+    boardSessions.set(sessionId, rec);
+    boardSessionIds.add(sessionId);
+    // 用户追问触发 done→inprogress 时，真实用户消息已经在会话里；
+    // 这里只恢复状态与权限，不再注入重复的执行 prompt。
+    if (!task.resumed) agent.followup(boardUserMessage(boardLeadPrompt(task, true)));
+    return;
+  }
+
+  // 新建会话：规划或「在新的会话执行」。
+  const route = boardRouteOrDefault(ctx, task, settings, kind);
+  const requestedPreset = kind === 'planning' ? settings.planAgentPreset : settings.leadAgentPreset;
+  let presetId = null;
+  try { presetId = await resolveAgentPreset(ctx, requestedPreset, null, s); } catch { presetId = null; }
+  const presetSvc = agentPresetsOf(ctx);
+  let resolved = null;
+  if (presetId && presetSvc && typeof presetSvc.resolve === 'function') {
+    try { resolved = await presetSvc.resolve(presetId); } catch { resolved = null; }
+  }
+  const cwd = task.workspacePath || workspace.path;
+  if (!cwd) throw new Error('工作区路径为空');
+  fs.mkdirSync(cwd, { recursive: true });
+  const sessionId = `session-${randomUUID()}`;
+  let handle = null;
+  let step = 'create';
+  try {
+    handle = await agents.create({
+      sessionId,
+      ...(route ? { agentOptions: route } : {}),
+      meta: { cwd, ...(resolved ? { agentPreset: resolved.id } : {}) },
+      setup: async (agentCtx) => {
+        if (!resolved || !presetSvc || typeof presetSvc.mount !== 'function') return;
+        await presetSvc.mount(agentCtx, resolved.id);
+      },
+    });
+    boardSetPermission(ctx, handle.agent, kind === 'planning' ? settings.planPermissionPreset : settings.leadPermissionPreset);
+    step = 'attach';
+    await request(s, `/api/board/tasks/${encodeURIComponent(task.id)}/attach`, {
+      method: 'POST', body: { kind, sessionId, fence },
+    });
+    boardSessions.set(sessionId, { taskId: task.id, phase: kind, handle, sawRunning: false });
+    boardSessionIds.add(sessionId);
+    handle.agent.followup(boardUserMessage(kind === 'planning'
+      ? boardPlanningPrompt(task, settings)
+      : boardLeadPrompt(task, false)));
+  } catch (err) {
+    console.warn(`[dsh-team] board ${step} failed: ${String(err?.message || err)} cause=${String(err?.cause?.code || err?.cause || '')}`);
+    try { await handle?.dispose?.(); } catch { /* ignore */ }
+    await request(s, `/api/board/tasks/${encodeURIComponent(task.id)}/release`, {
+      method: 'POST', body: { kind, error: String(err?.message || err) },
+    }).catch(() => {});
+    throw err;
+  }
+}
+
+async function boardPump(s, ctx) {
+  if (!s.boardEnabled) return;
+  const agents = (() => { try { return ctx.get('agents'); } catch { return undefined; } })();
+  if (!agents || typeof agents.create !== 'function') return;
+  // 规划超时：插件崩溃/会话卡死时，避免任务永久占着 planning 槽位。
+  try {
+    const live = await request(s, '/api/board/live');
+    for (const task of live?.tasks || []) {
+      // 插件重启后 boardSessions 是空的：能找回 live agent 就接管，找不回就把
+      // 永远不可能再推进的任务置 failed，避免占着槽位。
+      if (task.status === 'done' || task.status === 'failed') {
+        // 规划被 stop/failed 后，规划会话已无用途，直接释放。
+        const planSid = task.planningSessionId;
+        const planRec = planSid ? boardSessions.get(String(planSid)) : null;
+        if (planRec && planRec.phase === 'planning') {
+          try { void planRec.handle?.dispose?.(); } catch { /* ignore */ }
+          boardSessions.delete(String(planSid));
+          boardSessionIds.delete(String(planSid));
+        }
+        // 终态任务的 Lead 会话仍可能收到用户追问；重启后把它重新纳入监听。
+        const sid = task.leadSessionId;
+        if (sid && !boardSessionIds.has(String(sid))) {
+          let agent = null;
+          try { agent = agents.get(String(sid)); } catch { agent = null; }
+          if (agent) {
+            boardSessions.set(String(sid), {
+              taskId: task.id, phase: 'execution', handle: { agent }, sawRunning: false,
+            });
+            boardSessionIds.add(String(sid));
+          }
+        }
+        continue;
+      }
+      if (task.status === 'planning' || task.status === 'inprogress') {
+        const sid = task.status === 'planning' ? task.planningSessionId : task.leadSessionId;
+        if (sid && !boardSessions.has(String(sid))) {
+          let agent = null;
+          try { agent = agents.get(String(sid)); } catch { agent = null; }
+          if (agent) {
+            boardSessions.set(String(sid), {
+              taskId: task.id, phase: task.status === 'planning' ? 'planning' : 'execution',
+              handle: { agent }, sawRunning: true,
+            });
+            boardSessionIds.add(String(sid));
+          } else {
+            await request(s, '/api/board/agents/status', {
+              method: 'POST',
+              body: { sessionId: sid, status: 'failed', summary: '会话已失效（插件重启或会话被关闭）' },
+            }).catch(() => {});
+          }
+        }
+      }
+      if (task.status !== 'planning') continue;
+      const at = Date.parse(task.updatedAt || task.claimedAt || '');
+      if (!Number.isFinite(at) || Date.now() - at < s.boardPlanningTimeoutMs) continue;
+      if (!task.planningSessionId) {
+        await request(s, `/api/board/tasks/${encodeURIComponent(task.id)}/stop`, {
+          method: 'POST', body: { reason: '规划超时（未 attach 会话）' },
+        }).catch(() => {});
+        continue;
+      }
+      await request(s, '/api/board/agents/status', {
+        method: 'POST', body: { sessionId: task.planningSessionId, status: 'failed', summary: '规划超时' },
+      }).catch(() => {});
+      const rec = boardSessions.get(String(task.planningSessionId));
+      if (rec) {
+        try { void rec.handle?.dispose?.(); } catch { /* ignore */ }
+        boardSessions.delete(String(task.planningSessionId));
+        boardSessionIds.delete(String(task.planningSessionId));
+      }
+    }
+  } catch { /* 查询失败不阻塞 claim */ }
+  for (const kind of ['planning', 'inprogress']) {
+    for (let i = 0; i < 4; i++) {
+      let claimed;
+      try {
+        claimed = await request(s, '/api/board/claim', { method: 'POST', body: { kind } });
+      } catch { return; }
+      if (!claimed?.item) break;
+      try { await spawnBoardSession(s, ctx, claimed.item); }
+      catch (err) { console.warn(`[dsh-team] board spawn failed: ${String(err?.message || err)}`); }
+    }
+  }
+}
+
 /** 构造全部工具（普通 ToolDefinition，不依赖 defineTool；参数即 JSON Schema）。 */
 function buildTools(s, ctx) {
   const tools = [];
@@ -1417,6 +1723,7 @@ function buildTools(s, ctx) {
       });
       teamCache.set(team.id, team);
       if (exec?.agent) leadByTeam.set(team.id, exec.agent);
+      await bindBoardTeam(s, exec, team.id);
       return { team, panel: panelUrl(s) };
     },
   });
@@ -1467,14 +1774,35 @@ function buildTools(s, ctx) {
       // 实际 route：显式参数覆盖 Lead；effort 只在 route 未变时继承（与 DSH 子会话合并规则一致）
       const leadRoute = leadRouteOf(caller);
       const route = { provider: args.agentProvider || leadRoute.provider, model: args.model || leadRoute.model };
+      // 看板任务如果指定了团队模型白名单，成员 route 必须落在名单内；不指定时取第一条。
+      let pickedByBoard = false;
+      const callerId = caller?.id != null ? String(caller.id) : null;
+      const boardTask = callerId && boardSessionIds.has(callerId) ? await boardTaskOf(s, callerId) : null;
+      const allowedModels = Array.isArray(boardTask?.teamModels)
+        ? boardTask.teamModels.map((m) => (typeof m === 'string'
+          ? { provider: null, model: m, reasoningEffort: null }
+          : { provider: m?.provider || null, model: m?.model || null, reasoningEffort: m?.reasoningEffort || null })).filter((m) => m.model)
+        : [];
+      if (allowedModels.length) {
+        if (!args.model) {
+          const first = allowedModels[0];
+          route.provider = first.provider || route.provider;
+          route.model = first.model;
+          pickedByBoard = true;
+        }
+        const hit = allowedModels.find((m) => m.model === route.model && (!m.provider || m.provider === route.provider));
+        if (!hit) throw new Error(`模型 ${route.provider || '?'}/${route.model || '?'} 不在看板任务的白名单内：${allowedModels.map((m) => m.model).join(', ')}`);
+      }
       const routeChanged = route.provider !== leadRoute.provider || route.model !== leadRoute.model;
       route.reasoningEffort = args.reasoningEffort || (routeChanged ? null : leadRoute.reasoningEffort);
       // 继承 Lead 的 route 也要过启用闸门：停用项不该被成员继续使用；effort 同理。
       await assertRouteEnabled(s, ctx, route.provider, route.model, route.reasoningEffort);
       const agentOptions = {};
-      if (args.agentProvider) agentOptions.provider = String(args.agentProvider);
-      if (args.model) agentOptions.model = String(args.model);
-      if (args.reasoningEffort) agentOptions.reasoningEffort = String(args.reasoningEffort);
+      if (args.agentProvider || args.model || pickedByBoard) {
+        if (route.provider) agentOptions.provider = String(route.provider);
+        if (route.model) agentOptions.model = String(route.model);
+        if (route.reasoningEffort && (args.reasoningEffort || pickedByBoard)) agentOptions.reasoningEffort = String(route.reasoningEffort);
+      }
       const memberName = String(args.name).trim();
       const description = String(args.description || args.role || memberName).slice(0, 200);
       const sessionId = randomUUID();
@@ -1984,6 +2312,65 @@ function buildTools(s, ctx) {
     async execute(args) {
       const markdown = await request(s, `/api/report${qs({ team: args.teamId, format: 'md' })}`, { raw: true });
       return { markdown: String(markdown).slice(0, 200000) };
+    },
+  });
+
+
+  tools.push({
+    name: 'board_plan_submit',
+    description: 'Submit the finished plan for the current workspace-board task. Call this at the end of the planning session; the scheduler stores the plan and moves the task to planned. In same-session mode the task will later resume this session for execution.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        plan: { type: 'string', description: 'Complete plan in markdown.' },
+        summary: { type: 'string', description: 'One-line summary.' },
+      },
+      required: ['plan'],
+    },
+    output: jsonOutput('{ board task }'),
+    async execute(args, exec) {
+      const sessionId = exec?.agent?.id != null ? String(exec.agent.id) : null;
+      if (!sessionId) throw new Error('board_plan_submit 只能在规划会话里调用');
+      const task = await request(s, '/api/board/agents/plan', {
+        method: 'POST',
+        body: { sessionId, plan: args.plan, summary: args.summary || null },
+      });
+      const rec = boardSessions.get(sessionId);
+      if (rec) rec.phase = 'planned';
+      if (task?.executionMode === 'new' && rec) {
+        const timer = setTimeout(() => {
+          if (rec.phase !== 'planned') return;
+          try { void rec.handle?.dispose?.(); } catch { /* ignore */ }
+          boardSessions.delete(sessionId);
+          boardSessionIds.delete(sessionId);
+        }, 5000);
+        timer.unref?.();
+      }
+      return task;
+    },
+  });
+
+  tools.push({
+    name: 'board_task_status',
+    description: 'Report the current workspace-board task status from the Lead session. Call status "done" after all team tasks succeed, "failed" when the task cannot be completed, and "inprogress" when the user sends a new message after a finished task.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        status: { type: 'string', enum: ['done', 'failed', 'inprogress'] },
+        summary: { type: 'string', description: 'Short result or failure reason.' },
+      },
+      required: ['status'],
+    },
+    output: jsonOutput('{ board task }'),
+    async execute(args, exec) {
+      const sessionId = exec?.agent?.id != null ? String(exec.agent.id) : null;
+      if (!sessionId) throw new Error('board_task_status 只能在看板 Lead 会话里调用');
+      return await request(s, '/api/board/agents/status', {
+        method: 'POST',
+        body: { sessionId, status: args.status, summary: args.summary || null },
+      });
     },
   });
 
@@ -2516,6 +2903,67 @@ export function apply(ctx, config) {
       void run();
       return () => { stopped = true; if (timer) clearTimeout(timer); };
     }, 'dsh-team.llm-catalog-pump()');
+  }
+
+  // 看板会话审批：规划阶段只读，任何审批直接拒绝，避免无人值守卡住。
+  // 执行阶段用 danger-full-access（never），正常情况下不会走到这里。
+  if (s.boardEnabled) {
+    ctx.effect(() => {
+      const off = ctx.on('approval/request', (req, next) => {
+        const sessionId = req?.agent?.id != null ? String(req.agent.id) : null;
+        const rec = sessionId ? boardSessions.get(sessionId) : null;
+        if (rec && rec.phase === 'planning') return 'rejected';
+        return next();
+      }, { prepend: true });
+      return () => { try { off?.(); } catch { /* ignore */ } };
+    }, 'dsh-team.board-approval()');
+  }
+
+  // 看板会话的后续用户消息：done/failed 被追问时翻回 inprogress（sidecar 只对这些状态生效）。
+  // 自己注入的首条 prompt 也会触发，但此时状态是 planning/inprogress，sidecar 会拒绝，不会误翻。
+  ctx.on('session/event', (session, event) => {
+    const sessionId = session?.id != null ? String(session.id) : null;
+    if (!sessionId || !boardSessionIds.has(sessionId)) return;
+    if (!event || event.type !== 'user/message') return;
+    void request(s, '/api/board/agents/status', {
+      method: 'POST', body: { sessionId, status: 'inprogress' },
+    }).catch(() => { /* 非终态时 sidecar 会拒绝，忽略 */ });
+  });
+
+  // 规划会话 idle 却没有提交计划：给工具收尾留一个宽限窗口，仍停在 planning 就判失败。
+  ctx.on('agent/status', ({ agent, status } = {}) => {
+    const sessionId = agent?.id != null ? String(agent.id) : null;
+    const rec = sessionId ? boardSessions.get(sessionId) : null;
+    if (!rec) return;
+    if (status === 'running') { rec.sawRunning = true; return; }
+    if (status !== 'idle' || rec.phase !== 'planning' || !rec.sawRunning) return;
+    const timer = setTimeout(() => {
+      void (async () => {
+        if (rec.phase !== 'planning') return;
+        try {
+          const task = await request(s, `/api/board/tasks/${encodeURIComponent(rec.taskId)}`);
+          if (task?.status !== 'planning') return;
+          await request(s, '/api/board/agents/status', {
+            method: 'POST', body: { sessionId, status: 'failed', summary: '规划会话空闲但未提交计划' },
+          });
+        } catch { /* ignore */ }
+      })();
+    }, Math.max(0, s.boardIdleGraceMs));
+    timer.unref?.();
+  });
+
+  // 看板调度泵：每个 tick 向 sidecar claim 规划/执行槽位，claim 到就建会话并投 prompt。
+  if (s.boardEnabled) {
+    ctx.effect(() => {
+      const timer = setInterval(() => { void boardPump(s, ctx).catch(() => { /* ignore */ }); }, Math.max(500, s.boardDispatchMs));
+      timer.unref?.();
+      return () => {
+        clearInterval(timer);
+        for (const rec of boardSessions.values()) { try { void rec.handle?.dispose?.(); } catch { /* ignore */ } }
+        boardSessions.clear();
+        boardSessionIds.clear();
+      };
+    }, 'dsh-team.board-pump()');
   }
 
   // 保底泵：负责 lead 不在工具调用栈里时（例如成员直接回报）把 ready 任务继续发出去。

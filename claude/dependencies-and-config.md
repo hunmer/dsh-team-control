@@ -50,6 +50,10 @@
 | `reportContext` | `true` | 上下文占用上报 |
 | `pricingTables` | 内置 | 覆盖计价表 |
 | `traceInputMax` | `1200` | trace 里入参最大字符 |
+| `boardEnabled` | `true` | 是否启用工作区看板调度泵；默认开启，只有 `auto=1` 或点「开始执行」的任务才入队，显式 `false` 可关闭 |
+| `boardDispatchMs` | `2000` | 看板泵间隔（最小 500ms） |
+| `boardIdleGraceMs` | `6000` | 规划会话 idle 后等待提交计划的宽限 |
+| `boardPlanningTimeoutMs` | `1800000` | 规划超时，超时置 failed |
 | `agentAutoDispatch` | `true` | agent 团队自动派发 |
 | `agentIdleSettleMs` | — | idle 判定窗口 |
 | `agentHeartbeatMs` | — | 心跳间隔 |

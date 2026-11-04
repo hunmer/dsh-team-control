@@ -75,7 +75,7 @@
 
 全局：`--url`、`--token`、`--data`。
 
-## 3. 插件工具（`dsh-plugin/index.js` `buildTools`，共 13 个）
+## 3. 插件工具（`dsh-plugin/index.js` `buildTools`，共 15 个（13 个 `team_*` + 2 个 `board_*`））
 
 | 工具 | 作用 |
 |---|---|
@@ -92,6 +92,8 @@
 | `team_approve` | Lead 裁决成员审批（allow/deny），转成宿主 outcome |
 | `team_control` | interrupt/resume/assign |
 | `team_report` | 导出 Markdown 运行报告（含审批与 audit） |
+| `board_plan_submit` | 规划会话提交计划，任务 `planning → planned`（same 模式同时绑定执行会话） |
+| `board_task_status` | Lead 会话回报看板任务 `done`/`failed`/`inprogress` |
 
 ## 4. Host 同源代理（`dsh-plugin-ui/index.js`）
 

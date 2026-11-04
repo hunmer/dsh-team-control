@@ -138,11 +138,11 @@ check('better-sidebar 已装：额外注册页签，原生右侧栏入口仍在'
   const better = makeBetter();
   const app = makeCtx({ betterSidebar: better });
   plugin.apply(app.ctx);
-  assert.equal(better.tabs.length, 1, `registerTab 次数=${better.tabs.length}`);
+  assert.equal(better.tabs.length, 2, `registerTab 次数=${better.tabs.length}`);
   assert.deepEqual(
-    app.entries.map((e) => e.spec.name).sort(),
-    ['conversation.input.left', 'shell.overlay', 'sidebar.right.pane.tab'],
-    `原生入口 + 团队卡片都要在：${app.entries.map((e) => e.spec.name).join(',')}`,
+    app.entries.filter((e) => e.spec.name === 'sidebar.right.pane.tab').map((e) => e.spec.key).sort(),
+    ['dsh-team', 'dsh-team-board'],
+    '编排与看板各一个原生右侧栏 Tab',
   );
   assert.equal(app.injectCbs.length, 1, '只等 sidebarRightTabs（本用例没给这个服务）');
   assert.deepEqual(app.injectCbs[0].deps, ['sidebarRightTabs']);
@@ -151,10 +151,10 @@ check('better-sidebar 已装：额外注册页签，原生右侧栏入口仍在'
   app.effects.forEach((dispose) => dispose());
   assert.equal(better.tabs.length, 0, '效应清理后页签已撤销');
   assert.equal(app.entries.length, 0, '效应清理后槽注册已撤销');
-  return 'id=dsh-team:panel';
+  return 'id=dsh-team:panel + dsh-team:board';
 });
 
-check('页签描述：id/title/description/order/single 与 iframe 内容', () => {
+check('页签描述：编排与独立看板各一个，iframe 各自独立', () => {
   const better = makeBetter();
   const app = makeCtx({ betterSidebar: better });
   plugin.apply(app.ctx);
@@ -164,12 +164,17 @@ check('页签描述：id/title/description/order/single 与 iframe 内容', () =
   assert.equal(desc.order, 30);
   assert.equal(desc.title(), 'side_nav');
   assert.equal(desc.description(), 'subtitle');
-  assert.equal(typeof desc.component, 'function', 'component 必填');
   const frame = findFrame(render(desc.component({})));
-  assert.ok(frame, '页签里渲染了 iframe');
   assert.equal(frame.props.src, '/dsh-team-api/panel?api=/dsh-team-api&embed=1');
-  const icon = desc.icon(16);
-  assert.equal(render(icon).type, 'svg', 'icon(size) 渲染成 svg');
+  const board = better.tabs[1];
+  assert.equal(board.id, 'dsh-team:board');
+  assert.equal(board.order, 31);
+  assert.equal(board.title(), 'board_nav');
+  assert.equal(board.description(), 'board_desc');
+  const boardFrame = findFrame(render(board.component({})));
+  assert.ok(boardFrame, '看板页签里渲染了 iframe');
+  assert.equal(boardFrame.props.src, '/dsh-team-api/panel?api=/dsh-team-api&embed=1#/board');
+  assert.equal(render(board.icon(16)).type, 'svg', 'board icon 渲染成 svg');
   return 'iframe src ok';
 });
 
@@ -182,19 +187,17 @@ check('未装 better-sidebar：右侧栏 Tab + 「开始」页 guide 入口', ()
     sidebarRightTabs: { register: (d) => { registered.push(d); return () => {}; } },
   });
   plugin.apply(app.ctx);
-  assert.equal(registered.length, 1, 'sidebarRightTabs.register 一次');
-  assert.equal(registered[0].id, 'dsh-team');
-  const names = app.entries.map((e) => e.spec.name).sort();
-  assert.deepEqual(
-    names,
-    ['conversation.input.left', 'shell.overlay', 'sidebar.right.pane.tab'],
-    names.join(','),
-  );
+  assert.equal(registered.length, 2, 'sidebarRightTabs.register 两次');
+  assert.deepEqual(registered.map((d) => d.id), ['dsh-team', 'dsh-team-board']);
+  const keys = app.entries.filter((e) => e.spec.name === 'sidebar.right.pane.tab').map((e) => e.spec.key).sort();
+  assert.deepEqual(keys, ['dsh-team', 'dsh-team-board'], keys.join(','));
   assert.equal(registered[0].guide.length, 1, 'guide 入口一个（右侧栏「开始」页）');
   assert.equal(registered[0].guide[0].id, 'dsh-team');
   assert.equal(registered[0].guide[0].title(), 'side_nav');
   assert.equal(registered[0].guide[0].description(), 'guide_desc');
+  assert.equal(registered[1].guide[0].description(), 'board_guide_desc');
   assert.equal(render(registered[0].guide[0].icon(22)).type, 'svg', 'guide 图标渲染成 svg');
+  assert.equal(render(registered[1].guide[0].icon(22)).type, 'svg', 'board guide 图标渲染成 svg');
   assert.equal(opened.length, 0, '注册本身不打开页签');
   assert.equal(app.injectCbs.length, 1, '等待 better-sidebar 晚到');
   app.effects.forEach((dispose) => dispose());
@@ -212,12 +215,12 @@ check('better-sidebar 晚到：补注册页签，原生右侧栏入口保留', (
   assert.ok(app.entries.some((e) => e.spec.name === 'sidebar.right.pane.tab'), '先有原生右侧栏页签');
   const better = makeBetter();
   app.injectCbs[0].cb({ betterSidebar: better });
-  assert.equal(better.tabs.length, 1, '晚到后注册 better-sidebar 页签');
+  assert.equal(better.tabs.length, 2, '晚到后注册编排 + 看板页签');
   assert.ok(!app.entries.some((e) => e.spec.name === 'sidebar.footer.action'), '不再往左侧栏底部加入口');
   assert.ok(app.entries.some((e) => e.spec.name === 'sidebar.right.pane.tab'), '原生右侧栏 Tab 保留');
   const better2 = makeBetter();
   app.injectCbs[0].cb({ betterSidebar: better2 });
-  assert.equal(better2.tabs.length, 1, '服务实例变化后在新实例上重新注册');
+  assert.equal(better2.tabs.length, 2, '服务实例变化后在新实例上重新注册两个页签');
   return 'switch ok';
 });
 
@@ -225,23 +228,19 @@ check('better-sidebar 晚到：补注册页签，原生右侧栏入口保留', (
 check('服务晚到：sidebarRightTabs 由 ctx.inject 等待，就绪后补注册 guide 入口', () => {
   const app = makeCtx({});
   plugin.apply(app.ctx);
-  const names = app.entries.map((e) => e.spec.name).sort();
-  assert.deepEqual(
-    names,
-    ['conversation.input.left', 'shell.overlay', 'sidebar.right.pane.tab'],
-    names.join(','),
-  );
+  const keys = app.entries.filter((e) => e.spec.name === 'sidebar.right.pane.tab').map((e) => e.spec.key).sort();
+  assert.deepEqual(keys, ['dsh-team', 'dsh-team-board'], keys.join(','));
   assert.ok(app.injectCbs.some((c) => c.deps.includes('sidebarRightTabs')), '等待 sidebarRightTabs');
   // 服务晚到 → 注册 tab 类型与 guide 入口
   const registered = [];
   const wait = app.injectCbs.find((c) => c.deps.includes('sidebarRightTabs'));
   wait.cb({ sidebarRightTabs: { register: (d) => { registered.push(d); return () => {}; } } });
-  assert.equal(registered.length, 1, '晚到后注册一次');
-  assert.equal(registered[0].guide.length, 1, 'guide 入口随服务就绪一起注册');
+  assert.equal(registered.length, 2, '晚到后注册编排 + 看板两次');
+  assert.ok(registered.every((d) => d.guide.length === 1), '每个入口一条 guide 胶囊');
   const better = makeBetter();
   const waitBetter = app.injectCbs.find((c) => c.deps.includes('betterSidebar'));
   waitBetter.cb({ betterSidebar: better });
-  assert.equal(better.tabs.length, 1, 'better-sidebar 晚到时仍可接管');
+  assert.equal(better.tabs.length, 2, 'better-sidebar 晚到时仍可接管两个入口');
   return 'late services ok';
 });
 
