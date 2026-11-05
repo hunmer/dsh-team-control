@@ -330,7 +330,6 @@ export function HomeView() {
                       }
                       steps={stepsByMember.get(member.id) ?? []}
                       queue={queueByMember.get(member.id) ?? []}
-                      placeholder={`给 ${memberName(member.id)} 排队一条消息（↵ 排队，⌘/Ctrl+↵ 优先投递）`}
                       onQueue={(text) => void sendSteer(member, text)}
                       onInterrupt={(text, queuedId) => {
                         if (queuedId) void dropSteer(queuedId);

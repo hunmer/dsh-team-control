@@ -151,18 +151,18 @@ export function TaskCard({
       </div>
 
       <div className="ui-tb__card-main">
-        <p className="ui-tb__card-title">
+        <p className="ui-tb__card-title items-center">
           <StatusIcon kind={STATUS_ICON[task.status]} />
           <span className="ui-tb__title-text">{task.title}</span>
         </p>
 
         {task.description && (
-          <p className="line-clamp-2 text-[11.5px] leading-4 text-muted-foreground">{task.description}</p>
+          <Alert className="mt-2 rounded-lg px-2.5 py-2">
+            <AlertDescription className="text-[11.5px] leading-4">
+              <p className="line-clamp-2">{task.description}</p>
+            </AlertDescription>
+          </Alert>
         )}
-
-        <div className="ui-tb__props">
-          {task.planSummary && <span className="ui-tb__prop ui-tb__prop--wide" title={task.planSummary}><span className="ui-tb__prop-text">{task.planSummary}</span></span>}
-        </div>
 
         {task.lastError && (
           <Alert variant="error" className="mt-2 rounded-lg px-2.5 py-2 text-[11.5px] [&>svg]:size-3.5">

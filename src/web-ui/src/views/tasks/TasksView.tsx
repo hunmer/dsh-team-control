@@ -445,7 +445,6 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
                   <ClipboardList aria-hidden="true" />
                 </EmptyMedia>
                 <EmptyTitle className="text-sm">选择一个任务</EmptyTitle>
-                <EmptyDescription>这里会显示任务详情，以及关联团队成员的待办执行进度。</EmptyDescription>
               </EmptyHeader>
             </Empty>
           )}
