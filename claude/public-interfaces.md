@@ -28,7 +28,7 @@
 - `POST /api/members/{id}/agent-status`、`POST /api/members/{id}/agent-report`
 
 **任务与 DAG**
-- `POST|GET /api/tasks`、`GET /api/tasks/{id}`
+- `POST|GET /api/tasks`、`GET /api/tasks/{id}`、`POST /api/tasks/{id}/abort`
 - `POST /api/deps`、`DELETE /api/deps/{id}`
 - `GET /api/dag`
 
@@ -75,12 +75,13 @@
 
 全局：`--url`、`--token`、`--data`。
 
-## 3. 插件工具（`dsh-plugin/index.js` `buildTools`，共 15 个（13 个 `team_*` + 2 个 `board_*`））
+## 3. 插件工具（`dsh-plugin/index.js` `buildTools`，共 16 个（14 个 `team_*` + 2 个 `board_*`））
 
 | 工具 | 作用 |
 |---|---|
 | `team_create` | 建团队，`permissionPreset`、`agentPreset`、`maxMembers`、`workspace` |
 | `team_spawn` | 拉起 sub-agent 成员，`permissionPreset`/`agentPreset` 按成员覆盖 |
+| `team_member` | update（改模型/上下文会重建子会话）/retire/remove 成员 |
 | `team_preset` | 自建 agentPreset：`list`/`save`/`show`，写 `presetDir` 并即时注册 |
 | `team_models` | 列出可用 provider/model 路由 |
 | `team_status` | `detail:"summary"`（成员）/`"dag"`（任务图） |
@@ -90,7 +91,7 @@
 | `team_report_task` | 成员报告任务结果（done/failed/blocked） |
 | `team_dispatch` | 手动泵一次派发器 |
 | `team_approve` | Lead 裁决成员审批（allow/deny），转成宿主 outcome |
-| `team_control` | interrupt/resume/assign |
+| `team_control` | interrupt（任务转 paused）/resume/assign/abort（任务作废） |
 | `team_report` | 导出 Markdown 运行报告（含审批与 audit） |
 | `board_plan_submit` | 规划会话提交计划，任务 `planning → planned`（same 模式同时绑定执行会话） |
 | `board_task_status` | Lead 会话回报看板任务 `done`/`failed`/`inprogress` |

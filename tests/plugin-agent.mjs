@@ -25,12 +25,14 @@ const mkFakeCtx = () => {
     spawned: [],
     messages: [],
     interrupts: [],
+    drains: [],
     async startActivation(spec) {
       agents.spawned.push({ req: spec });
       return { childId: spec.childId, messageId: `msg-${agents.spawned.length}`, result: Promise.resolve({ output: [], stopReason: 'completed' }), dispose: async () => {} };
     },
     async sendMessage(caller, targetId, content) { agents.messages.push({ caller, target: targetId, content }); return `msg-${agents.messages.length}`; },
     interrupt(targetId, authority) { agents.interrupts.push({ targetId, authority }); },
+    async drainChildren(parent, childIds) { agents.drains.push({ parent, childIds }); return { drained: childIds.length }; },
     list: () => ['spawn', 'fork'],
   };
   const presetDefs = new Map([['standard', { id: 'standard' }], ['reviewer', { id: 'reviewer' }]]);
@@ -292,7 +294,64 @@ const main = async () => {
     assert.equal(ctx.agents.interrupts[0].targetId, sessionId, '中断的目标是成员 session');
     assert.equal(ctx.agents.interrupts[0].authority.kind, 'ancestor', '以 Lead 作为祖先授权');
     assert.equal(ctl.member.status, 'interrupted', '成员同步置 interrupted');
-    assert.equal((await api.get(`/api/tasks/${t3.task.id}`)).status, 'ready', '在途任务回到 ready 等下次派发');
+    assert.equal((await api.get(`/api/tasks/${t3.task.id}`)).status, 'paused', '在途任务转 paused，等 Lead 处置');
+    assert.equal((await api.get(`/api/tasks/${t3.task.id}`)).attempts, 1, 'interrupt 不消耗 attempt');
+
+    // ⑦b interrupt 后 DSH 中断自身会再报一次 idle；冻结中的会话不得把成员改回 idle 触发重派
+    ctx.emit('agent/status', { agent: { id: sessionId }, status: 'idle' });
+    await sleep(400);
+    assert.equal((await api.get(`/api/status?member=${spawned.member.id}`)).members[0].status, 'interrupted', 'interrupt 后的 idle 回报不得解冻成员');
+    assert.equal((await api.get(`/api/tasks/${t3.task.id}`)).status, 'paused', 'interrupt 后仍保持 paused，不自动重派');
+
+    // ⑦c abort 只需 taskId，把 paused 任务永久作废
+    const aborted = await tool('team_control').execute(
+      { action: 'abort', teamId: team.id, taskId: t3.task.id, reason: 'lead 决定不做' }, lead,
+    );
+    assert.equal(aborted.task.status, 'aborted', 'abort 把 paused 任务置为 aborted');
+    assert.equal(aborted.wasRunning, false, 'paused 任务 abort 时不在运行');
+    assert.equal((await api.get(`/api/tasks/${t3.task.id}`)).status, 'aborted', 'abort 结果已落库');
+
+    // ⑦d team_member update：换模型/上下文会重建会话，旧会话被 drain
+    const oldSession = spawned.member.agentSessionId;
+    const restarted = await tool('team_member').execute({
+      action: 'update', teamId: team.id, memberId: spawned.member.id,
+      model: 'next-model', agentProvider: 'next-provider', contextMode: 'fresh', reasoningEffort: 'high',
+    }, lead);
+    assert.equal(restarted.restarted, true, '模型/上下文变更触发会话重建');
+    assert.notEqual(restarted.member.agentSessionId, oldSession, '重建后 agentSessionId 更新');
+    assert.equal(restarted.member.model, 'next-model', '新模型已落库');
+    assert.equal(restarted.member.agentProvider, 'next-provider', '新 provider 已落库');
+    assert.equal(restarted.member.contextMode, 'fresh', '新上下文模式已落库');
+    assert.equal(restarted.member.reasoningEffort, 'high', '新思考强度已落库');
+    assert.equal(restarted.member.status, 'idle', '重建后的成员等待派发');
+    const newSession = restarted.member.agentSessionId;
+    const rebuiltSpec = ctx.agents.spawned.at(-1).req;
+    assert.equal(rebuiltSpec.childId, newSession, 'startActivation 使用新 session');
+    assert.equal(rebuiltSpec.request.agentOptions.provider, 'next-provider', '新 provider 传给子会话');
+    assert.equal(rebuiltSpec.request.agentOptions.model, 'next-model', '新 model 传给子会话');
+    assert.equal(rebuiltSpec.request.agentOptions.reasoningEffort, 'high', '新 effort 传给子会话');
+    assert(ctx.agents.drains.some((d) => d.childIds.includes(oldSession)), '旧会话被 drainChildren 释放');
+
+    // 只改 role 不重建会话
+    const spawnedBeforeRole = ctx.agents.spawned.length;
+    const roleUpdated = await tool('team_member').execute(
+      { action: 'update', teamId: team.id, memberId: spawned.member.id, role: 'reviewer' }, lead,
+    );
+    assert.equal(roleUpdated.restarted, false, '只改 role 不重建会话');
+    assert.equal(ctx.agents.spawned.length, spawnedBeforeRole, '没有新增子会话');
+    assert.equal(roleUpdated.member.role, 'reviewer', 'role 已更新');
+
+    // ⑦e team_member retire / remove：释放子会话，remove 必须 confirm
+    const retired = await tool('team_member').execute(
+      { action: 'retire', teamId: team.id, memberId: custom.member.id }, lead,
+    );
+    assert.equal(retired.status, 'retired', 'retire 保留成员行并置 retired');
+    assert(ctx.agents.drains.some((d) => d.childIds.includes(custom.member.agentSessionId)), 'retire 释放子会话');
+    await assert.rejects(
+      () => tool('team_member').execute({ action: 'update', teamId: team.id, memberId: custom.member.id, role: 'x' }, lead),
+      /retired/,
+      'retired 成员不能再 update 复活',
+    );
 
     // ⑧ 第二个团队自定义预设：spawn 继承并可被成员覆盖
     const t2Team = (await tool('team_create').execute({ name: 'plugin-readonly', workspace: tmp.ws, permissionPreset: 'read-only' }, lead)).team;
@@ -300,6 +359,18 @@ const main = async () => {
     const bob = await tool('team_spawn').execute({ teamId: t2Team.id, name: 'bob', prompt: '你是 bob，只读。' }, lead);
     assert.equal(bob.member.permissionPreset, 'read-only', '成员继承团队 read-only 预设');
     assert.equal(bob.permissionPreset, 'read-only', '返回实际生效预设');
+
+    await assert.rejects(
+      () => tool('team_member').execute({ action: 'remove', teamId: t2Team.id, memberId: bob.member.id }, lead),
+      /confirm:true/,
+      'remove 必须显式 confirm',
+    );
+    const removedBob = await tool('team_member').execute(
+      { action: 'remove', teamId: t2Team.id, memberId: bob.member.id, confirm: true }, lead,
+    );
+    assert.equal(removedBob.removed, true, 'remove 删除成员行');
+    assert(ctx.agents.drains.some((d) => d.childIds.includes(bob.member.agentSessionId)), 'remove 释放子会话');
+    await assert.rejects(() => api.get(`/api/members/${bob.member.id}`), (err) => err.status === 404, '删除后成员 404');
 
     console.log('PASS plugin-agent — agent 成员闭环：preset/权限预设落会话/spawn/register/dispatch 简报/report/归属校验/idle 兜底/interrupt');
     process.exitCode = 0;

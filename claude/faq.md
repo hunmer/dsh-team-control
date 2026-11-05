@@ -30,7 +30,7 @@ sidecar 的 ready 横幅是 **stdout 第一行单行 JSON**。若前面有任何
 `runtime !== 'agent'` 才会走 worker 派发循环。检查 `team.runtime` 是否真的写成 `agent`，以及迁移是否补上 `team.runtime` 列（`db-migration` 测试覆盖）。
 
 **Q：`interrupt` 之后还有 `running` 残留？**
-违反 C5。`interrupt()` 必须在一个事务里写 `interrupted` + `event(phase=interrupt)` + `lease_until=NULL`，**提交后**才发信号。若在事务里杀了进程，就会出现「已死但状态还在跑」。
+违反 C5。`interrupt()` 必须同步写 `member.status=interrupted` + `agent.interrupt` 事件 + 在途任务 `paused`，**提交后**才调 `subagents.interrupt`。若在事务里杀了会话，就会出现「已死但状态还在跑」。
 
 **Q：`npm test` 里某条 AC 偶发失败？**
 AC 全部是真实子进程 + 真实端口。失败时脚本**保留临时目录并打印路径**，进那个目录看 `team.db`（`sqlite3 team.db '.tables'`）与 `logs/`。抖动多半是 `waitFor` 超时太短。

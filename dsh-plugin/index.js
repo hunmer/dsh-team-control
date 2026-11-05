@@ -1204,6 +1204,8 @@ const agentStatusBySession = new Map();
 const idleTimers = new Map();
 /** sessionId → 派发后「成员会话是否真的跑起来」的监视定时器。 */
 const startTimers = new Map();
+/** Lead 主动 interrupt 后冻结的会话：在 resume 前忽略其 idle / turn-error 回报。 */
+const heldSessions = new Set();
 
 function cancelIdleReport(sessionId) {
   const timer = idleTimers.get(sessionId);
@@ -1234,6 +1236,43 @@ function armStartWatchdog(s, sessionId, teamId, taskId) {
 function cancelStartWatchdog(sessionId) {
   const timer = startTimers.get(sessionId);
   if (timer) { clearTimeout(timer); startTimers.delete(sessionId); }
+}
+
+/** 成员会话被替换/移除后，清掉插件侧所有指向旧 session 的绑定。 */
+function forgetSession(sessionId) {
+  if (sessionId == null) return;
+  const sid = String(sessionId);
+  cancelIdleReport(sid);
+  cancelStartWatchdog(sid);
+  heldSessions.delete(sid);
+  agentStatusBySession.delete(sid);
+  sessionMember.delete(sid);
+}
+
+/**
+ * 释放成员子会话：优先 drainChildren（从父会话摘除并结束），
+ * 旧版 subagents 没有该能力时退回 interrupt。
+ */
+async function releaseSession(subs, caller, sessionId) {
+  if (!sessionId) return { ok: true, method: 'none' };
+  const sid = String(sessionId);
+  if (typeof subs?.drainChildren === 'function') {
+    try {
+      await subs.drainChildren(caller, [sid]);
+      return { ok: true, method: 'drainChildren' };
+    } catch (err) {
+      if (typeof subs?.interrupt !== 'function') return { ok: false, error: String(err?.message || err) };
+    }
+  }
+  if (typeof subs?.interrupt === 'function') {
+    try {
+      await subs.interrupt(sid, { kind: 'ancestor', agent: caller });
+      return { ok: true, method: 'interrupt' };
+    } catch (err) {
+      return { ok: false, error: String(err?.message || err) };
+    }
+  }
+  return { ok: false, error: 'subagents 服务不支持 drainChildren/interrupt' };
 }
 
 /** 直接读 sidecar /status（不经 request：心跳/镜像不能顺手把 sidecar 拉起来）。 */
@@ -1962,6 +2001,7 @@ function buildTools(s, ctx) {
           role: args.role || 'teammate',
           model: args.model || route.model || null,
           contextMode: context,
+          agentProvider: route.provider || null,
           permissionPreset,
           ...(agentPreset ? { agentPreset } : {}),
           // 实际生效的思考强度（含从 Lead 继承的值）：面板成员卡片据此展示，之后不可变
@@ -2386,43 +2426,252 @@ function buildTools(s, ctx) {
 
   tools.push({
     name: 'team_control',
-    description: 'Control one member. interrupt aborts the sub-agent’s current turn (`subagents.interrupt`) and marks the member interrupted on the sidecar; resume re-arms it; assign hands a ready task to an idle member.',
+    description: 'Control one member. interrupt stops the sub-agent’s current turn and pauses its in-flight task (no retry, no attempt consumed); resume re-arms it; assign hands a ready task to an idle member; abort permanently voids a task (taskId) without retry.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        action: { type: 'string', enum: ['interrupt', 'resume', 'assign'] },
+        action: { type: 'string', enum: ['interrupt', 'resume', 'assign', 'abort'] },
         teamId: { type: 'string', description: 'Required to control an agent-team member.' },
-        memberId: { type: 'string' },
-        taskId: { type: 'string', description: 'Required for assign.' },
-        reason: { type: 'string', description: 'For interrupt.' },
+        memberId: { type: 'string', description: 'Required for interrupt/resume/assign.' },
+        taskId: { type: 'string', description: 'Required for assign and abort.' },
+        reason: { type: 'string', description: 'For interrupt/abort.' },
       },
-      required: ['action', 'memberId'],
+      required: ['action'],
     },
     output: jsonOutput('{ member, ... }'),
     async execute(args, exec) {
+      if (args.action === 'abort') {
+        if (!args.taskId) throw new Error('team_control abort requires taskId');
+        const res = await request(s, `/api/tasks/${encodeURIComponent(args.taskId)}/abort`, { method: 'POST', body: { reason: args.reason || 'lead abort' } });
+        if (!res?.wasRunning || !res?.member?.agentSessionId) return res;
+        const sid = String(res.member.agentSessionId);
+        const subs = subagentsOf(ctx);
+        const caller = exec?.agent;
+        if (!subs || !caller || typeof subs.interrupt !== 'function') return res;
+        cancelIdleReport(sid);
+        cancelStartWatchdog(sid);
+        agentStatusBySession.set(sid, 'interrupted');
+        const interrupted = await Promise.resolve()
+          .then(() => subs.interrupt(sid, { kind: 'ancestor', agent: caller }))
+          .then(() => ({ ok: true, previousStatus: res.member.agentStatus ?? null }),
+            (err) => ({ ok: false, error: String(err?.message || err) }));
+        return { ...res, agent: interrupted };
+      }
+      if (!args.memberId) throw new Error(`team_control ${args.action} requires memberId`);
       const id = encodeURIComponent(args.memberId);
       if (args.action === 'interrupt') {
         const res = await request(s, `/api/members/${id}/interrupt`, { method: 'POST', body: { reason: args.reason || 'lead interrupt' } });
         if (res?.member?.agentSessionId) {
+          const sid = String(res.member.agentSessionId);
           const subs = subagentsOf(ctx);
           const caller = exec?.agent;
           if (subs && caller && typeof subs.interrupt === 'function') {
+            // 冻结会话：直到 Lead resume 前，忽略该会话的 idle / turn-error 回报，
+            // 否则 DSH 中断后的 idle 会把 sidecar 的 interrupted 覆盖成 idle，派发泵又能唤醒它。
+            heldSessions.add(sid);
+            cancelIdleReport(sid);
+            cancelStartWatchdog(sid);
+            agentStatusBySession.set(sid, 'interrupted');
             const interrupted = await Promise.resolve()
-              .then(() => subs.interrupt(String(res.member.agentSessionId), { kind: 'ancestor', agent: caller }))
+              .then(() => subs.interrupt(sid, { kind: 'ancestor', agent: caller }))
               .then(() => ({ ok: true, previousStatus: res.member.agentStatus ?? null }),
                 (err) => ({ ok: false, error: String(err?.message || err) }));
+            if (!interrupted.ok) heldSessions.delete(sid);
             return { ...res, agent: interrupted };
           }
         }
         return res;
       }
-      if (args.action === 'resume') return await request(s, `/api/members/${id}/resume`, { method: 'POST', body: {} });
+      if (args.action === 'resume') {
+        const res = await request(s, `/api/members/${id}/resume`, { method: 'POST', body: {} });
+        const sid = res?.member?.agentSessionId ? String(res.member.agentSessionId) : null;
+        if (sid) heldSessions.delete(sid);
+        return res;
+      }
       if (args.action === 'assign') {
         if (!args.taskId) throw new Error('team_control assign requires taskId');
         return await request(s, `/api/members/${id}/assign`, { method: 'POST', body: { taskId: args.taskId } });
       }
       throw new Error(`team_control unknown action: ${args.action}`);
+    },
+  });
+
+  tools.push({
+    name: 'team_member',
+    description: "Update or remove a team member. `update` changes role/permission/model/context and, when model, agentProvider, contextMode, agentPreset or reasoningEffort changes, rebuilds the member's DSH sub-agent session so the new config takes effect (old context is lost). The member must be idle or interrupted; interrupt a running member first. `retire` keeps the member row as retired and frees capacity; `remove` deletes the row and requires confirm:true. Both release the sub-agent session.",
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        action: { type: 'string', enum: ['update', 'retire', 'remove'] },
+        teamId: { type: 'string', description: 'Team id; omit to resolve from the current Lead session.' },
+        memberId: { type: 'string', description: 'Member id returned by team_spawn / team_status.' },
+        role: { type: 'string', description: 'update: new role label.' },
+        model: { type: 'string', description: 'update: new LLM model id (empty to inherit). Rebuilds the session.' },
+        agentProvider: { type: 'string', description: 'update: new LLM provider route id. Rebuilds the session.' },
+        contextMode: { type: 'string', enum: ['isolated', 'fresh', 'fork'], description: 'update: new context isolation. Rebuilds the session; old context is lost.' },
+        reasoningEffort: { type: 'string', description: 'update: new reasoning effort id. Rebuilds the session.' },
+        permissionPreset: { type: 'string', description: 'update: DSH permission preset (sandbox + approvals). Applies to the live session without rebuild.' },
+        agentPreset: { type: 'string', description: 'update: DSH agent preset (composition). Rebuilds the session; not supported with contextMode fork.' },
+        confirm: { type: 'boolean', description: 'Required true for action=remove.' },
+      },
+      required: ['action', 'memberId'],
+    },
+    output: jsonOutput('{ member, restarted?, agent?, removed?, panel }'),
+    async execute(args, exec) {
+      const id = encodeURIComponent(args.memberId);
+      const current = await request(s, `/api/members/${id}`);
+      if (!current) throw new Error(`member not found: ${args.memberId}`);
+      const team = await teamOf(s, args.teamId || current.teamId, { sessionId: exec?.agent?.id });
+      if (current.teamId !== team.id) throw new Error('member 不属于指定团队');
+
+      if (args.action === 'retire' || args.action === 'remove') {
+        if (args.action === 'remove' && args.confirm !== true) throw new Error('team_member remove requires confirm:true');
+        const mode = args.action === 'remove' ? 'remove' : 'retire';
+        const res = await request(s, `/api/members/${id}?mode=${mode}${mode === 'remove' ? '&confirm=1' : ''}`, { method: 'DELETE' });
+        let agent = null;
+        if (current.agentSessionId) {
+          const released = await releaseSession(subagentsOf(ctx), exec?.agent, current.agentSessionId);
+          forgetSession(current.agentSessionId);
+          agent = {
+            sessionId: String(current.agentSessionId),
+            released: released.ok,
+            method: released.method || null,
+            ...(released.error ? { error: released.error } : {}),
+          };
+        }
+        return { ...res, agent, panel: panelUrl(s) };
+      }
+
+      if (args.action !== 'update') throw new Error(`team_member unknown action: ${args.action}`);
+      if (current.status === 'retired') throw new Error('member is retired; create a new member instead');
+      if (['running', 'provisioning', 'blocked'].includes(current.status)) {
+        throw new Error(`member is ${current.status}; interrupt it before updating configuration`);
+      }
+
+      const has = (key) => Object.prototype.hasOwnProperty.call(args, key);
+      const metadata = {};
+      for (const key of ['role', 'model', 'agentProvider', 'contextMode', 'reasoningEffort', 'permissionPreset', 'agentPreset']) {
+        if (has(key)) metadata[key] = args[key];
+      }
+      const restart = ['model', 'agentProvider', 'contextMode', 'agentPreset', 'reasoningEffort'].some(has);
+
+      if (!restart) {
+        const updated = await request(s, `/api/members/${id}`, { method: 'PATCH', body: metadata });
+        let presetApplied = null;
+        if (has('permissionPreset') && updated.agentSessionId) {
+          presetApplied = applyPermissionPreset(ctx, String(updated.agentSessionId), updated.permissionPreset);
+        }
+        return {
+          member: updated,
+          restarted: false,
+          agent: { sessionId: updated.agentSessionId || null, permissionPresetApplied: presetApplied },
+          panel: panelUrl(s),
+        };
+      }
+
+      const subs = subagentsOf(ctx);
+      const caller = exec?.agent;
+      if (!subs || typeof subs.startActivation !== 'function') throw new Error('subagents 服务不可用：无法重建成员会话');
+      if (!caller) throw new Error('team_member update 需要 Lead 会话上下文（exec.agent 缺失）');
+
+      const leadRoute = leadRouteOf(caller);
+      const oldRoute = {
+        provider: current.agentProvider ?? leadRoute.provider ?? null,
+        model: current.model ?? leadRoute.model ?? null,
+        reasoningEffort: current.reasoningEffort ?? null,
+      };
+      const route = {
+        provider: has('agentProvider') ? (args.agentProvider || null) : oldRoute.provider,
+        model: has('model') ? (args.model || null) : oldRoute.model,
+        reasoningEffort: has('reasoningEffort') ? (args.reasoningEffort || null) : oldRoute.reasoningEffort,
+      };
+      const routeChanged = route.provider !== oldRoute.provider || route.model !== oldRoute.model;
+      if (routeChanged && !has('reasoningEffort')) route.reasoningEffort = null;
+      await assertRouteEnabled(s, ctx, route.provider, route.model, route.reasoningEffort);
+
+      const context = has('contextMode')
+        ? (args.contextMode === 'fork' ? 'fork' : 'fresh')
+        : (current.contextMode === 'fork' ? 'fork' : 'fresh');
+      const requestedAgentPreset = has('agentPreset')
+        ? await resolveAgentPreset(ctx, args.agentPreset, team.agentPreset, s)
+        : (current.agentPreset || team.agentPreset || null);
+      const agentPreset = context === 'fork' ? null : requestedAgentPreset;
+      const agentPresetWarning = context === 'fork' && requestedAgentPreset
+        ? `contextMode=fork 继承 Lead 的组装，agentPreset「${requestedAgentPreset}」未生效`
+        : undefined;
+      const permissionPreset = has('permissionPreset')
+        ? resolvePermissionPreset(ctx, args.permissionPreset, team.permissionPreset)
+        : (current.permissionPreset || team.permissionPreset);
+      const role = has('role') ? args.role : current.role;
+
+      const provider = providerFor(ctx, s, context);
+      const agentOptions = {};
+      if (route.provider) agentOptions.provider = String(route.provider);
+      if (route.model) agentOptions.model = String(route.model);
+      if (route.reasoningEffort) agentOptions.reasoningEffort = String(route.reasoningEffort);
+
+      const sessionId = randomUUID();
+      const started = await subs.startActivation({
+        delivery: 'parent',
+        childId: sessionId,
+        provider,
+        label: memberLabel(current.name, String(role || current.name)),
+        request: {
+          prompt: [{ type: 'text', text: `你是团队成员 ${current.name}（${role || 'teammate'}）。配置刚刚更新，这是新的会话；当前没有任务，等待 Lead 派发。收到任务后按简报执行，完成时调用 team_report_task。` }],
+          parent: caller,
+          ...(team.workspace ? { cwd: team.workspace } : {}),
+          ...(Object.keys(agentOptions).length ? { agentOptions } : {}),
+          ...(agentPreset ? { agentPreset } : {}),
+        },
+        signal: exec.signal || AbortSignal.timeout(s.requestTimeoutMs),
+      });
+      if (started && started.result && typeof started.result.catch === 'function') started.result.catch(() => {});
+      const presetResult = applyPermissionPreset(ctx, sessionId, permissionPreset);
+
+      await request(s, '/api/agents/register', {
+        method: 'POST',
+        body: {
+          teamId: team.id,
+          name: current.name,
+          sessionId,
+          role,
+          model: route.model,
+          contextMode: context,
+          agentProvider: route.provider,
+          permissionPreset,
+          agentPreset, // explicit null = clear old override
+          reasoningEffort: route.reasoningEffort,
+        },
+      });
+      // 只把调用方显式改的字段写回元数据并记 member.update；不要用解析后的
+      // 继承值覆盖成员覆盖项，否则团队预设以后变更时该成员不会再跟随。
+      const updated = await request(s, `/api/members/${id}`, { method: 'PATCH', body: metadata });
+      const release = await releaseSession(subs, caller, current.agentSessionId);
+      forgetSession(current.agentSessionId);
+      rememberMember(sessionId, team.id, updated.id, team.workspace, updated.permissionPreset || permissionPreset, current.name);
+      leadByTeam.set(team.id, caller);
+      return {
+        member: updated,
+        restarted: true,
+        agent: {
+          sessionId,
+          previousSessionId: current.agentSessionId ? String(current.agentSessionId) : null,
+          provider,
+          context,
+          model: route.model,
+          route,
+          release,
+        },
+        permissionPreset: updated.permissionPreset || permissionPreset,
+        agentPreset: updated.agentPreset || agentPreset || null,
+        ...(agentPresetWarning ? { agentPresetWarning } : {}),
+        permissionPresetApplied: presetResult.applied,
+        ...(presetResult.reason ? { permissionPresetWarning: presetResult.reason } : {}),
+        ...(presetResult.error ? { permissionPresetWarning: presetResult.error } : {}),
+        panel: panelUrl(s),
+      };
     },
   });
 
@@ -2915,6 +3164,13 @@ export function apply(ctx, config) {
       agentStatusBySession.set(sessionId, 'running');
       return;
     }
+    // Lead interrupt 后会话处于冻结态：DSH 中断引发的 idle 不能把成员改回 idle，
+    // 否则 sidecar 认为成员可派发，下一次派发泵又会把它唤醒。
+    if (status === 'idle' && heldSessions.has(sessionId)) {
+      cancelIdleReport(sessionId);
+      agentStatusBySession.set(sessionId, 'interrupted');
+      return;
+    }
     if (status !== 'idle') {
       cancelIdleReport(sessionId);
       agentStatusBySession.set(sessionId, status);
@@ -2928,6 +3184,7 @@ export function apply(ctx, config) {
     const settle = Math.max(0, Number(s.agentIdleSettleMs) || 0);
     const finish = () => {
       idleTimers.delete(sessionId);
+      if (heldSessions.has(sessionId)) { agentStatusBySession.set(sessionId, 'interrupted'); return; }
       if (agentStatusBySession.get(sessionId) !== 'idle') return; // 窗口内又跑起来了
       // 把这一轮最后的正文带给 sidecar：漏调 team_report_task 时，兜底收尾的 task.done 也有摘要可看
       const reply = lastReplyBySession.get(sessionId);
@@ -2955,6 +3212,8 @@ export function apply(ctx, config) {
     if (event && event.type === 'turn/end') {
       const reason = event.data?.reason;
       if (reason && reason.kind === 'error') {
+        // 冻结中的会话：中断本身可能让回合以 error 结束，不要覆盖 sidecar 的 interrupted。
+        if (heldSessions.has(sessionId)) return;
         const err = reason.error || {};
         const msg = String(err.message || err.code || 'unknown error').slice(0, 500);
         cancelIdleReport(sessionId);
