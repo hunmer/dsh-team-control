@@ -7,6 +7,9 @@
 .ui-tb__status-dot[data-status="inprogress"]{background:#22c55e}
 .ui-tb__status-dot[data-status="done"]{background:#16a34a}
 .ui-tb__status-dot[data-status="failed"]{background:#e11d48}
+/* 封存箱：不套列容器，卡片一行多个自适应平铺 */
+.ui-tb__archived{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:6px;padding:0 12px 12px;align-items:start}
+.ui-tb__archived .ui-tb__empty{grid-column:1/-1}
 .ui-tb__top-actions{display:flex;align-items:center;gap:4px;margin-left:auto;padding-left:8px}
 .ui-tb__new-btn{height:30px;padding:0 11px;border:0;border-radius:9px;background:var(--ui-tb-accent);color:#fff;font-size:12.5px;font-weight:500;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
 .ui-tb__new-btn:hover{filter:brightness(1.06)}
