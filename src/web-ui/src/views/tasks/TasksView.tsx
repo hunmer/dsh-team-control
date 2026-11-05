@@ -6,7 +6,7 @@
  * 拆分自 Tasks.tsx，行为不变。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, Archive, ArchiveRestore, ClipboardList, Loader2, Plus, Search, Settings2, SlidersHorizontal } from 'lucide-react';
+import { Activity, Archive, ArchiveRestore, ClipboardList, Loader2, Plus, Search, Settings2 } from 'lucide-react';
 import { Tabs, TabsList, TabsPanel, TabsTab } from '@/components/ui/tabs';
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import { Tooltip, TooltipPopup, TooltipTrigger } from '@/components/ui/tooltip';
@@ -41,7 +41,6 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
-  const [compact, setCompact] = useState(false);
   const [archived, setArchived] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -254,15 +253,6 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
             <Search size={13} strokeWidth={1.7} />
             <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索任务…" />
           </label>
-          <button
-            type="button"
-            className="ui-tb__menu"
-            data-on={compact ? 'true' : 'false'}
-            onClick={() => setCompact((v) => !v)}
-            title="紧凑模式"
-          >
-            <SlidersHorizontal size={14} />
-          </button>
         </div>
         <div className="ui-tb__top-actions">
           <Tooltip>
@@ -316,7 +306,6 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
               <TaskCard
                 key={task.id}
                 task={task}
-                compact={compact}
                 archived
                 busy={busy}
                 onOpen={() => selectTask(task.id)}
@@ -334,7 +323,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
             {filtered.length === 0 && <div className="ui-tb__empty">没有封存任务</div>}
           </div>
         ) : (
-          <div className={cn('ui-tb__columns', compact && 'is-compact')}>
+          <div className="ui-tb__columns">
             {columns.map((column) => {
               const items = filtered.filter((task) => column.statuses.includes(task.status));
               return (
@@ -347,7 +336,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
                 >
                   <div className="ui-tb__col-head">
                     <span className="ui-tb__status"><StatusIcon kind={column.icon} /></span>
-                    <span className={cn('ui-tb__col-title', compact && 'is-compact')}>{column.label}</span>
+                    <span className="ui-tb__col-title">{column.label}</span>
                     <span className="ui-tb__col-count">{items.length}</span>
                     {column.id === 'waiting' && (
                       <span className="ui-tb__col-hint">待办 / 已规划 / 失败</span>
@@ -361,7 +350,6 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
                       <TaskCard
                         key={task.id}
                         task={task}
-                        compact={compact}
                         archived={false}
                         busy={busy}
                         onOpen={() => selectTask(task.id)}

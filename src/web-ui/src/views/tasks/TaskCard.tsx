@@ -10,7 +10,7 @@ import { ModelAvatar } from '@/components/ModelAvatar';
 import { brandOfModel } from '@/lib/model-brand';
 import { ArchiveRestore, CircleAlert, CircleStop, ExternalLink, Play, RotateCcw } from 'lucide-react';
 import { BOARD_STATUS_LABEL, type BoardMode, type BoardRoute, type BoardTask } from '@/lib/board';
-import { cn } from '@/lib/utils';
+
 import { StatusIcon } from '../board-status-icon';
 import { TaskActionsMenu } from './TaskActionsMenu';
 import { STATUS_ICON, fmtTime, taskKey } from './shared';
@@ -52,7 +52,6 @@ function taskModelRoutes(task: BoardTask): Array<{ key: string; role: string; ro
 
 export function TaskCard({
   task,
-  compact,
   archived,
   busy,
   onOpen,
@@ -67,7 +66,6 @@ export function TaskCard({
   onDragEnd,
 }: {
   task: BoardTask;
-  compact: boolean;
   archived: boolean;
   busy: string;
   onOpen: () => void;
@@ -90,7 +88,7 @@ export function TaskCard({
 
   return (
     <article
-      className={cn('ui-tb__card', compact && 'is-compact')}
+      className="ui-tb__card"
       draggable={!archived}
       onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; onDragStart(); }}
       onDragEnd={onDragEnd}
@@ -155,7 +153,7 @@ export function TaskCard({
           <span className="ui-tb__title-text">{task.title}</span>
         </p>
 
-        {!compact && task.description && (
+        {task.description && (
           <p className="line-clamp-2 text-[11.5px] leading-4 text-muted-foreground">{task.description}</p>
         )}
 
@@ -171,7 +169,6 @@ export function TaskCard({
         )}
       </div>
 
-      {!compact && (
       <div className="ui-tb__card-foot">
         <div className="ui-tb__actions" onClick={(e) => e.stopPropagation()}>
           {archived ? (
@@ -214,7 +211,6 @@ export function TaskCard({
         </div>
         <p className="ui-tb__meta">更新于 {fmtTime(task.updatedAt)}</p>
       </div>
-      )}
     </article>
   );
 }
