@@ -373,7 +373,7 @@ export class Board {
   restoreTask(id) {
     const cur = this.getTask(id);
     if (!cur.archivedAt) throw ERR.invalidState('task is not archived');
-    this.get("UPDATE board_task SET archived_at=NULL, status='todo', auto=0, resumed=0, updated_at=? WHERE id=?").run(nowIso(), cur.id);
+    this.get('UPDATE board_task SET archived_at=NULL, auto=0, resumed=0, updated_at=? WHERE id=?').run(nowIso(), cur.id);
     const task = this.getTask(cur.id);
     this.addEvent(task, 'restored', null);
     return task;

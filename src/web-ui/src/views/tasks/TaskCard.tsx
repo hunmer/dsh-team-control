@@ -59,6 +59,7 @@ export function TaskCard({
   onStart,
   onStop,
   onRetry,
+  onArchive,
   onRestore,
   onToggleAuto,
   onDelete,
@@ -73,6 +74,7 @@ export function TaskCard({
   onStart: (mode: BoardMode) => void;
   onStop: () => void;
   onRetry: () => void;
+  onArchive: () => void;
   onRestore: () => void;
   onToggleAuto: () => void;
   onDelete: () => void;
@@ -139,6 +141,8 @@ export function TaskCard({
             task={task}
             busy={busy}
             onStop={onStop}
+            onArchive={onArchive}
+            onRestore={onRestore}
             onDelete={onDelete}
             triggerClassName="ui-tb__act"
           />

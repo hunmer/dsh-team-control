@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, Archive, ArchiveRestore, ClipboardList, Loader2, Plus, Search, Settings2, SlidersHorizontal } from 'lucide-react';
 import { Tabs, TabsList, TabsPanel, TabsTab } from '@/components/ui/tabs';
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import { Tooltip, TooltipPopup, TooltipTrigger } from '@/components/ui/tooltip';
 import { api } from '@/lib/api';
 import {
@@ -322,6 +323,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
                 onStart={(mode) => start(task, mode)}
                 onStop={() => stop(task)}
                 onRetry={() => retry(task)}
+                onArchive={() => archive(task)}
                 onRestore={() => restore(task)}
                 onToggleAuto={() => toggleAuto(task)}
                 onDelete={() => remove(task)}
@@ -366,6 +368,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
                         onStart={(mode) => start(task, mode)}
                         onStop={() => stop(task)}
                         onRetry={() => retry(task)}
+                        onArchive={() => archive(task)}
                         onRestore={() => restore(task)}
                         onToggleAuto={() => toggleAuto(task)}
                         onDelete={() => remove(task)}
@@ -388,7 +391,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
 
         </div>
 
-        <div className="ui-tb__detail" ref={detailRef}>
+        <div className={archived ? 'ui-tb__detail ui-tb__detail--hidden' : 'ui-tb__detail'} ref={detailRef}>
           {selected ? (
             <Tabs
               key={selected.id}
@@ -433,10 +436,15 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
               </TabsPanel>
             </Tabs>
           ) : (
-            <div className="ui-tb__detail-empty">
-              <p className="ui-tb__detail-empty-title">选择一个任务</p>
-              <p>这里会显示任务详情，以及关联团队成员的待办执行进度。</p>
-            </div>
+            <Empty className="m-auto max-w-[250px] gap-4 py-6">
+              <EmptyHeader>
+                <EmptyMedia variant="icon" className="mb-3">
+                  <ClipboardList aria-hidden="true" />
+                </EmptyMedia>
+                <EmptyTitle className="text-sm">选择一个任务</EmptyTitle>
+                <EmptyDescription>这里会显示任务详情，以及关联团队成员的待办执行进度。</EmptyDescription>
+              </EmptyHeader>
+            </Empty>
           )}
         </div>
       </div>

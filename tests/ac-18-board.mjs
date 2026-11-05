@@ -68,7 +68,7 @@ const main = async () => {
     const archived = await api.post(`/api/board/tasks/${t1.id}/archive`);
     assert(archived.archivedAt, '停止后可封存');
     const restored = await api.post(`/api/board/tasks/${t1.id}/restore`);
-    assertEqual(restored.status, 'todo', '恢复回 todo');
+    assertEqual(restored.status, 'failed', '恢复保留封存前状态');
 
     // 团队绑定 + by-team
     await api.post(`/api/board/tasks/${t1.id}/teams`, { teamId: 'team-x' });
@@ -79,11 +79,12 @@ const main = async () => {
       workspaceId: 'ws-board', planningConcurrency: 2, inprogressConcurrency: 2,
       planPermissionPreset: 'read-only', leadPermissionPreset: 'danger-full-access',
     });
-    // 清掉前面 claim 但未 attach 的 t2，让两个 todo 同时入队
+    // 清掉前面 claim 但未 attach 的 t2，让两个 todo 同时入队（t1 已封存恢复过，不再复用）
     try { await api.post(`/api/board/tasks/${t2.id}/stop`, { reason: 'reset' }); } catch { /* ignore */ }
     await api.post(`/api/board/tasks/${t2.id}/retry`);
-    await api.post(`/api/board/tasks/${t1.id}/start`, {});
-    await api.post(`/api/board/tasks/${t2.id}/start`, {});
+    await api.post('/api/board/tasks', {
+      workspaceId: 'ws-board', title: '任务三', auto: true, executionMode: 'new',
+    });
     const a = await api.post('/api/board/claim', { kind: 'planning' });
     const b = await api.post('/api/board/claim', { kind: 'planning' });
     assert(a.item && b.item, '并发 2 可同时 claim 两个规划');
@@ -102,11 +103,10 @@ const main = async () => {
     assertEqual(withWeb.settings.dshWebUrl, 'http://127.0.0.1:3080', 'Host 上报的 DSH Web 地址透出到设置');
     assert(view.tasks.length >= 2, '看板返回任务');
 
-    // 删除：活动任务拒绝；停止后连同团队绑定一并删除
+    // 删除：活动任务拒绝；failed/封存恢复过的任务连同团队绑定一并删除
     let deleteBlocked = false;
-    try { await api.del(`/api/board/tasks/${t1.id}`); } catch (e) { deleteBlocked = e.status === 409; }
+    try { await api.del(`/api/board/tasks/${a.item.task.id}`); } catch (e) { deleteBlocked = e.status === 409; }
     assert(deleteBlocked, '活动任务禁止删除');
-    await api.post(`/api/board/tasks/${t1.id}/stop`, { reason: '准备删除' });
     const removed = await api.del(`/api/board/tasks/${t1.id}`);
     assertEqual(removed.id, t1.id, '删除返回任务 id');
     let gone = false;
