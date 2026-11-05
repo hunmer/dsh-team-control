@@ -1474,7 +1474,7 @@ export class DshTeam {
 
   // ---------- 待办 ----------
   todoView(r) {
-    return { id: r.id, teamId: r.team_id, taskId: r.task_id ?? null, memberId: r.member_id, title: r.title, status: r.status, orderNo: Number(r.order_no), blockedBy: parseJson(r.blocked_by_json, []), createdAt: r.created_at, updatedAt: r.updated_at };
+    return { id: r.id, teamId: r.team_id, taskId: r.task_id ?? null, memberId: r.member_id, title: r.title, status: r.status, orderNo: Number(r.order_no), blockedBy: parseJson(r.blocked_by_json, []), createdAt: r.created_at, updatedAt: r.updated_at, startedAt: r.started_at ?? null, doneAt: r.done_at ?? null };
   }
   listTodos({ teamId, memberId = null, taskId = null } = {}) {
     let sql = 'SELECT * FROM todo WHERE team_id=?'; const args = [teamId];
@@ -1487,8 +1487,11 @@ export class DshTeam {
     this.getTeam(input.teamId);
     if (!input.title) throw ERR.bad('title required');
     const id = newId('todo'); const t = nowIso();
-    this.get('INSERT INTO todo (id, team_id, task_id, member_id, title, status, order_no, blocked_by_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
-      .run(id, input.teamId, input.taskId ?? null, input.memberId ?? null, input.title, input.status || 'open', Number(input.orderNo) || 0, json(input.blockedBy || []), t, t);
+    const status = input.status || 'open';
+    const startedAt = ['active', 'blocked', 'done'].includes(status) ? t : null;
+    const doneAt = status === 'done' ? t : null;
+    this.get('INSERT INTO todo (id, team_id, task_id, member_id, title, status, order_no, blocked_by_json, created_at, started_at, done_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run(id, input.teamId, input.taskId ?? null, input.memberId ?? null, input.title, status, Number(input.orderNo) || 0, json(input.blockedBy || []), t, startedAt, doneAt, t);
     return this.todoView(this.get('SELECT * FROM todo WHERE id=?').get(id));
   }
 
@@ -1511,13 +1514,38 @@ export class DshTeam {
       return { title, status, orderNo: i, blockedBy: Array.isArray(item.blockedBy) ? item.blockedBy.map(String) : [] };
     });
     const t = nowIso();
+    // todo_write 每次整份替换，但行本身要延续：按 title 找回旧行，保留 id / created_at，
+    // 以及 started_at / done_at（看板据此还原每个 todo 的实际用时与「一次勾多个」的批次）。
+    const previous = this.get('SELECT * FROM todo WHERE task_id=?').all(taskId);
+    const pool = new Map();
+    for (const r of previous) {
+      const list = pool.get(r.title) || [];
+      list.push(r);
+      pool.set(r.title, list);
+    }
+    const used = new Set();
     tx(this.db, () => {
-      this.get('DELETE FROM todo WHERE task_id=?').run(taskId);
       for (const row of rows) {
-        const id = newId('todo');
-        this.get('INSERT INTO todo (id, team_id, task_id, member_id, title, status, order_no, blocked_by_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
-          .run(id, task.team_id, taskId, task.assignee ?? null, row.title, row.status, row.orderNo, json(row.blockedBy), t, t);
+        const prev = (pool.get(row.title) || []).shift();
+        const id = prev?.id || newId('todo');
+        const createdAt = prev?.created_at || t;
+        const finished = row.status === 'done';
+        // 重新打开（done → 其它）时清掉上一轮的计时，避免把两轮算在一起
+        const reopened = !!prev?.done_at && !finished;
+        const working = row.status === 'active' || row.status === 'blocked' || finished;
+        const startedAt = reopened ? (working ? t : null) : (prev?.started_at ?? (working ? (prev?.created_at || t) : null));
+        const doneAt = finished ? (prev?.done_at || t) : null;
+        const memberId = task.assignee ?? prev?.member_id ?? null;
+        if (prev) {
+          this.get('UPDATE todo SET member_id=?, status=?, order_no=?, blocked_by_json=?, started_at=?, done_at=?, updated_at=? WHERE id=?')
+            .run(memberId, row.status, row.orderNo, json(row.blockedBy), startedAt, doneAt, t, id);
+        } else {
+          this.get('INSERT INTO todo (id, team_id, task_id, member_id, title, status, order_no, blocked_by_json, created_at, started_at, done_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+            .run(id, task.team_id, taskId, memberId, row.title, row.status, row.orderNo, json(row.blockedBy), createdAt, startedAt, doneAt, t);
+        }
+        used.add(id);
       }
+      for (const r of previous) if (!used.has(r.id)) this.get('DELETE FROM todo WHERE id=?').run(r.id);
     });
     const done = rows.filter((r) => r.status === 'done').length;
     // 事件流按成员分片（seq / member_state 都挂在 member 上），未派发的任务没有成员可归属。
@@ -1540,12 +1568,24 @@ export class DshTeam {
   patchTodo(id, body = {}) {
     const r = this.get('SELECT * FROM todo WHERE id=?').get(id);
     if (!r) throw ERR.notFound('todo');
+    const t = nowIso();
     const sets = []; const args = [];
     if (body.title !== undefined) { sets.push('title=?'); args.push(body.title); }
-    if (body.status !== undefined) { sets.push('status=?'); args.push(body.status); }
+    if (body.status !== undefined) {
+      const status = String(body.status);
+      sets.push('status=?'); args.push(status);
+      if (status === 'done') {
+        if (!r.done_at) { sets.push('done_at=?'); args.push(t); }
+        if (!r.started_at) { sets.push('started_at=?'); args.push(t); }
+      } else {
+        if (r.done_at) sets.push('done_at=NULL');
+        if (status === 'active' && !r.started_at) { sets.push('started_at=?'); args.push(t); }
+        if (status !== 'active' && status !== 'blocked') sets.push('started_at=NULL');
+      }
+    }
     if (body.orderNo !== undefined) { sets.push('order_no=?'); args.push(Number(body.orderNo)); }
     if (body.blockedBy !== undefined) { sets.push('blocked_by_json=?'); args.push(json(body.blockedBy)); }
-    if (sets.length) { sets.push('updated_at=?'); args.push(nowIso(), id); this.get(`UPDATE todo SET ${sets.join(',')} WHERE id=?`).run(...args); }
+    if (sets.length) { sets.push('updated_at=?'); args.push(t, id); this.get(`UPDATE todo SET ${sets.join(',')} WHERE id=?`).run(...args); }
     return this.todoView(this.get('SELECT * FROM todo WHERE id=?').get(id));
   }
 

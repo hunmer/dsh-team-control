@@ -22,8 +22,6 @@ import {
 } from "react";
 import { jsx, jsxs } from "react/jsx-runtime";
 import { AGENT_LANES_CSS } from "./agent-lanes-css";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 
 /* ------------------------------------------------------------------ types */
 
@@ -94,9 +92,16 @@ const TICK_MINUTES = [1, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440];
 const toTs = (v: number | Date): number =>
   typeof v === "number" ? v : v.getTime();
 
-/** compact duration in minute units: "5m", "915m", "10080m" */
-const fmtSpan = (ms: number): string =>
-  `${Math.max(0, Math.round(ms / MIN_MS))}m`;
+/** compact duration: "5m", "2h 30m", "3d 4h" */
+const fmtSpan = (ms: number): string => {
+  const mins = Math.max(0, Math.round(ms / MIN_MS));
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24)
+    return mins % 60 ? `${hours}h ${mins % 60}m` : `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return hours % 24 ? `${days}d ${hours % 24}h` : `${days}d`;
+};
 
 /** first letter of the first two words, uppercased */
 const initials = (name: string): string =>
@@ -373,12 +378,7 @@ export function AgentLanes({
                                       ? undefined
                                       : "",
                                   "aria-hidden": active?.status === "running",
-                                  children: jsx(Badge, {
-                                    size: "sm",
-                                    variant:
-                                      active?.status === "waiting"
-                                        ? "warning"
-                                        : "secondary",
+                                  children: jsx("span", {
                                     children:
                                       active?.status === "waiting"
                                         ? "Needs you"
@@ -593,16 +593,16 @@ export function AgentLanes({
                             jsxs("span", {
                               className: "ui-alc__ask-actions",
                               children: [
-                                jsx(Button, {
-                                  size: "xs",
+                                jsx("button", {
                                   type: "button",
-                                  variant: "outline",
+                                  className: "ui-alc__btn",
                                   onClick: () => decide(openTask, false),
                                   children: `Reject`,
                                 }),
-                                jsx(Button, {
-                                  size: "xs",
+                                jsx("button", {
                                   type: "button",
+                                  className:
+                                    "ui-alc__btn ui-alc__btn--primary",
                                   autoFocus: true,
                                   onClick: () => decide(openTask, true),
                                   children: `Approve`,
@@ -662,11 +662,9 @@ export function AgentLanes({
                                 children: openTask.title,
                               }),
                           onOpen &&
-                            jsx(Button, {
-                              className: "justify-self-start text-white dark:text-black",
-                              size: "xs",
+                            jsx("button", {
                               type: "button",
-                              variant: "link",
+                              className: "ui-alc__tip-open",
                               onClick: () => onOpen(openTask),
                               children: `Open`,
                             }),

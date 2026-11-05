@@ -5,7 +5,7 @@
  * 三列：Waiting = todo/planned/failed，Progress = planning/inprogress，Done = done。
  * 拆分自 Tasks.tsx，行为不变。
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Archive, ArchiveRestore, ChevronRight, Loader2, Plus, Search, Settings2, SlidersHorizontal } from 'lucide-react';
 import { Tooltip, TooltipPopup, TooltipTrigger } from '@/components/ui/tooltip';
 import { api } from '@/lib/api';
@@ -24,6 +24,7 @@ import '../board-extra.css';
 import { CreateTaskDialog, SettingsDialog } from './dialogs';
 import { TaskCard } from './TaskCard';
 import { TaskPanel } from './TaskPanel';
+import { TaskProgress } from './TaskProgress';
 import { COLUMNS, STATUS_ORDER, errText, type ModelOption, type ModelsResponse } from './shared';
 
 export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: {
@@ -46,6 +47,11 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
   const [busy, setBusy] = useState('');
   const [models, setModels] = useState<ModelOption[]>([]);
   const [dragTask, setDragTask] = useState<BoardTask | null>(null);
+  const rootRef = useRef<HTMLElement | null>(null);
+  const detailRef = useRef<HTMLDivElement | null>(null);
+  const scrollToDetail = useRef(false);
+  /** 容器宽度不够时改成上下排（与 board-page.css 的 1120px 断点保持一致） */
+  const [stacked, setStacked] = useState(false);
 
   const load = useCallback(async (quiet = false) => {
     if (!usable || !workspaceId) {
@@ -112,6 +118,40 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
   useEffect(() => {
     if (selectedId && !selected && !loading) setSelectedId(null);
   }, [selected, selectedId, loading]);
+
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? el.clientWidth;
+      setStacked(width < 1120);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [usable]);
+
+  const revealDetail = useCallback(() => {
+    const el = detailRef.current;
+    if (!el) return;
+    requestAnimationFrame(() => el.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  }, []);
+
+  /** 选中任务；窄屏（上下排）时把详情容器滚进视野。 */
+  const selectTask = useCallback((id: string) => {
+    if (detailRef.current) detailRef.current.scrollTop = 0;
+    if (id === selectedId) {
+      if (stacked) revealDetail();
+      return;
+    }
+    scrollToDetail.current = stacked;
+    setSelectedId(id);
+  }, [selectedId, stacked, revealDetail]);
+
+  useEffect(() => {
+    if (!scrollToDetail.current || !selectedId) return;
+    scrollToDetail.current = false;
+    revealDetail();
+  }, [selectedId, revealDetail]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -192,7 +232,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
   }
 
   return (
-    <section className={cn('ui-tb', standalone && 'ui-tb--standalone')}>
+    <section ref={rootRef} className={cn('ui-tb', standalone && 'ui-tb--standalone')}>
       <style href="ui-task-board" precedence="default">{TASK_BOARD_CSS}</style>
 
       <header className="ui-tb__top mt-2">
@@ -267,6 +307,8 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
 
       {error && <p className="ui-tb__error" style={{ padding: '0 18px' }}>{error}</p>}
 
+      <div className="ui-tb__body">
+        <div className="ui-tb__board">
       {loading && !data ? (
         <div className="ui-tb__empty-card"><Loader2 className="animate-spin" size={18} /> 正在加载看板…</div>
       ) : (
@@ -279,7 +321,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
                 compact={compact}
                 archived
                 busy={busy}
-                onOpen={() => setSelectedId(task.id)}
+                onOpen={() => selectTask(task.id)}
                 onStart={(mode) => start(task, mode)}
                 onStop={() => stop(task)}
                 onRetry={() => retry(task)}
@@ -322,7 +364,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
                         compact={compact}
                         archived={false}
                         busy={busy}
-                        onOpen={() => setSelectedId(task.id)}
+                        onOpen={() => selectTask(task.id)}
                         onStart={(mode) => start(task, mode)}
                         onStop={() => stop(task)}
                         onRetry={() => retry(task)}
@@ -345,24 +387,39 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
         )
       )}
 
-      {selected && (
-        <TaskPanel
-          task={selected}
-          models={models}
-          dshWebUrl={data?.settings?.dshWebUrl || null}
-          busy={busy}
-          onClose={() => setSelectedId(null)}
-          onStart={start}
-          onStop={stop}
-          onRetry={retry}
-          onArchive={archive}
-          onRestore={restore}
-          onToggleAuto={() => toggleAuto(selected)}
-          onSaved={() => void load(true)}
-          onError={(message) => toast(message, 'error')}
-          onOk={(message) => toast(message, 'ok')}
-        />
-      )}
+        </div>
+
+        <div className="ui-tb__detail" ref={detailRef}>
+          {selected ? (
+            <>
+              {selected.teams?.length ? (
+                <TaskProgress teamId={selected.teams[selected.teams.length - 1]} />
+              ) : null}
+              <TaskPanel
+                task={selected}
+                models={models}
+                dshWebUrl={data?.settings?.dshWebUrl || null}
+                busy={busy}
+                onClose={() => setSelectedId(null)}
+                onStart={start}
+                onStop={stop}
+                onRetry={retry}
+                onArchive={archive}
+                onRestore={restore}
+                onToggleAuto={() => toggleAuto(selected)}
+                onSaved={() => void load(true)}
+                onError={(message) => toast(message, 'error')}
+                onOk={(message) => toast(message, 'ok')}
+              />
+            </>
+          ) : (
+            <div className="ui-tb__detail-empty">
+              <p className="ui-tb__detail-empty-title">选择一个任务</p>
+              <p>这里会显示任务详情，以及关联团队成员的待办执行进度。</p>
+            </div>
+          )}
+        </div>
+      </div>
 
       <CreateTaskDialog
         open={creating}
@@ -374,7 +431,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
         onCreated={async (task) => {
           setCreating(false);
           await load(true);
-          setSelectedId(task.id);
+          selectTask(task.id);
           toast('任务已创建', 'ok');
         }}
       />

@@ -16,6 +16,63 @@
 .ui-tb--standalone .ui-tb__top-actions{margin-left:auto}
 .ui-tb--standalone .ui-tb__columns{flex:1;overflow-y:auto;padding-bottom:4px}
 .ui-tb--standalone .ui-tb__column{min-height:0}
+
+/* 看板 + 详情容器：宽屏左右排，窄屏上下排（断点与 TasksView 的 ResizeObserver 一致） */
+.ui-tb .ui-tb__body{display:flex;flex:1;gap:12px;min-width:0;min-height:0;padding:0 12px 12px}
+.ui-tb .ui-tb__board{display:flex;flex:1;flex-direction:column;min-width:0;min-height:0}
+.ui-tb .ui-tb__board .ui-tb__columns{flex:1;overflow-y:auto;padding:0 0 4px}
+.ui-tb .ui-tb__board .ui-tb__archived{flex:1;overflow-y:auto;padding:0}
+.ui-tb .ui-tb__detail{display:flex;flex:none;flex-direction:column;gap:10px;width:392px;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;padding-right:2px}
+.ui-tb .ui-tb__detail-empty{display:grid;gap:4px;margin:auto;max-width:250px;padding:26px 18px;border:1px dashed #e5e5e5;border-radius:14px;text-align:center;font-size:12px;line-height:18px;color:#8f8f8f}
+.ui-tb .ui-tb__detail-empty-title{font-size:13px;font-weight:600;color:#525252}
+
+/* TaskPanel 从侧滑改成容器里的卡片：覆盖 .ui-tb__panel 的绝对定位/尺寸 */
+.ui-tb .ui-tb__panel--card{position:relative;inset:auto;z-index:auto;flex:none;width:auto;padding:14px 16px;overflow:visible;border-radius:14px;background:var(--ui-tb-card);box-shadow:0 0 0 1px var(--ui-tb-line),0 1px 2px rgba(0,0,0,.04);transform:none;transition:none}
+
+/* 团队执行进度卡片（AgentLanes + 批次明细） */
+.ui-tb .ui-tb__progress{flex:none;padding:12px;border-radius:14px;background:var(--ui-tb-card);box-shadow:0 0 0 1px var(--ui-tb-line),0 1px 2px rgba(0,0,0,.04)}
+.ui-tb .ui-tb__progress .ui-alc{max-width:none}
+.ui-tb .ui-tb__progress .ui-alc__card{background:transparent;box-shadow:none}
+.ui-tb .ui-tb__progress .ui-alc__bar{padding:0 0 10px;border-bottom:0}
+.ui-tb .ui-tb__progress .ui-alc__body{padding:16px 0 0}
+.ui-tb .ui-tb__progress-empty{padding:12px 4px;font-size:12px;line-height:18px;color:#8f8f8f}
+.ui-tb .ui-tb__progress-empty[data-error="true"]{color:#d1242f}
+.ui-tb .ui-tb__progress-list{display:grid;gap:10px;margin-top:12px;padding-top:10px;border-top:1px solid var(--ui-tb-line)}
+.ui-tb .ui-tb__progress-summary{display:flex;gap:10px;font-size:11px;color:#8f8f8f}
+.ui-tb .ui-tb__progress-member{display:grid;gap:6px}
+.ui-tb .ui-tb__progress-member-head{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11.5px}
+.ui-tb .ui-tb__progress-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.ui-tb .ui-tb__progress-count{flex:none;font-variant-numeric:tabular-nums;color:#8f8f8f}
+.ui-tb .ui-tb__batch{padding:6px 8px;border-radius:9px;background:#f7f7f7}
+.ui-tb .ui-tb__batch[data-status="running"]{background:#eef3ff}
+.ui-tb .ui-tb__batch[data-status="failed"]{background:#fff1f1}
+.ui-tb .ui-tb__batch-head{display:flex;justify-content:space-between;gap:8px;font-size:11px;color:#737373}
+.ui-tb .ui-tb__batch-time{flex:none;font-variant-numeric:tabular-nums}
+.ui-tb .ui-tb__batch ul{display:grid;gap:3px;margin:4px 0 0;padding:0;list-style:none}
+.ui-tb .ui-tb__batch li{display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-size:11.5px;line-height:16px}
+.ui-tb .ui-tb__todo-title{display:flex;align-items:baseline;gap:5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ui-tb .ui-tb__todo-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ui-tb .ui-tb__todo-dot{flex:none;width:5px;height:5px;border-radius:50%;background:#c4c4c4}
+.ui-tb .ui-tb__todo-dot[data-status="active"]{background:#2f6bff}
+.ui-tb .ui-tb__todo-dot[data-status="done"]{background:#16a34a}
+.ui-tb .ui-tb__todo-dot[data-status="blocked"]{background:#f59e0b}
+.ui-tb .ui-tb__todo-dur{flex:none;font-size:11px;font-variant-numeric:tabular-nums;color:#8f8f8f}
+
+@container (max-width: 1120px){
+  .ui-tb .ui-tb__body{flex-direction:column;gap:12px;overflow-y:auto;overscroll-behavior:contain;padding-bottom:8px}
+  .ui-tb .ui-tb__board{flex:none}
+  .ui-tb .ui-tb__board .ui-tb__columns{flex:none;overflow:visible}
+  .ui-tb .ui-tb__board .ui-tb__archived{flex:none;overflow:visible}
+  .ui-tb .ui-tb__detail{width:100%;overflow:visible;padding-right:0}
+}
+
+:where(.dark,[data-theme="dark"]) .ui-tb .ui-tb__detail-empty{border-color:rgba(255,255,255,.14);color:#8f8f8f}
+:where(.dark,[data-theme="dark"]) .ui-tb .ui-tb__detail-empty-title{color:#c4c4c4}
+:where(.dark,[data-theme="dark"]) .ui-tb .ui-tb__batch{background:rgba(255,255,255,.06)}
+:where(.dark,[data-theme="dark"]) .ui-tb .ui-tb__batch[data-status="running"]{background:rgba(47,107,255,.16)}
+:where(.dark,[data-theme="dark"]) .ui-tb .ui-tb__batch[data-status="failed"]{background:rgba(229,72,77,.16)}
+:where(.dark,[data-theme="dark"]) .ui-tb .ui-tb__batch-head{color:#a3a3a3}
+:where(.dark,[data-theme="dark"]) .ui-tb .ui-tb__progress-empty[data-error="true"]{color:#ff6b70}
 :where(.dark,[data-theme="dark"]) .board-page{background:#18181b;color:#ededed}
 :where(.dark,[data-theme="dark"]) .board-page__bar{background:#202023;border-bottom-color:rgba(255,255,255,.08)}
 :where(.dark,[data-theme="dark"]) .board-page__mark{background:#ededed;color:#171717}
