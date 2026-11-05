@@ -1,8 +1,8 @@
 /**
- * 任务操作菜单（任务卡片与详情卡片复用）：停止 / 封存或恢复 / 删除。
- * 停止对非进行中的任务禁用；删除会二次确认，进行中的任务需先停止。
+ * 任务操作菜单（任务卡片与详情卡片复用）：编辑 / 停止 / 封存或恢复 / 删除。
+ * 编辑仅对待办任务可用；停止对非进行中的任务禁用；删除会二次确认，进行中的任务需先停止。
  */
-import { Archive, ArchiveRestore, MoreHorizontal, Square, Trash2 } from 'lucide-react';
+import { Archive, ArchiveRestore, MoreHorizontal, Pencil, Square, Trash2 } from 'lucide-react';
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from '@/components/ui/menu';
 import type { BoardTask } from '@/lib/board';
 import { cn } from '@/lib/utils';
@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils';
 export function TaskActionsMenu({
   task,
   busy,
+  onEdit,
   onStop,
   onArchive,
   onRestore,
@@ -19,6 +20,7 @@ export function TaskActionsMenu({
 }: {
   task: BoardTask;
   busy: string;
+  onEdit?: () => void;
   onStop: () => void;
   onArchive?: () => void;
   onRestore?: () => void;
@@ -56,6 +58,12 @@ export function TaskActionsMenu({
           <MoreHorizontal size={13} />
         </MenuTrigger>
         <MenuPopup align={align} className="w-36">
+          {onEdit && task.status === 'todo' && !task.archivedAt && (
+            <MenuItem onClick={onEdit} disabled={isBusy}>
+              <Pencil />
+              编辑
+            </MenuItem>
+          )}
           <MenuItem onClick={onStop} disabled={!active || isBusy}>
             <Square />
             停止

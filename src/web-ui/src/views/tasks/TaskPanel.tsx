@@ -2,7 +2,7 @@
  * 任务详情卡片：放在看板右侧（窄屏时下方）的详情容器里，字段只读展示；
  * 仅在「待办」状态时可通过右上角编辑按钮打开编辑对话框。拆分自 Tasks.tsx。
  */
-import { Fragment, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { Archive, ArchiveRestore, CircleStop, ExternalLink, MessageSquare, Pencil, Play, RotateCcw, Users, X } from 'lucide-react';
 import { Markdown } from '@/components/markdown';
 import { ModelAvatar } from '@/components/ModelAvatar';
@@ -76,6 +76,8 @@ export function TaskPanel({
   models,
   dshWebUrl,
   busy,
+  autoEdit,
+  onAutoEdit,
   onClose,
   onStart,
   onStop,
@@ -92,6 +94,9 @@ export function TaskPanel({
   /** Host 上报的 DSH Web 地址：独立页面用它 window.open 深链打开会话 */
   dshWebUrl?: string | null;
   busy: string;
+  /** 从任务卡片菜单触发编辑：详情面板挂载后自动打开编辑对话框 */
+  autoEdit?: boolean;
+  onAutoEdit?: () => void;
   onClose: () => void;
   onStart: (task: BoardTask, mode: BoardMode) => void;
   onStop: (task: BoardTask) => void;
@@ -112,6 +117,12 @@ export function TaskPanel({
   const isBusy = busy.startsWith(`${task.id}:`);
   // 只有待办（且未封存）的任务可以编辑字段
   const editable = task.status === 'todo' && !task.archivedAt;
+
+  useEffect(() => {
+    if (!autoEdit) return;
+    if (editable) setEditing(true);
+    onAutoEdit?.();
+  }, [autoEdit, editable, onAutoEdit]);
 
   return (
     <>
@@ -181,6 +192,7 @@ export function TaskPanel({
             <TaskActionsMenu
               task={task}
               busy={busy}
+              onEdit={() => setEditing(true)}
               onStop={() => onStop(task)}
               onArchive={() => onArchive(task)}
               onRestore={() => onRestore(task)}

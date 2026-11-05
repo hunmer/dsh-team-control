@@ -55,6 +55,7 @@ export function TaskCard({
   archived,
   busy,
   onOpen,
+  onEdit,
   onStart,
   onStop,
   onRetry,
@@ -69,6 +70,7 @@ export function TaskCard({
   archived: boolean;
   busy: string;
   onOpen: () => void;
+  onEdit: () => void;
   onStart: (mode: BoardMode) => void;
   onStop: () => void;
   onRetry: () => void;
@@ -138,6 +140,7 @@ export function TaskCard({
           <TaskActionsMenu
             task={task}
             busy={busy}
+            onEdit={onEdit}
             onStop={onStop}
             onArchive={onArchive}
             onRestore={onRestore}
