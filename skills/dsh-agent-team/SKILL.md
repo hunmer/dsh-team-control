@@ -48,7 +48,7 @@ Lead 主动出手只有三种情况：用户给了新指令（改派/加任务/�
 `agentPreset` 和 `permissionPreset` 是两套东西：前者决定成员**拥有什么**（组合里的工具插件、skill 提供方、MCP client、系统提示词），后者决定成员**被允许做什么**（沙箱 + 审批）。
 
 - 内置预设由 DSH bundle / profile 的 Cordis YAML 声明；不够用时用 §0.2 的 `team_preset` 自建一个。
-- `team_create({agentPreset})` 设团队默认；`team_spawn({agentPreset})` 按成员覆盖；都不传就沿用宿主默认组合（等价于沿用 Lead 的组装）。
+- `team_create({agentPreset})` 设团队默认；`team_spawn({agentPreset})` 按成员覆盖；都不传时插件显式使用宿主当前默认预设（不会继承 Lead 的临时组合，避免 Lead 是看板裸会话时成员连 shell 都没有）。
 - 插件用宿主 `ctx.get('agentPresets').list()` 校验 id，找不到会报错并列出可用预设。
 - 只有 `contextMode: 'fresh'`（默认，`spawn` provider）支持独立 preset；`fork` 会继承 Lead 的组合，此时传 `agentPreset` 会在返回里给 `agentPresetWarning` 且不生效。
 - 成员的**系统提示词**来自 preset 组合 + 工作区 `AGENTS.md`；`prompt` 只是第一条用户消息，别把长期规则只写在 prompt 里（要强制就落到 preset）。
