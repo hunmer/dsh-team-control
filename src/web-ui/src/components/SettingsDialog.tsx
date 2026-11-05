@@ -9,7 +9,7 @@ import { Archive, ArchiveRestore, Loader2, Trash2 } from 'lucide-react';
 import { api, enc, pickItems } from '@/lib/api';
 import { usePanel } from '@/store';
 import { Button } from '@/components/ui/button';
-import { Dialog, DialogDescription, DialogHeader, DialogPopup, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogHeader, DialogPopup, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { Switch } from '@/components/ui/switch';
@@ -122,7 +122,6 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
       <DialogPopup className="max-w-2xl overflow-hidden p-0">
         <DialogHeader className="border-b p-5 pe-12">
           <DialogTitle>设置</DialogTitle>
-          <DialogDescription>管理已封存的团队与自动封存规则。</DialogDescription>
         </DialogHeader>
         <div className="flex min-h-[24rem]">
           <nav aria-label="设置项目" className="flex w-44 shrink-0 flex-col gap-1 border-r bg-muted/32 p-2">

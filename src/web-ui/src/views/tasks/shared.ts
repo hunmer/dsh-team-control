@@ -5,19 +5,36 @@
 import type { BoardMode, BoardRoute, BoardStatus, BoardTask } from '@/lib/board';
 import type { BoardStatusKind } from '../board-status-icon';
 
+export interface ModelEffort {
+  id: string;
+  name?: string | null;
+}
+
 export interface ModelOption {
   key: string;
   provider: string;
   model: string;
   name: string;
   group: string;
+  /** 该模型可选的思考强度（已按 allowedEfforts 过滤）；空表示不支持 */
+  efforts?: ModelEffort[] | null;
+  defaultEffort?: string | null;
 }
 
 export interface ModelsResponse {
   providers: Array<{
     id: string;
     name: string;
-    models: Array<{ provider: string; model: string; name: string; enabled?: boolean }>;
+    models: Array<{
+      provider: string;
+      model: string;
+      name: string;
+      enabled?: boolean;
+      efforts?: ModelEffort[] | null;
+      defaultEffort?: string | null;
+      /** null/缺省 = 全部允许 */
+      allowedEfforts?: string[] | null;
+    }>;
   }>;
 }
 
@@ -86,6 +103,23 @@ export function openTeamPanel(teamId: string): OpenTeamResult | null {
   url.searchParams.delete('team');
   url.hash = `#/t/${encodeURIComponent(teamId)}`;
   return window.open(url.toString(), '_blank') ? 'window' : null;
+}
+
+export type OpenSessionResult = 'host' | 'window';
+
+/**
+ * 打开看板任务所在的 DSH 会话：嵌在 DSH 里交给宿主切会话；独立页面用 Host 上报的
+ * DSH Web 地址深链（`#dsh-session=<id>`）新开标签，由 dsh-plugin-ui 的客户端半边接管。
+ */
+export function openDshSession(sessionId: string, webUrl?: string | null): OpenSessionResult | null {
+  if (typeof window === 'undefined' || !sessionId) return null;
+  if (window.parent !== window) {
+    window.parent.postMessage({ type: 'dsh-team:open-session', sessionId }, window.location.origin);
+    return 'host';
+  }
+  const base = String(webUrl || '').trim().replace(/\/+$/, '');
+  if (!base) return null;
+  return window.open(`${base}/#dsh-session=${encodeURIComponent(sessionId)}`, '_blank') ? 'window' : null;
 }
 
 export function errText(err: unknown): string {

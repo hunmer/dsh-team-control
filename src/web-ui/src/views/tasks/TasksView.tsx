@@ -83,12 +83,18 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
         for (const group of res.providers || []) {
           for (const m of group.models || []) {
             if (m.enabled === false) continue;
+            const allowed = m.allowedEfforts ?? null;
+            const efforts = (m.efforts ?? [])
+              .filter((e) => allowed === null || allowed.includes(e.id))
+              .map((e) => ({ id: e.id, name: e.name ?? null }));
             flat.push({
               key: `${m.provider}\u0000${m.model}`,
               provider: m.provider,
               model: m.model,
               name: m.name || m.model,
               group: group.name || group.id,
+              efforts: efforts.length ? efforts : null,
+              defaultEffort: m.defaultEffort ?? null,
             });
           }
         }
@@ -189,7 +195,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
     <section className={cn('ui-tb', standalone && 'ui-tb--standalone')}>
       <style href="ui-task-board" precedence="default">{TASK_BOARD_CSS}</style>
 
-      <header className="ui-tb__top">
+      <header className="ui-tb__top mt-2">
         <nav className="ui-tb__crumbs" aria-label="面包屑">
           <span className="ui-tb__logo" aria-hidden="true">DS</span>
           <span className="ui-tb__crumb">{data?.workspace.title || '工作区'}</span>
@@ -343,6 +349,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
         <TaskPanel
           task={selected}
           models={models}
+          dshWebUrl={data?.settings?.dshWebUrl || null}
           busy={busy}
           onClose={() => setSelectedId(null)}
           onStart={start}

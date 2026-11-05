@@ -3,7 +3,7 @@
  * 拆分自 Tasks.tsx，行为不变。
  */
 import { useEffect, useState } from 'react';
-import { Archive, ArchiveRestore, CircleStop, ExternalLink, Loader2, Play, RotateCcw, Users, X } from 'lucide-react';
+import { Archive, ArchiveRestore, CircleStop, ExternalLink, Loader2, MessageSquare, Play, RotateCcw, Users, X } from 'lucide-react';
 import { Markdown } from '@/components/markdown';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
@@ -11,11 +11,12 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from '@/components/ui/tooltip';
 import { BOARD_STATUS_LABEL, boardApi, type BoardMode, type BoardTask } from '@/lib/board';
 import { StatusIcon } from '../board-status-icon';
 import { Field, ModePicker, RouteSelect } from './fields';
-import { STATUS_ICON, errText, fmtTime, openTeamPanel, routeFromKey, routeKey, taskKey, type ModelOption } from './shared';
+import { STATUS_ICON, errText, fmtTime, openDshSession, openTeamPanel, routeFromKey, routeKey, taskKey, type ModelOption } from './shared';
 
 export function TaskPanel({
   task,
   models,
+  dshWebUrl,
   busy,
   onClose,
   onStart,
@@ -30,6 +31,8 @@ export function TaskPanel({
 }: {
   task: BoardTask;
   models: ModelOption[];
+  /** Host 上报的 DSH Web 地址：独立页面用它 window.open 深链打开会话 */
+  dshWebUrl?: string | null;
   busy: string;
   onClose: () => void;
   onStart: (task: BoardTask, mode: BoardMode) => void;
@@ -240,6 +243,26 @@ export function TaskPanel({
               <p className="text-xs text-muted-foreground">
                 尚未关联团队；执行阶段调用 team_create 后会自动绑定。
               </p>
+            )}
+            {task.leadSessionId && (
+              <button
+                type="button"
+                className="ui-tb__team-link mt-2"
+                title="打开该任务的 Lead（执行）DSH 会话"
+                onClick={() => {
+                  const opened = openDshSession(task.leadSessionId!, dshWebUrl);
+                  if (!opened) {
+                    onError('当前是独立页面且未拿到 DSH Web 地址：请在 DSH 面板里打开该会话');
+                    return;
+                  }
+                  onOk(opened === 'window' ? '已在新窗口打开 DSH 执行会话' : '已在 DSH 中打开执行会话');
+                }}
+              >
+                <MessageSquare size={12} />
+                <span>执行会话</span>
+                <span className="ui-tb__team-link-hint">打开会话</span>
+                <ExternalLink size={11} />
+              </button>
             )}
           </div>
 

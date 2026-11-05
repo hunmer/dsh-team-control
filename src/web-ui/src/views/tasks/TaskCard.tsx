@@ -3,6 +3,7 @@
  * 拆分自 Tasks.tsx，行为不变。
  */
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Switch } from '@/components/ui/switch';
 import { Tooltip, TooltipPopup, TooltipTrigger } from '@/components/ui/tooltip';
 import { ArchiveRestore, CircleAlert, CircleStop, ExternalLink, Play, RotateCcw, Users } from 'lucide-react';
 import { BOARD_STATUS_LABEL, type BoardMode, type BoardTask } from '@/lib/board';
@@ -58,14 +59,13 @@ export function TaskCard({
           <span className="ui-tb__key">{taskKey(task)}</span>
         </div>
         <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            className="ui-tb__auto"
-            onClick={(e) => { e.stopPropagation(); onToggleAuto(); }}
+          <Switch
+            checked={task.auto}
+            onCheckedChange={() => onToggleAuto()}
+            onClick={(e) => e.stopPropagation()}
             title={task.auto ? '关闭自动入队' : '开启自动入队'}
-          >
-            {task.auto ? 'auto 开' : 'auto 关'}
-          </button>
+            aria-label={task.auto ? '关闭自动入队' : '开启自动入队'}
+          />
           {!!task.teams?.length && (
             <span className="ui-tb__count-badge" title={`${task.teams.length} 个团队`}>
               <Users size={11} /> {task.teams.length}

@@ -44,6 +44,8 @@ export interface BoardSettings {
   workspacePath: string;
   planningConcurrency: number;
   inprogressConcurrency: number;
+  /** 看板创建的规划/执行会话是否挂进 DSH 工作区会话列表（默认 true） */
+  showTaskSessions: boolean;
   planProvider: string | null;
   planModel: string | null;
   planReasoningEffort: string | null;
@@ -54,6 +56,8 @@ export interface BoardSettings {
   leadPermissionPreset: string;
   planAgentPreset: string | null;
   leadAgentPreset: string | null;
+  /** Host 上报的 DSH Web 地址（独立面板用它深链打开会话；Host 未上报时为 null） */
+  dshWebUrl?: string | null;
   updatedAt: string | null;
 }
 

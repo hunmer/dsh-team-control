@@ -4,6 +4,7 @@ import { usePanel, type TabName } from '@/store';
 import { isUnacked } from '@/views/Messages';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Toaster } from '@/components/Toaster';
+import { DevInspector } from '@/components/DevInspector';
 import { AuthOverlayDialog, BootErrorOverlay } from '@/components/Overlays';
 import { TopBar } from '@/components/TopBar';
 import { WorkspaceSelect } from '@/components/WorkspaceSelect';
@@ -102,6 +103,7 @@ export default function App() {
         <div className="fixed inset-x-0 top-0 z-50"><BootErrorOverlay /></div>
         <BoardPage />
         <Toaster />
+        <DevInspector />
       </ToastProvider>
     );
   }
@@ -119,6 +121,7 @@ export default function App() {
       </AppShell>
       <AuthOverlayDialog />
       <Toaster />
+      <DevInspector />
       <noscript><p className="p-4 text-sm">本面板需要启用 JavaScript 才能显示实时数据。</p></noscript>
     </ToastProvider>
   );
