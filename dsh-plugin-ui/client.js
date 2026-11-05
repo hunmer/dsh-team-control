@@ -231,15 +231,22 @@ window.__ModuleLoader__.load({
         h('rect', { x: 12, y: 36, width: 40, height: 14, rx: 3, fill: 'none', stroke: 'currentColor', strokeWidth: 4 }));
     }
 
-    /** 侧边栏图标（回退：中央面板入口，由 sidebar 按 id 调 layout.selectPanel） */
-    function panelIcon(t) {
+    /**
+     * 左侧栏图标。id 与 main 槽的 key 一一对应，点击时 sidebar 会调 layout.selectPanel。
+     * @param {string} [kind] - 'board' 用看板图标与文案，缺省为编排。
+     */
+    function panelIcon(t, kind) {
+      const board = kind === 'board';
+      const Glyph = board ? BoardIcon : TeamIcon;
       return function PanelIcon(props) {
         const size = Math.max(12, Number(props && props.size) || 16);
         const active = !!(props && props.active);
         return h('span', {
           className: 'dsht-panel-icon' + (active ? ' is-active' : ''),
-          title: t('title'), 'aria-label': t('side_nav'), role: 'img',
-        }, h(TeamIcon, { size, active }));
+          title: t(board ? 'board_nav' : 'title'),
+          'aria-label': t(board ? 'board_nav' : 'side_nav'),
+          role: 'img',
+        }, h(Glyph, { size, active }));
       };
     }
 
@@ -265,7 +272,7 @@ window.__ModuleLoader__.load({
       }];
     }
 
-    /** 自动打开面板时希望面板直接选中的团队（TeamView 渲染时带上 &team=）。 */
+    /** 打开编排面板时希望面板直接选中的团队（TeamView 渲染时带上 &team=）。 */
     let pendingTeamId = null;
 
     /**
@@ -534,9 +541,6 @@ window.__ModuleLoader__.load({
       sessionTeamStore.focusTeam(teamId);
       return openTeamPanel(getService, sessionId);
     }
-
-    /** 本会话是否已经自动推开过一次（用户手动收起后不再打扰）。 */
-    const AUTO_OPEN_KEY = 'dsh-team.autoopen.v1.';
 
     /* ------------------------------------------------------------------
      * 会话右上角团队卡片（移植 affectui `agent-findings`）
@@ -831,8 +835,8 @@ window.__ModuleLoader__.load({
 
     /**
      * 快照落库。
-     * - 首次轮询到「有人在跑」时自动展开；用户点过 pill/关闭按钮（pinned）后一律尊重用户选择，
-     *   否则每轮轮询都会把用户手动展开的卡片又收回去。
+     * - 卡片**不自动展开**：只有用户点过 pill（pinned）时才沿用其选择；否则一直收起，
+     *   团队在跑也不弹计划列表，避免聊天框被自动撑开。
      * - 空快照/请求失败不清屏：团队可能只是这一轮没查到（sidecar 重启、成员列表抖动），
      *   连续 MISS_LIMIT 次为空才真正收起入口，避免卡片闪一下就消失。
      */
@@ -863,7 +867,7 @@ window.__ModuleLoader__.load({
         asOf: snapshot.asOf,
         error: null,
         misses: 0,
-        open: prev.pinned ? prev.open : (prev.open || model.running > 0),
+        open: prev.pinned ? prev.open : false,
       });
     }
 
@@ -1086,9 +1090,8 @@ window.__ModuleLoader__.load({
           return undefined;
         }, [sessionId]);
 
-        // 解析本会话的团队并记住；首次解析到团队时把编排页自动推到侧栏（每会话只自动开一次）。
-        // 注意：查团队每次挂载都做（很便宜），只有「自动打开」是一次性的 —— 否则切回已经
-        // 打开过编排页的会话时拿不到自己的团队，面板就会显示第一个工作区的团队。
+        // 解析本会话的团队并记住（供左侧栏「编排」入口用）；**不自动推开面板**，
+        // 团队创建/成员开跑都只更新数据，面板由用户点左侧栏入口自己打开。
         React.useEffect(() => {
           if (!sessionId) return undefined;
           let stopped = false;
@@ -1107,13 +1110,6 @@ window.__ModuleLoader__.load({
             if (team) {
               sessionTeamStore.set(sessionId, team.id || null);
               pendingTeamId = team.id || null;
-              const key = AUTO_OPEN_KEY + sessionId;
-              let opened = false;
-              try { opened = window.sessionStorage.getItem(key) === '1'; } catch { /* ignore */ }
-              if (!opened) {
-                try { window.sessionStorage.setItem(key, '1'); } catch { /* ignore */ }
-                openTeamPanel(getService, sessionId);
-              }
               return;
             }
             // 连续几次都没有团队就先按「无团队」放行面板，之后仍然会继续轮询补上
@@ -1613,21 +1609,29 @@ window.__ModuleLoader__.load({
             key: 'dsh-team-board',
           }, () => h(BoardView, { t, getService }))));
 
-          // 2) 老宿主（没有 ctx.inject，服务只能同步取）且既无右侧栏页签也无 better-sidebar：
-          //    中央停靠面板兜底（与「插件」页同级）。有 ctx.inject 时不再走这里 —— 冷启动
-          //    期服务常常还没挂上，提前判断会多注一份面板入口，等 inject 即可。
-          if (typeof ctx.inject !== 'function' && !sidebarRightTabs && !getService('betterSidebar')) {
-            disposers.push(ctx.slots.inject('main', () => ctx.slots.register({
-              name: 'main',
-              key: 'dsh-team',
-            }, () => h(TeamView, { t, compact: false, getService }))));
-            disposers.push(ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
-              name: 'sidebar.panellist',
-              id: 'dsh-team',
-              order: 20,
-              label: () => t('side_nav'),
-            }, panelIcon(t))));
-          }
+          // 2) 左侧栏常驻入口：「编排」「看板」各有一份中央主面板 + 左侧栏图标行。
+          //    与右侧栏页签、better-sidebar 并存（不互斥）：装没装扩展，左侧栏都始终有两个入口。
+          //    sidebar.panellist 的 id 与 main 的 key 一一对应，点击由 sidebar 调 layout.selectPanel。
+          disposers.push(ctx.slots.inject('main', () => ctx.slots.register({
+            name: 'main',
+            key: 'dsh-team',
+          }, () => h(TeamView, { t, compact: false, getService }))));
+          disposers.push(ctx.slots.inject('main', () => ctx.slots.register({
+            name: 'main',
+            key: 'dsh-team-board',
+          }, () => h(BoardView, { t, getService }))));
+          disposers.push(ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+            name: 'sidebar.panellist',
+            id: 'dsh-team',
+            order: 20,
+            label: () => t('side_nav'),
+          }, panelIcon(t))));
+          disposers.push(ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+            name: 'sidebar.panellist',
+            id: 'dsh-team-board',
+            order: 21,
+            label: () => t('board_nav'),
+          }, panelIcon(t, 'board'))));
 
           // 3) 装了 better-sidebar 就再加一份页签入口；没装则等它加载
           const betterNow = getService('betterSidebar');

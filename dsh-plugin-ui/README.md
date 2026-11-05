@@ -4,21 +4,24 @@
 
 ## 位置
 
-**首选：注册成 `dsh-better-sidebar` 的页签**（id `dsh-team:panel`，order 30，单例）。
-装了 `dsh-better-sidebar` 时，入口出现在它的页签列表与 DSH 原生右侧栏的 guide 胶囊里，
-**不再占用** `sidebar.footer.action`。`dsh-better-sidebar` 晚于本插件加载时，
-用 `ctx.inject(['betterSidebar'], …)` 等它就绪，注册成功后自动撤掉自己的回退入口。
+**左侧栏始终有两个入口**：「编排」`id=dsh-team`（order 20）与「任务看板」`id=dsh-team-board`
+（order 21），各自对应一个中央主面板（`main` keyed slot，点击时由 sidebar 调 `layout.selectPanel`）。
+这两个入口**与右侧栏页签 / better-sidebar 页签并存**，装没装扩展都始终注册。
 
-没装时自动回退（两条路径都保留）：
-- 有 `sidebarRight` / `sidebarRightTabs`：左侧边栏底部「编排 / Team」按钮
-  （`sidebar.footer.action`）→ `ctx.sidebarRight.openTab('dsh-team')` 打开/聚焦右侧栏 Tab；
-- 两者都没有：中央面板（`main`）+ `sidebar.panellist` 图标入口。
+团队创建、成员开跑都**不会自动推开任何面板**：左侧栏入口常驻，右侧栏编排页与输入框团队卡片
+都只在用户点击时打开（团队 id 仍在后台解析好，点开就是本会话的团队）。
+
+同时还会注册（都是并存关系，不替代左侧栏入口）：
+- 原生右侧栏 Tab：`sidebarRightTabs.register({ id:'dsh-team' | 'dsh-team-board', kind, priority:'extension' })`
+  + 内容槽 `sidebar.right.pane.tab`（key = 类型 `id`）；
+- 装了 `dsh-better-sidebar` 时额外注册 `dsh-team:panel`（order 30）与 `dsh-team:board`（order 31）页签，
+  服务晚到时用 `ctx.inject(['betterSidebar'], …)` 补注册。
 
 实现：
+- 左侧栏：`main` 槽注册 `key='dsh-team' / 'dsh-team-board'`，`sidebar.panellist` 槽用同一个 id
+  注册图标行（label 由字典 `side_nav` / `board_nav` 给出）；
 - better-sidebar：`ctx.betterSidebar.registerTab({ id:'dsh-team:panel', title, description, icon, order:30, single:true, component })`；
   服务不可用时 `ctx.inject(['betterSidebar'], cb)` 等它可用（cordis 会在服务变化时重跑）。
-- 回退 Tab：`ctx.sidebarRightTabs.register({ id:'dsh-team', kind:'dsh-team', priority:'extension' })` +
-  内容槽 `sidebar.right.pane.tab`（key = 类型 `id`）+ 入口 `sidebar.footer.action`。
 
 > `betterSidebar` 由 `dsh-better-sidebar` 通过 `ctx.provide('betterSidebar', …)` 发布；
 > `sidebarRight` / `sidebarRightTabs` 由 `@deepseek-ai/dsh-client-ui-sidebar-right` 通过
@@ -46,8 +49,8 @@ iframe 走同源代理：`/dsh-team-api/panel?api=/dsh-team-api&embed=1`，
 | `conversation.input.left`（输入框权限控件右侧） | `dsh-team:members` / 5 | 胶囊按钮：团队名 + 「运行中 n/m」+ 严重/警告计数 |
 | `shell.overlay`（frame-wide 浮层） | `dsh-team:findings` / 30 | 展开后的 `AgentFindings` 卡片（成员进度 + 最新发现，按钮下方放不下时翻到按钮上方） |
 
-- 有成员在跑时首次自动展开；用户点过胶囊或关闭按钮后不再自动改动（`pinned`），
-  否则 4s 一次的轮询会把用户手动展开的卡片又收回去。
+- 卡片**默认收起**：团队在跑也不自动展开，避免聊天框被自动撑开；点胶囊才展开，
+  点关闭保持收起（`pinned`），4s 一次的轮询不会改动用户选择。
 - 轮询 `GET /dsh-team-api/api/status` + `/teams` → 用 `member.agentSessionId` 反查团队，
   再取 `/tasks?team=` 与 `/events/history?team=&limit=40` 合成卡片数据（4s 一次）。
 - 发现条目 = 成员 blocker + 事件流：`FAIL*` 记为严重、`DENIED`/`CONFLICT` 记为警告、其余为提示，

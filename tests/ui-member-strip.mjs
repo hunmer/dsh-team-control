@@ -2,7 +2,8 @@
 // 用 stub React 跑真实 dsh-plugin-ui/client.js：验证
 //  - 只认本会话的子会话（= 团队成员），非团队会话不渲染
 //  - pill 上显示团队名 / 运行中 n/m / 严重·警告计数
-//  - 有运行中成员时卡片自动展开，卡片渲染在 shell.overlay
+//  - 卡片默认收起（有人在跑也不自动展开），点击 pill 才展开在 shell.overlay
+//  - 解析到团队也不自动推开侧栏面板（入口常驻，由用户点击）
 //  - 成员计划清单常驻展开（不再折叠、不再有「最新发现」列表）
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -120,15 +121,17 @@ const sandbox = {
     if (url.endsWith('/status') && !serveStatus) return { ok: false, status: 503, json: async () => ({}) };
     const body = url.endsWith('/status')
       ? STATUS
-      : url.endsWith('/teams')
-        ? { items: [TEAM] }
-        : url.includes('/tasks?team=')
-          ? TASKS
-          : url.includes('/todos?team=')
-            ? TODOS
-            : url.includes('/events/history')
-              ? EVENTS
-              : null;
+      : url.includes('/teams/by-lead/')
+        ? { item: TEAM }
+        : url.endsWith('/teams')
+          ? { items: [TEAM] }
+          : url.includes('/tasks?team=')
+            ? TASKS
+            : url.includes('/todos?team=')
+              ? TODOS
+              : url.includes('/events/history')
+                ? EVENTS
+                : null;
     if (!body) return { ok: false, status: 404, json: async () => ({}) };
     return { ok: true, status: 200, json: async () => body };
   },
@@ -157,9 +160,13 @@ const plugin = definition.factory((name) => {
 // --- 假 ctx：捕获 slot 注册，服务可注入 ---
 const registrations = [];
 const opened = [];
+const panels = [];
 const services = {
   sessions: { subagentAddress: () => undefined },
-  sidebarRight: { openResource: (url, opts) => { opened.push({ url, opts }); } },
+  sidebarRight: {
+    openResource: (url, opts) => { opened.push({ url, opts }); },
+    openTab: (kind) => { panels.push(kind); },
+  },
 };
 const ctx = {
   get: (name) => services[name],
@@ -238,9 +245,14 @@ assert.equal(strip.component({ sessionId: 's1', useSessions }), null, '快照未
 await new Promise((resolve) => setTimeout(resolve, 20));
 assert.ok(requested.some((u) => u === '/dsh-team-api/api/status'), '通过 Host 代理读 /status');
 
+// 解析到团队（by-lead 500ms 后首次查询）也不自动推开面板：入口常驻，由用户点击
+await new Promise((resolve) => setTimeout(resolve, 600));
+assert.ok(requested.some((u) => u.includes('/api/teams/by-lead/s1')), '解析本会话团队');
+assert.equal(panels.length, 0, '拿到团队后不自动推开侧栏面板');
+
 const pill = strip.component({ sessionId: 's1', useSessions });
 assert.equal(pill.props['data-dsh-team-pill'], TEAM.id, 'pill 绑定团队 id');
-assert.equal(pill.props['aria-expanded'], 'true', '有运行中成员时卡片自动展开');
+assert.equal(pill.props['aria-expanded'], 'false', '默认收起：有人在跑也不自动展开');
 assert.equal(byClass(pill, 'dsht-afc-pill-name').length, 0, '胶囊已精简：不再渲染团队名文本');
 assert.ok(String(pill.props['aria-label']).includes('小说团队'), '团队名只留在 aria-label/tooltip');
 assert.equal(textOf(byClass(pill, 'dsht-afc-pill-run')[0]), '2/4', '运行中 2 / 成员 4（不含他会话成员；idle 但有 running 任务的也算运行中）');
@@ -252,7 +264,9 @@ assert.equal(textOf(sevs[0]), '1', 'blocker 之外的失败事件计 1 条严重
 assert.equal(sevs[1].props['data-severity'], 'warning');
 assert.equal(textOf(sevs[1]), '1', 'scope_request 计 1 条警告');
 
-// --- 浮层卡片：成员进度 + 最新发现 ---
+// --- 浮层卡片：点开胶囊后才渲染；成员进度 + 计划清单 ---
+assert.equal(dock.component({}), null, '默认收起时浮层不渲染');
+strip.component({ sessionId: 's1', useSessions }).props.onClick();
 const card = dock.component({});
 assert.ok(card, '卡片展开时浮层渲染');
 // 卡片必须贴着胶囊按钮（bottom 40 / right 1200，视口 1280）下方弹出，而不是钉在窗口右上角
@@ -368,7 +382,7 @@ pill.props.onClick();
 assert.equal(strip.component({ sessionId: 's1', useSessions }).props['aria-expanded'], 'false', '再点收起');
 assert.equal(dock.component({}), null, '收起后浮层不渲染');
 
-// --- 用户收起过就不会被下一轮轮询重新弹开（pinned 优先于「有人在跑自动展开」）---
+// --- 用户收起过就不会被下一轮轮询重新弹开（pinned 优先；未 pinned 也不再自动展开）---
 assert.equal(strip.component({ sessionId: 's1', useSessions }).props['aria-expanded'], 'false', '轮询不覆盖用户选择');
 
 // --- 轮询偶发失败：入口与浮层都保留上一份数据（只降权，不清屏）---
@@ -391,6 +405,6 @@ assert.equal(nonTeam, null, '子会话不属于任何团队时不渲染');
 assert.equal(strip.component({ sessionId: 's-nobody', useSessions }), null, '无子会话返回 null');
 assert.equal(strip.component({ sessionId: 's1' }), null, '缺 useSessions 时安全降级');
 
-console.log('PASS ui-member-strip — 右上角团队卡片：pill 显示团队/运行中/严重·警告计数，浮层渲染 AgentFindings，成员计划全部展开');
+console.log('PASS ui-member-strip — 右上角团队卡片：pill 默认收起、点击展开；浮层渲染 AgentFindings，成员计划全部展开');
 process.exit(0); // 渲染用的轮询/计时器会留在事件循环里，断言全过就显式退出
 
