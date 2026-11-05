@@ -107,9 +107,13 @@ export function openTeamPanel(teamId: string): OpenTeamResult | null {
 
 export type OpenSessionResult = 'host' | 'window';
 
+/** Host 未上报 DSH Web 地址时的兜底（dsh web 默认端口） */
+export const DEFAULT_DSH_WEB_URL = 'http://127.0.0.1:3080';
+
 /**
  * 打开看板任务所在的 DSH 会话：嵌在 DSH 里交给宿主切会话；独立页面用 Host 上报的
- * DSH Web 地址深链（`#dsh-session=<id>`）新开标签，由 dsh-plugin-ui 的客户端半边接管。
+ * DSH Web 地址深链（`#dsh-session=<id>`）新开标签，由 dsh-plugin-ui 的客户端半边接管；
+ * 地址缺失时回退到 {@link DEFAULT_DSH_WEB_URL}。
  */
 export function openDshSession(sessionId: string, webUrl?: string | null): OpenSessionResult | null {
   if (typeof window === 'undefined' || !sessionId) return null;
@@ -117,8 +121,7 @@ export function openDshSession(sessionId: string, webUrl?: string | null): OpenS
     window.parent.postMessage({ type: 'dsh-team:open-session', sessionId }, window.location.origin);
     return 'host';
   }
-  const base = String(webUrl || '').trim().replace(/\/+$/, '');
-  if (!base) return null;
+  const base = (String(webUrl || '').trim() || DEFAULT_DSH_WEB_URL).replace(/\/+$/, '');
   return window.open(`${base}/#dsh-session=${encodeURIComponent(sessionId)}`, '_blank') ? 'window' : null;
 }
 

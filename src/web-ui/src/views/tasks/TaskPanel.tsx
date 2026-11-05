@@ -252,7 +252,7 @@ export function TaskPanel({
                 onClick={() => {
                   const opened = openDshSession(task.leadSessionId!, dshWebUrl);
                   if (!opened) {
-                    onError('当前是独立页面且未拿到 DSH Web 地址：请在 DSH 面板里打开该会话');
+                    onError('新窗口被浏览器拦截：请允许本站弹窗后重试');
                     return;
                   }
                   onOk(opened === 'window' ? '已在新窗口打开 DSH 执行会话' : '已在 DSH 中打开执行会话');
