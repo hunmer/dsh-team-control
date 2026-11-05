@@ -143,7 +143,14 @@ export function createRoutes(core) {
     ['GET', /^\/api\/board\/tasks\/([^/]+)$/, async (ctx) => C.board.getTask(ctx.p[0])],
     ['PATCH', /^\/api\/board\/tasks\/([^/]+)$/, async (ctx) => C.board.updateTask(ctx.p[0], ctx.body)],
     ['POST', /^\/api\/board\/tasks\/([^/]+)\/start$/, async (ctx) => C.board.startTask(ctx.p[0], ctx.body)],
-    ['POST', /^\/api\/board\/tasks\/([^/]+)\/stop$/, async (ctx) => C.board.stopTask(ctx.p[0], ctx.body)],
+    ['POST', /^\/api\/board\/tasks\/([^/]+)\/stop$/, async (ctx) => {
+      const task = C.board.stopTask(ctx.p[0], ctx.body);
+      // 看板停止不能只把任务标 failed：绑定的团队也要停，否则成员还在跑。
+      for (const teamId of task.teams || []) {
+        try { C.stopTeam(teamId, `board stop: ${task.id}`); } catch { /* ignore */ }
+      }
+      return task;
+    }],
     ['POST', /^\/api\/board\/tasks\/([^/]+)\/retry$/, async (ctx) => C.board.retryTask(ctx.p[0])],
     ['POST', /^\/api\/board\/tasks\/([^/]+)\/archive$/, async (ctx) => C.board.archiveTask(ctx.p[0], ctx.body)],
     ['POST', /^\/api\/board\/tasks\/([^/]+)\/restore$/, async (ctx) => C.board.restoreTask(ctx.p[0])],

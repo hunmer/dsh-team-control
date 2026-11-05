@@ -24,7 +24,7 @@
 4. 成员报 `blocked` 时任务退回 `blocked`（**不消耗重试**），阻塞原因进 `blockers` 与 `/api/blockers`。
 5. 成员的 session 工具调用由 `tools/execute` 上报为 span；sidecar 用 `member.agent_session_id` 把这些 span 挂到成员节点下。
 
-`team_control`：`interrupt` 先落库 `interrupted` 并把在途任务转 `paused`（不计 attempts、不自动重派），然后 `subagents.interrupt` 中止成员当前回合；`resume` 重新武装；`assign` 把 `paused`/ready 任务交给 idle 成员；`abort` 把任务永久置为 `aborted` 终态（不重试）。
+`team_control`：`interrupt` 先落库 `interrupted` 并把在途任务转 `paused`（不计 attempts、不自动重派），然后 `subagents.interrupt` 中止成员当前回合；`resume` 重新武装；`assign` 把 `paused`/ready 任务交给 idle 成员；`abort` 把任务永久置为 `aborted` 终态（不重试）。面板的团队/看板停止另有 `forceStopPump`：轮询到成员刚变为 `interrupted` 后，用持久化的 `parentSessionId` 以 `{kind:'user'}` 授权真正中断其会话，并冻结到 resume。
 
 ## 权限：Leader 按成员分配 DSH 权限预设
 
@@ -97,6 +97,7 @@ dsh plugin --profile web add dsh-team-control
 | `traceInputMax` | `1200` | 上报参数/结果预览的截断长度（字符） |
 | `agentAutoDispatch` | `true` | 调度器自动把 ready 任务派给 idle 成员 |
 | `agentDispatchMs` | `1500` | 调度器跳间隔 |
+| `forceStopPollMs` | `1000` | 面板/看板停止后，轮询 `interrupted` 成员并真正 `subagents.interrupt` 的间隔（最小 250ms） |
 | `steerPollMs` | `1200` | steer 队列投递泵间隔（面板排队消息 → 成员会话） |
 | `agentDispatchMax` | `16` | 每跳最多认领的任务数 |
 | `agentSettleMs` | `250` | 建任务后的「声明依赖」窗口（sidecar 侧是 200ms） |

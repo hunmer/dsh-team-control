@@ -267,7 +267,7 @@ export class DshTeam {
     ).get(teamId).c);
   }
 
-  addMember(teamId, { name, role = 'teammate', model = null, contextMode = 'isolated', defaultPlan = null, agentSessionId = null, reasoningEffort = null, permissionPreset = null, agentPreset = null, agentProvider = null }) {
+  addMember(teamId, { name, role = 'teammate', model = null, contextMode = 'isolated', defaultPlan = null, agentSessionId = null, parentSessionId = null, reasoningEffort = null, permissionPreset = null, agentPreset = null, agentProvider = null }) {
     const team = this.getTeam(teamId);
     if (!name) throw ERR.bad('name required');
     const dup = this.get('SELECT id FROM member WHERE team_id=? AND name=?').get(teamId, name);
@@ -278,9 +278,9 @@ export class DshTeam {
     const id = newId('m');
     const t = nowIso();
     this.get(
-      `INSERT INTO member (id, team_id, name, role, model, context_mode, default_plan_json, quota_json, agent_session_id, reasoning_effort, permission_preset, agent_preset, agent_provider, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,NULL,?,?,?,?,?,?,?)`
-    ).run(id, teamId, name, role, model, contextMode, defaultPlan ? json(defaultPlan) : null, agentSessionId ? String(agentSessionId) : null, reasoningEffort ? String(reasoningEffort) : null, permissionPreset ? normalizePreset(permissionPreset) : null, normalizeAgentPreset(agentPreset), agentProvider ? String(agentProvider) : null, t, t);
+      `INSERT INTO member (id, team_id, name, role, model, context_mode, default_plan_json, quota_json, agent_session_id, parent_session_id, reasoning_effort, permission_preset, agent_preset, agent_provider, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,NULL,?,?,?,?,?,?,?,?)`
+    ).run(id, teamId, name, role, model, contextMode, defaultPlan ? json(defaultPlan) : null, agentSessionId ? String(agentSessionId) : null, parentSessionId ? String(parentSessionId) : null, reasoningEffort ? String(reasoningEffort) : null, permissionPreset ? normalizePreset(permissionPreset) : null, normalizeAgentPreset(agentPreset), agentProvider ? String(agentProvider) : null, t, t);
     this.events.append({
       teamId, memberId: id, taskId: null, phase: 'init', action: 'member.create',
       target: name, result: 'OK', next: status === 'queued' ? 'wait for capacity' : 'wait for task',
@@ -316,6 +316,7 @@ export class DshTeam {
       agentProvider: m.agent_provider ?? null,
       createdAt: m.created_at,
       agentSessionId: m.agent_session_id ?? null,
+      parentSessionId: m.parent_session_id ?? null,
       permissionPreset: m.permission_preset || team?.permission_preset || DEFAULT_PERMISSION_PRESET,
       agentPreset: m.agent_preset || team?.agent_preset || null,
       status: st.status, currentTaskId: task?.id ?? null,
@@ -509,7 +510,7 @@ export class DshTeam {
    * 幂等 upsert——同名成员已存在时只更新 session，不重复建行。
    */
   registerAgent(input = {}) {
-    const { teamId, name, sessionId = null, role, model, contextMode, reasoningEffort, permissionPreset, agentPreset, agentProvider } = input;
+    const { teamId, name, sessionId = null, parentSessionId, role, model, contextMode, reasoningEffort, permissionPreset, agentPreset, agentProvider } = input;
     if (!teamId) throw ERR.bad('teamId required');
     if (!name) throw ERR.bad('name required');
     const team = this.getTeam(teamId);
@@ -519,10 +520,11 @@ export class DshTeam {
       id = existing.id;
       // 用「字段是否提供」区分「保持原值」与「显式清空」：重启会话时 null 表示继承 Lead/团队。
       const pick = (v, fallback) => (v !== undefined ? v : fallback);
-      this.get(`UPDATE member SET agent_session_id=?, role=?, model=?, context_mode=?, reasoning_effort=?,
+      this.get(`UPDATE member SET agent_session_id=?, parent_session_id=?, role=?, model=?, context_mode=?, reasoning_effort=?,
         permission_preset=?, agent_preset=?, agent_provider=?, updated_at=? WHERE id=?`)
         .run(
           sessionId != null ? String(sessionId) : existing.agent_session_id,
+          pick(parentSessionId, existing.parent_session_id),
           pick(role, existing.role),
           pick(model, existing.model),
           pick(contextMode === 'isolated' ? 'fresh' : contextMode, existing.context_mode),
@@ -533,7 +535,7 @@ export class DshTeam {
           nowIso(), id,
         );
     } else {
-      id = this.addMember(teamId, { name, role: role || 'teammate', model, contextMode: contextMode || 'fresh', agentSessionId: sessionId, reasoningEffort, permissionPreset, agentPreset, agentProvider }).id;
+      id = this.addMember(teamId, { name, role: role || 'teammate', model, contextMode: contextMode || 'fresh', agentSessionId: sessionId, parentSessionId, reasoningEffort, permissionPreset, agentPreset, agentProvider }).id;
     }
     const st = this.events.state(id);
     // 重新报到（Host/DSH 重启后 sub-agent session 仍活着）：只要没有在途任务就回到 idle

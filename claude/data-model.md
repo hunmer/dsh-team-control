@@ -10,7 +10,7 @@
 | `preset` | agentPreset 目录镜像（Host 插件同步：id/name/description/ord/source/file/broken/`doc_json`） |
 | `preset_delete` | 面板删除队列（插件 5s 轮询执行后 ack；`attempts`/`last_error` 记录失败，>=5 次停止重试） |
 | `team` | 团队：`workspace`、`max_members`/`max_concurrency`、失败策略、`permission_preset`、`agent_preset`、`lead_session_id`、归档时间 |
-| `member` | 成员定义：`role`、`model`、`context_mode`、`agent_provider`、`agent_session_id`、`reasoning_effort`、`permission_preset`、`agent_preset` |
+| `member` | 成员定义：`role`、`model`、`context_mode`、`agent_provider`、`agent_session_id`、`parent_session_id`、`reasoning_effort`、`permission_preset`、`agent_preset` |
 | `member_state` | **状态真相源**（物化视图）：`status`、`seq`、`step`、`stale` |
 | `task` | 任务/DAG 节点：`status`、`priority`、`acceptance`、`plan`、`attempts` |
 | `dep` | 依赖边：`from`/`to`/`condition` |
@@ -85,5 +85,5 @@ evaluate(subject, domain, op, target):
 
 ## SQLite 迁移
 
-- 缺列补列：`team.runtime`、`member.agent_session_id`。
+- 缺列补列：`team.runtime`、`member.agent_session_id`、`member.agent_provider`、`member.parent_session_id`。
 - `meta.schema_version` 就地升版，二次打开幂等（`db-migration` 测试覆盖）。

@@ -80,6 +80,8 @@ function resolveConfig(config) {
     agentIdleSettleMs: c.agentIdleSettleMs == null ? 12000 : Math.max(0, Number(c.agentIdleSettleMs) || 0),
     // 成员状态心跳：本地认为在跑、sidecar 却回落到 idle 时补报 running（任务仍在跑说明回合没结束）
     agentHeartbeatMs: Number(c.agentHeartbeatMs) || 15000,
+    // 面板/看板停止后轮询 sidecar：发现成员被置 interrupted 就真正 subagents.interrupt
+    forceStopPollMs: Number(c.forceStopPollMs) || 1000,
     // 任务投递后成员会话迟迟没有任何事件（模型路由报错、会话没启动）就判定失败并交回 sidecar 重试
     agentStartTimeoutMs: Number(c.agentStartTimeoutMs) || 120000,
     // 成员触发权限审批（permission preset 的 approval=ask）后，等待 Lead 调 team_approve 的上限
@@ -1287,6 +1289,46 @@ async function readStatus(s) {
   } catch { return null; }
 }
 
+/** sessionId → 最近一次从 sidecar 看到的成员状态；用于只强制中断一次。 */
+const forceStopSeen = new Map();
+
+/**
+ * 面板/看板停止只走 sidecar（不经过 Host 插件），sidecar 改不了 DSH 会话。
+ * 这里轮询成员状态：一旦看到 running → interrupted，就用登记的直接父会话
+ * 以 user 授权调用 subagents.interrupt，真正停掉成员当前回合，并冻结该会话，
+ * 防止 DSH 中断后的 idle 又把成员改回 idle。
+ */
+async function forceStopPump(s, ctx) {
+  const subs = subagentsOf(ctx);
+  if (!subs || typeof subs.interrupt !== 'function') return;
+  const status = await readStatus(s);
+  if (!status || !Array.isArray(status.members)) return;
+  const live = new Set();
+  for (const m of status.members) {
+    const sid = m?.agentSessionId != null ? String(m.agentSessionId) : null;
+    if (!sid) continue;
+    live.add(sid);
+    const prev = forceStopSeen.get(sid);
+    forceStopSeen.set(sid, m.status);
+    if (m.status !== 'interrupted' || prev === 'interrupted') continue;
+    if (heldSessions.has(sid)) continue;
+    const parentSessionId = m.parentSessionId != null ? String(m.parentSessionId) : null;
+    if (!parentSessionId) continue;
+    heldSessions.add(sid);
+    cancelIdleReport(sid);
+    cancelStartWatchdog(sid);
+    agentStatusBySession.set(sid, 'interrupted');
+    try {
+      await Promise.resolve(subs.interrupt(sid, { kind: 'user', parentSessionId }));
+    } catch {
+      // 会话可能已经结束；撤销冻结并清掉 seen，让下一跳还能重试。
+      heldSessions.delete(sid);
+      forceStopSeen.delete(sid);
+    }
+  }
+  for (const sid of forceStopSeen.keys()) if (!live.has(sid)) forceStopSeen.delete(sid);
+}
+
 /** DSH 内置 todo 的状态 → sidecar 计划步骤的状态。 */
 const TODO_TO_PLAN = { pending: 'open', in_progress: 'active', completed: 'done' };
 
@@ -1998,6 +2040,7 @@ function buildTools(s, ctx) {
           teamId: args.teamId,
           name: memberName,
           sessionId,
+          parentSessionId: caller.id != null ? String(caller.id) : null,
           role: args.role || 'teammate',
           model: args.model || route.model || null,
           contextMode: context,
@@ -2636,6 +2679,7 @@ function buildTools(s, ctx) {
           teamId: team.id,
           name: current.name,
           sessionId,
+          parentSessionId: caller.id != null ? String(caller.id) : null,
           role,
           model: route.model,
           contextMode: context,
@@ -3236,6 +3280,15 @@ export function apply(ctx, config) {
     timer.unref?.();
     return () => clearInterval(timer);
   }, 'dsh-team.agent-heartbeat()');
+
+  // 面板/看板停止的强制收尾：sidecar 只把成员置 interrupted，真正中断 DSH 会话在这里做。
+  ctx.effect(() => {
+    const timer = setInterval(() => {
+      void forceStopPump(s, ctx).catch(() => { /* ignore */ });
+    }, Math.max(250, s.forceStopPollMs));
+    timer.unref?.();
+    return () => clearInterval(timer);
+  }, 'dsh-team.force-stop-pump()');
 
   // 成员上下文快照：面板「上下文分析」页的数据来源。周期泵覆盖进行中的回合，
   // agent/status 变化时补报一次（回合结束/中断后上下文占用才定型）。
