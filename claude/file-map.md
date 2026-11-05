@@ -24,7 +24,7 @@ dsh-team-control/
 │   ├── web/                  面板构建产物（只提交 panel.html + 2 个 assets）
 │   └── web-ui/               面板源码（见 src/web-ui/CLAUDE.md）
 ├── dsh-plugin/               Host 插件
-│   ├── index.js              3484 行 14 个 team_* + 2 个 board_* 工具 + 生命周期 + 上报泵
+│   ├── index.js              3484 行 19 个 team_* + 2 个 board_* 工具 + 生命周期 + 上报泵
 │   ├── changes.js            168 行 文件改动 diff（FILE_TOOLS 白名单）
 │   ├── pricing.js            165 行 峰值时段计价
 │   ├── cordis.patch.yml      插件插入配置
@@ -35,7 +35,7 @@ dsh-team-control/
 │   ├── client.js             1683 行 Client half：「编排」+「任务看板」入口 + iframe
 │   ├── cordis.patch.yml
 │   └── package.json          dsh-team-control-ui（dsh.bundle.patch / dsh.client）
-├── tests/                    31 个脚本
+├── tests/                    33 个脚本
 │   ├── run-all.mjs           跑全部 *.mjs，支持 --only
 │   ├── lib/harness.mjs       startSidecar/apiClient/waitFor/sseOpen/readDb/runAc
 │   └── ac-01/02/06/07/08/10/13/15/16/17/18 + plugin-*/routes/cli/db-migration/panel/pricing/todo-plan 等

@@ -21,7 +21,7 @@
 | 文件 | 用途 | 何时阅读 |
 |---|---|---|
 | [架构与数据流](claude/overview.md) | 模块依赖方向、一次派发的完整时序 | 改跨模块流程 |
-| [模块职责](claude/module-responsibilities.md) | 9 个 `.mjs` 各自边界与导出面 | 判断改动落点 |
+| [模块职责](claude/module-responsibilities.md) | 11 个 `.mjs` 各自边界与导出面 | 判断改动落点 |
 | [审批镜像与权限预设](claude/public-interfaces.md) | approval 三端点、预设继承、转发流程 | 改审批或预设 |
 | [常见问题](claude/faq.md) | 内核侧症状定位 | 排查状态/派发/权限异常 |
 
@@ -29,7 +29,7 @@
 
 | 路径 | 职责 | 文档 |
 |---|---|---|
-| `src/*.mjs` | 10 个内核模块（含 `board.mjs` 看板状态机） | [模块职责](claude/module-responsibilities.md) |
+| `src/*.mjs` | 11 个内核模块（含 `board.mjs` 看板状态机、`memory.mjs` 文件记忆） | [模块职责](claude/module-responsibilities.md) |
 | `src/scheduler.mjs` | 依赖推进与重试计时，不启动进程 | [模块职责](claude/module-responsibilities.md) |
 | `src/web/` | 面板构建产物，被 `server.mjs` 静态托管 | [../src/web-ui/CLAUDE.md](../src/web-ui/CLAUDE.md) |
 | `src/web-ui/` | 面板源码（独立子模块） | [../src/web-ui/CLAUDE.md](../src/web-ui/CLAUDE.md) |
@@ -37,6 +37,6 @@
 ## 扫描状态
 
 - 更新时间：2026-11-05（增量）
-- 已扫描：全部 10 个 `*.mjs`（含 `board.mjs` 看板状态机）的导出面与关键函数签名；`web/` 仅看 `panel.html` 引用。
+- 已扫描：全部 11 个 `*.mjs`（含 `board.mjs` 看板状态机、`memory.mjs` 文件记忆）的导出面与关键函数签名；`web/` 仅看 `panel.html` 引用。
 - 未逐行：`core.mjs` 与 `scheduler.mjs` 的内部实现细节，仅按导出面与契约核对。
 - 下一步：若要改调度时序，优先精读 `scheduler.mjs` 的 `evaluate/readiness/onTaskDone` 与 `core.mjs` 的 `dispatchAgentTask`。

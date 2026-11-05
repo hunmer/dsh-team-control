@@ -1,15 +1,21 @@
 ---
 name: dsh-agent-team
-description: 用 dsh-team 插件编排「真 sub-agent 成员」团队的最小可用流程：team_create → team_spawn → team_task → 成员 team_report_task → team_status/team_report；含 14 个 team_* 工具的字段清单、按任务难度给成员分配 provider/model/思考强度、按成员分配 permissionPreset 沙箱预设与 agentPreset 组合预设（工具/skill/MCP）、成员审批转发给 Lead 后由 team_approve 决定，以及 Lead（主 agent）的边界：只协调、不写代码、不做二次验收、派发完就结束回话、收尾提一个精简 commit。Use when the user asks to create an agent team, orchestrate teammates, dispatch parallel work to sub-agents, or when a team_* call failed with an unexpected shape (unknown teamId, assignee by name, member never reports, approval timeout).
+description: 用 dsh-team 插件编排「真 sub-agent 成员」团队的最小可用流程：team_create → team_spawn → team_task → 成员 team_report_task → team_status/team_report；含 19 个 team_* 工具的字段清单、按任务难度给成员分配 provider/model/思考强度、按成员分配 permissionPreset 沙箱预设与 agentPreset 组合预设（工具/skill/MCP）、成员审批转发给 Lead 后由 team_approve 决定，以及 Lead（主 agent）的边界：只协调、不写代码、不做二次验收、派发完就结束回话、收尾提一个精简 commit。Use when the user asks to create an agent team, orchestrate teammates, dispatch parallel work to sub-agents, or when a team_* call failed with an unexpected shape (unknown teamId, assignee by name, member never reports, approval timeout).
 user-invocable: true
 version: "2.0.0"
 ---
 
 # dsh-team：把活派给真 sub-agent 成员的流程
 
-插件提供 14 个工具：`team_create` `team_spawn` `team_member` `team_preset` `team_models` `team_task` `team_report_task`
-`team_send` `team_todo` `team_status` `team_dispatch` `team_control` `team_approve` `team_report`。
+插件提供 19 个工具：`team_create` `team_spawn` `team_member` `team_preset` `team_models` `team_task` `team_report_task`
+`team_send` `team_todo` `team_status` `team_dispatch` `team_control` `team_approve` `team_report`
+`team_memory_write` `team_memory_read` `team_memory_list` `team_memory_share` `team_memory_delete`。
 **别按名字猜顺序**，按下面 5 步走，一次就能通。所有成员都是真 DSH 子会话（agent 运行时），不存在 worker 进程。
+
+**显式记忆**：成员收工前若有可复用结论，自己写一条 `team_memory_write({teamId, scope:"member", key:"handoff/<主题>", kind:"handoff", value:"≤300 字"})`；
+没有就跳过，不强制。只有你明确要求时才让成员写 `scope:"team"` 上传共享空间。交换成员成果时：成员写 `visibility:"team"`
+（同队可读）或 `"shared"`（凭 id 跨队可读），然后把 `memoryId` 交给别的成员用 `team_memory_read` 读。
+记忆是文件（`<home>/memory/objects/*.json`），团队删除不会删记忆；`team_memory_list` 只回元数据，正文用 read。
 
 ## ⚠️ 先读：Lead 的边界（主 agent 只做协调）
 

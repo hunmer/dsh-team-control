@@ -20,7 +20,7 @@ App.tsx
 
 | 视图 | 文件 | 看什么 |
 |---|---|---|
-| Home | `views/Timeline.tsx` | 事件时间线（cap 2000；原独立 timeline 页签已并入主页，落地页不算页签） |
+| Home | `views/Home.tsx` | 团队总览、成员引导卡、Plan/Activity；底部内嵌 `Timeline.tsx` 事件时间线（cap 2000，原 timeline 页签并入此处，落地页不算页签） |
 | Board | `views/Board.tsx` | **成员 Trace 瀑布**（`GET /api/trace`，root(团队)→member→step/span）；注意不是任务看板 |
 | Review | `views/Review.tsx` | 待评审/变更（`member_change`） |
 | Context | `views/Context.tsx` | 上下文占用（`context_snapshot`） |

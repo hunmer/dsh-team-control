@@ -13,12 +13,13 @@ import { AppShell } from '@/components/app-shell';
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from '@/components/ui/sidebar';
 import { ToastProvider } from '@/components/ui/toast';
 import { buildNav, TAB_LABELS, tabFromLabel, type ShellChrome } from '@/shell';
+import { HomeView } from '@/views/Home';
 import { BoardView } from '@/views/Board';
 import { BoardPage } from '@/views/BoardPage';
 import { ReviewView } from '@/views/Review';
 import { ContextView } from '@/views/Context';
+import { MemoryView } from '@/views/Memory';
 import { DagView } from '@/views/Dag';
-import { TimelineView } from '@/views/Timeline';
 import { ModelsView } from '@/views/Models';
 import { MessagesView } from '@/views/Messages';
 import { PresetsView } from '@/views/Presets';
@@ -47,11 +48,12 @@ function ActiveView({ tab }: { tab: TabName }) {
     case 'board': return <BoardView />;
     case 'review': return <ReviewView />;
     case 'context': return <ContextView />;
+    case 'memory': return <MemoryView />;
     case 'dag': return <DagView />;
     case 'models': return <ModelsView />;
     case 'messages': return <MessagesView />;
     case 'presets': return <PresetsView />;
-    case 'home': return <TimelineView />;
+    case 'home': return <HomeView />;
   }
 }
 

@@ -19,7 +19,7 @@ DSH agent × N ◀──subagents.startActivation / sendMessage── dsh-plugin
 四层职责划得很硬：
 
 1. **sidecar（`src/` + `bin/`）** 是编排内核，也是**唯一真相源**：进程、SQLite（WAL）、四域权限、事件流、调度、SSE、HTTP。它不认识 LLM，不持有凭据。
-2. **Host 插件（`dsh-plugin/`）** 只做「适配 + 生命周期」：把 sidecar 暴露成 14 个 `team_*` + 2 个 `board_*` 工具；把成员拉成真 DSH 子会话；把工具调用/文件改动/token 用量/上下文占用上报成 span/change/context。
+2. **Host 插件（`dsh-plugin/`）** 只做「适配 + 生命周期」：把 sidecar 暴露成 19 个 `team_*` + 2 个 `board_*` 工具；把成员拉成真 DSH 子会话；把工具调用/文件改动/token 用量/上下文占用上报成 span/change/context。
 3. **Client 插件（`dsh-plugin-ui/`）** 只把 sidecar 自带面板挂进 DSH GUI（better-sidebar 页签或侧栏回退），用 Host 同源代理转发 `/dsh-team-api/*`，浏览器拿不到 sidecar token。
 4. **面板前端（`src/web-ui/`）** 是 sidecar 托管的那份 UI 的源码，`npm run build` 输出到 `src/web/`。
 

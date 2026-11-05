@@ -27,6 +27,7 @@
   <home>/token              # 兼容保留（首次启动生成，服务端已不校验）
   <home>/team.db            # SQLite（WAL）+ team.db-wal/shm
   <home>/run/sidecar.json   # {pid,port,url,startedAt}
+  <home>/memory/objects/<memoryId>.json  # 显式记忆（一条一个文件，只存事实；归属在 memory_link 表）
   ```
 - 启动横幅：**stdout 第一行必须是单行 JSON**，供测试/CLI 解析：
   ```json
@@ -334,6 +335,42 @@ root(run:team)                         ← 团队整体
 
 `fence` 是 claim 令牌（DB 列 `claim_token`），只出现在 claim 响应里；因全局脱敏规则，任何含 `token` 的字段都会被替换成 `<redacted>`，所以对外叫 `fence`。
 
+### 3.14 显式记忆（文件存储，不落库）
+
+成员与团队各有一块 key-value 记忆空间：成员把自己的 handoff 存进 `scope=member`（owner 是该成员），
+团队共享空间是 `scope=team`。**一条记忆一个 JSON 文件**，路径 `<home>/memory/objects/<memoryId>.json`，
+文件是正文唯一真相、**只存事实**：不写 `teamId`/`memberId`/`ownerMemberId`/`scope`/`source`。
+
+归属放在 team 数据表 `memory_link`：`(memory_id PRIMARY KEY, team_id, scope, member_id, task_id, created_at)`。
+sidecar 启动时扫目录重建记录表，再用 `memory_link` 把每条记忆 bind 回空间
+（`scope:teamId:memberId`，只影响同 key upsert 的归并）；`POST /api/memory/reindex` 可在手改文件后强制重扫并重建。
+团队删除只删该队的 `memory_link` 行，**不删记忆文件**；文件因此变成无归属的孤儿（`reindex` 的 `orphans` 会列出来），
+`POST /api/memory/prune` 可显式清理；清理前面板与 Lead 仍可按 id 读取，
+`visibility=shared` 的 id 可以交给其他团队的成员读取。成员删除同理，不删文件。
+
+文件字段：`{ id, schema:1, key, kind, title, value, tags, visibility, createdAt, updatedAt, version }`。
+对外视图由 `memory_link` 补充 `scope/teamId/ownerMemberId/source{kind,memberId,taskId}`，面板与插件契约不变。
+对外视图把 `key` 改名成 `slot`（全局脱敏会把名字含 `key` 的字符串字段打成 `<redacted>`），
+列表只回 `slot/title/summary/kind/source/updatedAt` 等元数据，正文只走单条读取。
+
+| 接口 | 入参 | 返回 |
+|---|---|---|
+| `GET /api/memory?team=&scope=&member=&slot=&kind=&tag=&q=&limit=&session=` | `scope=member\|team`；`session` 用于识别成员/Lead 身份 | `{asOf,total,items:[memoryView]}` |
+| `POST /api/memory` | `{teamId,scope,key,value,kind?,title?,tags?,visibility?,expectedVersion?,taskId?,sessionId?}` | `{memory,created}`；同空间同 key 为 upsert 并 `version+1` |
+| `GET /api/memory/:id?team=&session=` | — | `{memory}`（含完整 value） |
+| `PATCH /api/memory/:id` | `{value?,title?,kind?,tags?,visibility?,expectedVersion?,sessionId?}` | `{memory}` |
+| `DELETE /api/memory/:id?team=&session=` | — | `{id,removed:true}` |
+| `POST /api/memory/:id/share` | `{visibility,sessionId?}` | `{memory}` |
+| `POST /api/memory/reindex` | — | `{items,dir,ids,links,bound,orphans}`；`orphans` 是没有 `memory_link` 的文件 id |
+| `POST /api/memory/prune` | `{ids?,confirm:true}` | `{removed,count,orphans}`；省略 `ids` 清全部 orphan 文件，必须 `confirm=true` |
+
+约束：单条 `value` ≤ 64KB；全库 ≤ 5000 条（超限返回 `E_QUOTA`，不静默截断）；写入走 tmp + rename 原子替换；
+`expectedVersion` 做 CAS（0 = 必须新建，N = 当前必须为 N），冲突返回 409 `E_VERSION`。
+权限：`private` 仅 owner 与本队 Lead 可读；`team` 本队成员可读；`shared` 凭 id 跨队可读。成员只能写自己的
+member 空间，可以直接写本队 team 空间（`source.memberId` 记录上传者）；Lead/面板可写可删任意可见记忆。
+成员路径（`session` 命中 member）受团队归属约束，Lead 路径要求 session 与 `team.lead_session_id` 一致。
+敏感值在文件里原样保存，API/SSE/日志出口仍走全局 redactor。
+
 Host 插件默认 `boardEnabled=true`（显式 `false` 可关闭），每 `boardDispatchMs` 跑一次泵：`claim planning` → `ctx.agents.create`（cwd=workspace path）→ `attach` → `followup` 投规划 prompt；规划会话调 `board_plan_submit` 后进入 `planned`，泵再 `claim inprogress`。规划会话权限默认 `read-only`，执行默认 `danger-full-access`；规划阶段的审批请求由插件直接拒绝，避免无人值守卡住。规划超时（`boardPlanningTimeoutMs`，默认 30 分钟）自动置 failed。
 
 `showTaskSessions`（默认 `true`）控制插件是否把 `board_task.planning_session_id` / `lead_session_id` 指向的会话通过 `ctx.workspaceRegistry.get(workspaceId).attachSession(sessionId)` 挂进 DSH 工作区会话账本；挂上后看板创建的规划/执行会话会出现在「工作区会话」列表里，关闭则只在看板内可见。attach 失败只告警，不影响任务推进。
@@ -358,8 +395,8 @@ data: {"id":42,"type":"step.append","teamId":"t_1","memberId":"m_1","taskId":"ta
 
 - `id` 取自 `event.id`（自增，全局单调）。断线重连：浏览器 `Last-Event-ID` 请求头或 `?lastEventId=`，服务端从 `event.id > lastEventId` 回放，**不丢事件**。
 - 心跳：每 15s 发 `: ping` 注释行。
-- 载荷全集：`member.status{status,step,seq,next}`、`step.append{seq,phase,action,target,result,next}`、`task.state{taskId,status,attempts}`、`task.dispatch{taskId,memberId}`、`message.delivered{messageId,to,status}`、`approval.request{requestId,memberId,toolName}`、`approval.decide{requestId,decision,decidedBy}`、`span.append{span}`（Host 工具调用上报后推送，面板据此实时刷新瀑布）、`artifact.added{taskId,memberId,count}`、`change.added{taskId,memberId,count,last}`（成员改动落库后推送，审阅页据此刷新）、`context.update{memberId}`。
-- 合成帧（`approval.request` / `approval.decide` / `artifact.added` / `change.added` / `context.update`）：字段在帧顶层，不是 `payload` 内。
+- 载荷全集：`member.status{status,step,seq,next}`、`step.append{seq,phase,action,target,result,next}`、`task.state{taskId,status,attempts}`、`task.dispatch{taskId,memberId}`、`message.delivered{messageId,to,status}`、`approval.request{requestId,memberId,toolName}`、`approval.decide{requestId,decision,decidedBy}`、`span.append{span}`（Host 工具调用上报后推送，面板据此实时刷新瀑布）、`artifact.added{taskId,memberId,count}`、`change.added{taskId,memberId,count,last}`（成员改动落库后推送，审阅页据此刷新）、`context.update{memberId}`、`memory.updated{memoryId,scope,action}`（只带 id/scope，不带记忆正文）。
+- 合成帧（`approval.request` / `approval.decide` / `artifact.added` / `change.added` / `context.update` / `memory.updated`）：字段在帧顶层，不是 `payload` 内。
 
 ---
 

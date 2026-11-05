@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 15;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -285,6 +285,18 @@ CREATE TABLE IF NOT EXISTS board_event (
   kind TEXT NOT NULL, detail_json TEXT, created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_board_event_task ON board_event(task_id, id);
+
+-- 记忆归属（team 数据）：记忆正文在 <home>/memory/objects/<id>.json，这里只记「这条记忆
+-- 属于哪个团队/成员空间」。文件本身不写 team/member，删团队只删这里，不删文件。
+CREATE TABLE IF NOT EXISTS memory_link (
+  memory_id TEXT PRIMARY KEY,
+  team_id TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  member_id TEXT,
+  task_id TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_link_team ON memory_link(team_id, scope, member_id);
 `;
 
 
@@ -334,6 +346,7 @@ export function openDb(file) {
   ensureColumn(db, 'board_settings', 'show_task_sessions', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumn(db, 'preset_delete', 'attempts', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'preset_delete', 'last_error', 'TEXT');
+  ensureColumn(db, 'memory_link', 'task_id', 'TEXT');
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_todo_task ON todo(task_id, order_no)'); } catch { /* ignore */ }
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_member_session ON member(agent_session_id)'); } catch { /* ignore */ }
   const get = q(db);
