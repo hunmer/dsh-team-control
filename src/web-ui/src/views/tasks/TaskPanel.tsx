@@ -182,6 +182,8 @@ export function TaskPanel({
               task={task}
               busy={busy}
               onStop={() => onStop(task)}
+              onArchive={() => onArchive(task)}
+              onRestore={() => onRestore(task)}
               onDelete={() => onDelete(task)}
               triggerClassName="ui-tb__panel-close"
             />

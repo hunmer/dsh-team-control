@@ -28,15 +28,6 @@ export function BoardPage() {
     <div className="board-page">
       <header className="board-page__bar">
         <div className="board-page__brand">
-          <span className="board-page__mark" aria-hidden="true">DS</span>
-          <div className="board-page__titles">
-            <strong>任务看板</strong>
-          </div>
-        </div>
-
-        <span className="board-page__spacer" />
-
-        <div className="board-page__workspace">
           <Select
             value={state.workspaceId ?? ''}
             onValueChange={onPickWorkspace}
@@ -54,6 +45,8 @@ export function BoardPage() {
             </SelectContent>
           </Select>
         </div>
+
+        <span className="board-page__spacer" />
 
         {followingHost ? null : (
           <button
