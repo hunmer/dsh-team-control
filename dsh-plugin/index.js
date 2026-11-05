@@ -71,6 +71,8 @@ function resolveConfig(config) {
     // agent 运行时：成员在 sidecar 认领任务后，由本插件用 subagents.sendMessage 派发
     agentAutoDispatch: c.agentAutoDispatch !== false,
     agentDispatchMs: Number(c.agentDispatchMs) || 1500,
+    // 面板 steer 队列的投递泵间隔（面板排队消息 → 成员会话）
+    steerPollMs: Number(c.steerPollMs) || 1200,
     agentDispatchMax: Number(c.agentDispatchMax) || 16,
     // sidecar 建任务后留 200ms 的「声明依赖」窗口，派发前先等过这段时间
     agentSettleMs: Number(c.agentSettleMs) || 250,
@@ -1307,6 +1309,63 @@ async function markDelivered(s, messageId) {
     method: 'POST',
     body: { state: 'delivered' },
   }).catch(() => { /* 回执补记失败不影响投递 */ });
+}
+
+/**
+ * 面板 steer 队列的投递泵。
+ *
+ * 面板（或任何外部调用）只把 `kind='steer'` 的消息写进 sidecar 信箱，sidecar 不会自己送进成员会话；
+ * 这里定时取 queued 的 steer 消息，用 `subagents.sendMessage` 推进成员会话后补记送达。
+ * - `payload.immediate=true`（面板 ⌘/Ctrl+↵ 或队列 chip 的「Now」）排到最前，只是优先投递，不打断当前回合；
+ * - 每个成员每轮只投一条，避免一次性灌爆成员上下文；
+ * - 投递失败保持 queued，下一轮重试；成员已无会话（worker / 已回收）就留在队列里等人工处理。
+ */
+const steerInFlight = new Set();
+
+async function steerPump(s, ctx) {
+  if (!sessionMember.size) return;
+  const subs = subagentsOf(ctx);
+  if (!subs || typeof subs.sendMessage !== 'function') return;
+  const teams = new Set();
+  for (const binding of sessionMember.values()) if (binding?.teamId) teams.add(binding.teamId);
+
+  for (const teamId of teams) {
+    const caller = leadByTeam.get(teamId);
+    if (!caller) continue;
+    const res = await request(
+      s,
+      `/api/messages${qs({ team: teamId, status: 'queued', limit: 100 })}`,
+    ).catch(() => null);
+    const rows = Array.isArray(res) ? res : (Array.isArray(res?.items) ? res.items : []);
+    const items = rows.filter(
+      (m) => m && m.kind === 'steer' && m.to && m.to !== 'lead' && m.status === 'queued' && !steerInFlight.has(m.id),
+    );
+    items.sort((a, b) => {
+      const priority = Number(!!b.payload?.immediate) - Number(!!a.payload?.immediate);
+      return priority || String(a.sentAt || '').localeCompare(String(b.sentAt || ''));
+    });
+
+    const taken = new Set();
+    for (const message of items) {
+      const target = String(message.to);
+      if (taken.has(target)) continue;            // 每个成员每轮只投一条
+      const binding = [...sessionMember.entries()].find(
+        ([, b]) => b && b.memberId === target && b.teamId === teamId,
+      );
+      if (!binding) continue;                     // 该成员没有 sub-agent 会话：留队列，等重新 spawn
+      taken.add(target);
+      const text = String(message.payload?.text || '').trim();
+      if (!text) { await markDelivered(s, message.id); continue; }
+      steerInFlight.add(message.id);
+      try {
+        await subs.sendMessage(caller, String(binding[0]), [{ type: 'text', text }], {
+          signal: AbortSignal.timeout(s.requestTimeoutMs),
+        });
+        await markDelivered(s, message.id);
+      } catch { /* 成员会话暂时不可写：保持 queued，下一轮重试 */ }
+      finally { steerInFlight.delete(message.id); }
+    }
+  }
 }
 
 /** 成员会话这一轮最后的助手正文：收工时落库成 member→lead 的回复消息。 */
@@ -3067,4 +3126,13 @@ export function apply(ctx, config) {
       return () => clearInterval(timer);
     }, 'dsh-team.agent-pump()');
   }
+
+  // steer 泵：把面板排进 sidecar 的队列消息（kind='steer'）推进成员会话。
+  ctx.effect(() => {
+    const timer = setInterval(() => {
+      void steerPump(s, ctx).catch(() => { /* ignore */ });
+    }, Math.max(500, s.steerPollMs));
+    timer.unref?.();
+    return () => clearInterval(timer);
+  }, 'dsh-team.steer-pump()');
 }

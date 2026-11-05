@@ -6,7 +6,8 @@
  * 拆分自 Tasks.tsx，行为不变。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, ArchiveRestore, ChevronRight, Loader2, Plus, Search, Settings2, SlidersHorizontal } from 'lucide-react';
+import { Activity, Archive, ArchiveRestore, ClipboardList, Loader2, Plus, Search, Settings2, SlidersHorizontal } from 'lucide-react';
+import { Tabs, TabsList, TabsPanel, TabsTab } from '@/components/ui/tabs';
 import { Tooltip, TooltipPopup, TooltipTrigger } from '@/components/ui/tooltip';
 import { api } from '@/lib/api';
 import {
@@ -240,13 +241,28 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
     <section ref={rootRef} className={cn('ui-tb', standalone && 'ui-tb--standalone')}>
       <style href="ui-task-board" precedence="default">{TASK_BOARD_CSS}</style>
 
-      <header className="ui-tb__top mt-2">
-        <nav className="ui-tb__crumbs" aria-label="面包屑">
-          <span className="ui-tb__logo" aria-hidden="true">DS</span>
-          <span className="ui-tb__crumb">{data?.workspace.title || '工作区'}</span>
-          <ChevronRight className="ui-tb__crumb-sep" size={13} strokeWidth={1.6} />
-          <span className="ui-tb__crumb">{archived ? '封存箱' : '任务看板'}</span>
-        </nav>
+      <div className="ui-tb__bar">
+        <span className="ui-tb__count">
+          {archived ? `${filtered.length} 个封存任务` : `${filtered.length} 个任务`}
+          <span className="ui-tb__slots">
+            {data ? ` · Planning ${data.slots.planning.used}/${data.slots.planning.limit} · Progress ${data.slots.inprogress.used}/${data.slots.inprogress.limit}` : ''}
+          </span>
+        </span>
+        <div className="ui-tb__tools">
+          <label className="ui-tb__search">
+            <Search size={13} strokeWidth={1.7} />
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索任务…" />
+          </label>
+          <button
+            type="button"
+            className="ui-tb__menu"
+            data-on={compact ? 'true' : 'false'}
+            onClick={() => setCompact((v) => !v)}
+            title="紧凑模式"
+          >
+            <SlidersHorizontal size={14} />
+          </button>
+        </div>
         <div className="ui-tb__top-actions">
           <Tooltip>
             <TooltipTrigger
@@ -283,30 +299,6 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
               <TooltipPopup>新建任务</TooltipPopup>
             </Tooltip>
           )}
-        </div>
-      </header>
-
-      <div className="ui-tb__bar">
-        <span className="ui-tb__count">
-          {archived ? `${filtered.length} 个封存任务` : `${filtered.length} 个任务`}
-          <span className="ui-tb__slots">
-            {data ? ` · Planning ${data.slots.planning.used}/${data.slots.planning.limit} · Progress ${data.slots.inprogress.used}/${data.slots.inprogress.limit}` : ''}
-          </span>
-        </span>
-        <div className="ui-tb__tools">
-          <label className="ui-tb__search">
-            <Search size={13} strokeWidth={1.7} />
-            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索任务…" />
-          </label>
-          <button
-            type="button"
-            className="ui-tb__menu"
-            data-on={compact ? 'true' : 'false'}
-            onClick={() => setCompact((v) => !v)}
-            title="紧凑模式"
-          >
-            <SlidersHorizontal size={14} />
-          </button>
         </div>
       </div>
 
@@ -398,28 +390,48 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
 
         <div className="ui-tb__detail" ref={detailRef}>
           {selected ? (
-            <>
+            <Tabs
+              key={selected.id}
+              defaultValue={selected.teams?.length ? 'progress' : 'task'}
+              className="min-h-0 flex-1"
+            >
+              <TabsList>
+                {selected.teams?.length ? (
+                  <TabsTab value="progress">
+                    <Activity aria-hidden="true" />
+                    执行进度
+                  </TabsTab>
+                ) : null}
+                <TabsTab value="task">
+                  <ClipboardList aria-hidden="true" />
+                  任务详情
+                </TabsTab>
+              </TabsList>
               {selected.teams?.length ? (
-                <TaskProgress teamId={selected.teams[selected.teams.length - 1]} />
+                <TabsPanel value="progress" className="min-h-0 overflow-y-auto">
+                  <TaskProgress teamId={selected.teams[selected.teams.length - 1]} />
+                </TabsPanel>
               ) : null}
-              <TaskPanel
-                task={selected}
-                models={models}
-                dshWebUrl={data?.settings?.dshWebUrl || null}
-                busy={busy}
-                onClose={() => setSelectedId(null)}
-                onStart={start}
-                onStop={stop}
-                onRetry={retry}
-                onArchive={archive}
-                onRestore={restore}
-                onDelete={remove}
-                onToggleAuto={() => toggleAuto(selected)}
-                onSaved={() => void load(true)}
-                onError={(message) => toast(message, 'error')}
-                onOk={(message) => toast(message, 'ok')}
-              />
-            </>
+              <TabsPanel value="task" className="min-h-0 overflow-y-auto">
+                <TaskPanel
+                  task={selected}
+                  models={models}
+                  dshWebUrl={data?.settings?.dshWebUrl || null}
+                  busy={busy}
+                  onClose={() => setSelectedId(null)}
+                  onStart={start}
+                  onStop={stop}
+                  onRetry={retry}
+                  onArchive={archive}
+                  onRestore={restore}
+                  onDelete={remove}
+                  onToggleAuto={() => toggleAuto(selected)}
+                  onSaved={() => void load(true)}
+                  onError={(message) => toast(message, 'error')}
+                  onOk={(message) => toast(message, 'ok')}
+                />
+              </TabsPanel>
+            </Tabs>
           ) : (
             <div className="ui-tb__detail-empty">
               <p className="ui-tb__detail-empty-title">选择一个任务</p>

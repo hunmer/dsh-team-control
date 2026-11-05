@@ -58,6 +58,7 @@
 | `agentIdleSettleMs` | — | idle 判定窗口 |
 | `agentHeartbeatMs` | — | 心跳间隔 |
 | `agentDispatchMs` | — | 派发保底泵间隔 |
+| `steerPollMs` | `1200` | 面板 steer 队列投递泵间隔 |
 | `contextReportMs` | — | 上下文泵间隔 |
 | `workspaceReportMs` | — | 工作区泵间隔 |
 | `llmCatalogMs` | — | 模型目录刷新间隔 |

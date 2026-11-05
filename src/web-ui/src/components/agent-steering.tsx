@@ -6,6 +6,7 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from "react";
 import { AGENT_STEERING_CSS } from "./agent-steering-css";
 
@@ -95,9 +96,13 @@ export interface SteerStep {
 export interface AgentSteeringProps {
   title: string;
   agent?: string;
+  /** 头部图标；不传时用默认的 spark。传模型图标即可显示成员实际使用的模型。 */
+  icon?: ReactNode;
   steps: SteerStep[];
   queue: SteerNote[];
   status?: SteerStatus;
+  /** 自定义状态文案（如「空闲」「阻塞」）；不传时按 status 显示 Running·时长 / Paused / Done in 时长。 */
+  stateLabel?: ReactNode;
   startedAt?: number | Date;
   /** ↵ in the field: add the note to your queue. */
   onQueue?: (text: string) => void;
@@ -202,9 +207,11 @@ const NoteCornerIcon = () => (
 export function AgentSteering({
   title,
   agent,
+  icon,
   steps,
   queue,
   status = "running",
+  stateLabel,
   startedAt,
   onQueue,
   onInterrupt,
@@ -347,7 +354,7 @@ export function AgentSteering({
   }, [text]);
 
   const elapsed = <Elapsed from={runStartedAt} live={isRunning} format={formatLong} />;
-  const stateLabel =
+  const stateLabelNode = stateLabel ?? (
     status === "done" ? (
       <>
         Done in {elapsed}
@@ -358,7 +365,8 @@ export function AgentSteering({
       <>
         Running · {elapsed}
       </>
-    );
+    )
+  );
 
   return (
     <div ref={rootRef} className={["ui-stc", className].filter(Boolean).join(" ")} data-status={status}>
@@ -368,7 +376,7 @@ export function AgentSteering({
       <div ref={cardRef} className="ui-stc__card">
         <header className="ui-stc__head">
           <span className="ui-stc__spark">
-            <SparkIcon />
+            {icon ?? <SparkIcon />}
           </span>
           <div className="ui-stc__heading">
             <span className="ui-stc__title" dir="auto" title={title}>
@@ -398,7 +406,7 @@ export function AgentSteering({
           </div>
           <span className="ui-stc__state" data-status={status}>
             <span className="ui-stc__pulse" aria-hidden="true" />
-            {stateLabel}
+            {stateLabelNode}
           </span>
           {status === "running" && onPause && (
             <button

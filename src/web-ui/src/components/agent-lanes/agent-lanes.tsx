@@ -68,6 +68,8 @@ export interface AgentLanesProps {
   onReject?: (task: LaneTask) => void;
   /** shows an Open link in the tooltip of a block that doesn't wait */
   onOpen?: (task: LaneTask) => void;
+  /** called when an agent's avatar is clicked (e.g. to focus that agent elsewhere) */
+  onAgentClick?: (agent: LaneAgent) => void;
   title?: string;
   className?: string;
 }
@@ -171,6 +173,7 @@ export function AgentLanes({
   onApprove,
   onReject,
   onOpen,
+  onAgentClick,
   title = "Agents",
   className,
 }: AgentLanesProps) {
@@ -369,6 +372,13 @@ export function AgentLanes({
                         jsx("span", {
                           className: "ui-alc__avatar",
                           "data-logo": agent.avatar ? "" : undefined,
+                          ...(onAgentClick
+                            ? {
+                                title: agent.name,
+                                style: { cursor: "pointer" },
+                                onClick: () => onAgentClick(agent),
+                              }
+                            : {}),
                           children: agent.avatar ?? initials(agent.name),
                         }),
                         jsxs("span", {
