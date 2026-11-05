@@ -22,6 +22,7 @@ import { Button } from '@/components/ui/button';
 import { ActivityFeed } from '@/components/activity-feed';
 import { AgentSteering, type SteerNote, type SteerStatus, type SteerStep } from '@/components/agent-steering';
 import { modelAvatar } from '@/components/ModelAvatar';
+import { openMemberConversation } from '@/lib/dsh-bridge';
 import type { PlanStep } from '@/components/plan-steps';
 import { PlanCard, toPlanStep } from '@/components/plan-card';
 
@@ -60,6 +61,24 @@ function steerStateLabelOf(member: Member): string | undefined {
       return '已下线';
     default:
       return undefined;
+  }
+}
+
+/** 状态点颜色跟真实状态走：运行中橙、空闲蓝、已完成绿、失败/阻塞红、其余灰。 */
+function steerStateToneOf(member: Member): 'blue' | 'orange' | 'green' | 'red' | 'muted' {
+  switch (member.status) {
+    case 'running':
+    case 'provisioning':
+      return 'orange';
+    case 'idle':
+      return 'blue';
+    case 'done':
+      return 'green';
+    case 'failed':
+    case 'blocked':
+      return 'red';
+    default:
+      return 'muted';
   }
 }
 
@@ -232,6 +251,13 @@ export function HomeView() {
     }
   };
 
+  /** 请宿主页面（DSH 侧栏）打开该成员的对话；面板独立打开时没法唤起。 */
+  const openChat = (member: Member) => {
+    const result = openMemberConversation(member, state.team?.leadSessionId);
+    if (result === 'no-session') toast('该成员还没有绑定 DSH 会话', 'warn');
+    else if (result === 'not-embedded') toast('面板不在 DSH 页面里打开，无法唤起成员对话', 'warn');
+  };
+
   const jumpToTimeline = () => {
     setFilterMember(activeMemberId ?? '');
     setTab('timeline');
@@ -298,6 +324,7 @@ export function HomeView() {
                       title={memberName(member.id)}
                       status={steerStatusOf(member)}
                       stateLabel={steerStateLabelOf(member)}
+                      stateTone={steerStateToneOf(member)}
                       startedAt={
                         ms(task?.attemptedAt) ??
                         ms(task?.createdAt) ??
@@ -313,6 +340,7 @@ export function HomeView() {
                         void sendSteer(member, text, true);
                       }}
                       onRemove={(id) => void dropSteer(id)}
+                      onOpenChat={() => openChat(member)}
                     />
                   </div>
                 );

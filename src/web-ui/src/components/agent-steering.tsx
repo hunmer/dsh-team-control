@@ -103,6 +103,8 @@ export interface AgentSteeringProps {
   status?: SteerStatus;
   /** 自定义状态文案（如「空闲」「阻塞」）；不传时按 status 显示 Running·时长 / Paused / Done in 时长。 */
   stateLabel?: ReactNode;
+  /** 状态点颜色；不传时沿用模板按 status 的配色（running 蓝 / paused 琥珀 / done 绿）。 */
+  stateTone?: 'blue' | 'orange' | 'green' | 'red' | 'muted';
   startedAt?: number | Date;
   /** ↵ in the field: add the note to your queue. */
   onQueue?: (text: string) => void;
@@ -116,6 +118,8 @@ export interface AgentSteeringProps {
   /** Controlled field text. */
   draft?: string;
   onDraftChange?: (text: string) => void;
+  /** 头部右侧「打开聊天」入口；不传时不渲染。 */
+  onOpenChat?: () => void;
   placeholder?: string;
   className?: string;
 }
@@ -134,6 +138,13 @@ const SparkIcon = () => (
   <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
     <path d="M7 1.2c.4 2.9 1.9 4.4 4.8 4.8-2.9.4-4.4 1.9-4.8 4.8C6.6 7.9 5.1 6.4 2.2 6 5.1 5.6 6.6 4.1 7 1.2Z" fill="currentColor" />
     <circle cx="11.6" cy="11.4" r="1.1" fill="currentColor" opacity="0.55" />
+  </svg>
+);
+
+/** 「打开聊天」入口用的小箭头（外链感）。 */
+const ChatOpenIcon = () => (
+  <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
+    <path d="M3.2 8.8 8.8 3.2M4.4 3.2h4.4v4.4" {...STROKE} />
   </svg>
 );
 
@@ -212,6 +223,7 @@ export function AgentSteering({
   queue,
   status = "running",
   stateLabel,
+  stateTone,
   startedAt,
   onQueue,
   onInterrupt,
@@ -221,6 +233,7 @@ export function AgentSteering({
   onPause,
   onResume,
   placeholder = "Steer the agent…",
+  onOpenChat,
   className,
 }: AgentSteeringProps) {
   const uid = useId();
@@ -404,10 +417,16 @@ export function AgentSteering({
               )}
             </span>
           </div>
-          <span className="ui-stc__state" data-status={status}>
+          <span className="ui-stc__state" data-status={status} data-tone={stateTone}>
             <span className="ui-stc__pulse" aria-hidden="true" />
             {stateLabelNode}
           </span>
+          {onOpenChat && (
+            <button type="button" className="ui-stc__chat" title="打开聊天" onClick={onOpenChat}>
+              打开聊天
+              <ChatOpenIcon />
+            </button>
+          )}
           {status === "running" && onPause && (
             <button
               type="button"
