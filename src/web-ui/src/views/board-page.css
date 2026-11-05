@@ -6,8 +6,6 @@
 .board-page__titles strong{font-size:13.5px;font-weight:600}
 .board-page__titles span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:#8f8f8f}
 .board-page__workspace{display:flex;align-items:center;gap:7px;min-width:0;font-size:11.5px;color:#8f8f8f}
-.board-page__workspace select{max-width:min(260px,32vw);height:30px;padding:0 8px;border:1px solid #e5e5e5;border-radius:8px;outline:none;background:#fff;font:inherit;font-size:12.5px;color:#171717}
-.board-page__workspace select:focus-visible{border-color:#2f6bff;box-shadow:0 0 0 3px rgba(47,107,255,.14)}
 .board-page__spacer{flex:1}
 .board-page__theme{display:grid;place-items:center;width:30px;height:30px;border:1px solid #e5e5e5;border-radius:8px;background:#fff;color:#525252;cursor:pointer}
 .board-page__theme:hover{background:#f5f5f5}
@@ -21,7 +19,6 @@
 :where(.dark,[data-theme="dark"]) .board-page{background:#18181b;color:#ededed}
 :where(.dark,[data-theme="dark"]) .board-page__bar{background:#202023;border-bottom-color:rgba(255,255,255,.08)}
 :where(.dark,[data-theme="dark"]) .board-page__mark{background:#ededed;color:#171717}
-:where(.dark,[data-theme="dark"]) .board-page__workspace select,
 :where(.dark,[data-theme="dark"]) .board-page__theme{background:#2a2a2d;border-color:rgba(255,255,255,.12);color:#ededed}
 :where(.dark,[data-theme="dark"]) .board-page__theme:hover{background:#313135}
 
@@ -29,6 +26,5 @@
   .board-page__bar{height:52px;gap:8px;padding:0 10px}
   .board-page__titles span{display:none}
   .board-page__workspace>span{display:none}
-  .board-page__workspace select{max-width:44vw;height:28px;font-size:12px}
   .board-page__body{padding:8px}
 }

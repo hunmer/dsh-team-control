@@ -7,6 +7,7 @@
 import { Moon, Sun } from 'lucide-react';
 import { usePanel } from '@/store';
 import { useTheme } from '@/theme';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { TasksView } from './Tasks';
 import './board-page.css';
 
@@ -14,6 +15,14 @@ export function BoardPage() {
   const { state, selectBoardWorkspace } = usePanel();
   const [theme, toggleTheme, followingHost] = useTheme();
   const workspaces = state.workspaces.filter((w) => w.id);
+  const current = workspaces.find((w) => w.id === state.workspaceId) ?? null;
+  const workspaceLabel = workspaces.length === 0
+    ? '暂无工作区'
+    : current ? current.title || current.path : '选择工作区';
+
+  const onPickWorkspace = (value: string | null) => {
+    if (value) selectBoardWorkspace(value);
+  };
 
   return (
     <div className="board-page">
@@ -22,25 +31,29 @@ export function BoardPage() {
           <span className="board-page__mark" aria-hidden="true">DS</span>
           <div className="board-page__titles">
             <strong>任务看板</strong>
-            <span>按工作区调度任务与 Agent Team</span>
           </div>
         </div>
 
-        <label className="board-page__workspace">
-          <span>工作区</span>
-          <select
-            value={state.workspaceId || ''}
-            onChange={(event) => selectBoardWorkspace(event.target.value)}
-            aria-label="切换工作区"
-          >
-            {workspaces.length === 0 && <option value="">暂无工作区</option>}
-            {workspaces.map((workspace) => (
-              <option key={workspace.id} value={workspace.id}>{workspace.title || workspace.path}</option>
-            ))}
-          </select>
-        </label>
-
         <span className="board-page__spacer" />
+
+        <div className="board-page__workspace">
+          <Select
+            value={state.workspaceId ?? ''}
+            onValueChange={onPickWorkspace}
+            disabled={workspaces.length === 0}
+          >
+            <SelectTrigger size="sm" className="w-[min(220px,42vw)]" aria-label="切换工作区">
+              <SelectValue>{workspaceLabel}</SelectValue>
+            </SelectTrigger>
+            <SelectContent className="min-w-56">
+              {workspaces.map((workspace) => (
+                <SelectItem key={workspace.id} value={workspace.id}>
+                  {workspace.title || workspace.path}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
 
         {followingHost ? null : (
           <button
