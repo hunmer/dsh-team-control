@@ -47,7 +47,7 @@ dsh plugin --profile web add dsh-team-control-ui   # 可选：GUI 看板
 ```bash
 cd ~/dsh-team-control
 node demo/run-demo.mjs     # 3 成员 + DAG + 一次审批 + 一次 interrupt/resume
-node tests/run-all.mjs     # AC-1 ~ AC-17 与插件/面板/路由/CLI 全量验收
+node tests/run-all.mjs     # AC-1 ~ AC-18 与插件/面板/路由/CLI 全量验收
 ```
 
 ## 示例用法
@@ -79,6 +79,17 @@ team_report  { teamId: "team_x1" }                  // 导出 Markdown 运行报
 
 面板：<http://127.0.0.1:4317/panel>（插件拉起 sidecar 后即可访问）。CLI 等价入口：
 `npx -y dsh-team-control-cli status | dag | logs | report`。
+
+## 任务看板
+
+「任务看板」是独立于团队 DAG 的**工作区级**任务队列：一个工作区一块看板，入口是 DSH 里与「编排」并列的「任务看板」页签（也可直接打开 `#/board[/<workspaceId>]`）。它不依赖当前 team，也不要和「编排」页签里的「成员看板」混淆——后者展示成员运行态 Trace，前者管理任务生命周期。
+
+- **状态**：`todo → planning → planned → inprogress → done / failed`。界面按 `Waiting`（`todo` / `planned` / `failed`）、`Progress`（`planning` / `inprogress`）、`Done` 三列展示。
+- **排队与并发**：`auto=0` 的任务先留在 Waiting，点「开始执行」才入队；`auto=1` 自动排队。规划、执行并发按工作区分别设置，默认各 1；`planned` 不占槽位。失败可重试，终态可封存/恢复，进行中的任务可停止。
+- **执行链路**：插件按 `boardDispatchMs`（默认 2s）向 sidecar claim 槽位 → 创建规划会话（默认 `read-only`）→ 会话调用 `board_plan_submit` 提交计划 → 任务进入 `planned` → 槽位空出后在**同一会话**继续执行（默认），或按 `executionMode: "new"` 新建 Lead 会话 → Lead 用 `team_*` 拉成员、跑 DAG → 调用 `board_task_status` 报 `done` / `failed`。
+- **模型与权限**：规划默认 `read-only`，执行默认 `danger-full-access`；工作区设置或任务可覆盖规划/执行 provider、model、reasoning effort，以及成员模型白名单 `teamModels`。同会话模式下规划与执行共用会话模型；要分开规划/执行模型，选「在新的会话执行」。
+- **关联与续聊**：任务可绑定多个团队；`team_create` 会自动把当前 Lead 会话对应的任务与团队关联，任务详情可跳到「编排」页签或执行会话。任务完成后用户再发消息，会把任务改回 `inprogress` 继续处理。
+- **工具与接口**：`board_plan_submit({plan, summary?})`、`board_task_status({status, summary?})`；任务管理走面板或 `/api/board/**`（详见 [`docs/CONTRACT.md`](docs/CONTRACT.md) 的任务看板一节）。
 
 ## 架构
 
