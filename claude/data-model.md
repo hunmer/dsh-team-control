@@ -2,7 +2,7 @@
 
 > **v2 变更（2026-11）**：worker 运行时与四域 broker 已移除；成员一律是真 sub-agent，权限由 DSH 权限预设按成员分配，成员审批经 `team_approve` 转发给 Lead。下文涉及 `worker` / `broker` / `policy` / `scope` 的段落为历史记录，以 [CONTRACT.md](../docs/CONTRACT.md) 与 [README](../README.md) 为准。
 
-## 表（`src/db.mjs`，`SCHEMA_VERSION = 12`，共 25 张）
+## 表（`src/db.mjs`，`SCHEMA_VERSION = 14`，共 25 张）
 
 | 表 | 角色 |
 |---|---|
@@ -52,7 +52,18 @@ rebuild()  ── 只读 event 重投影出 member_state
 - `domain`：`fs | exec | net | env`
 - `ops`：`fs read|write|delete|rename|list`、`exec spawn`、`net connect`、`env read|write`
 - `member.delivery`：`pending | delivered | acked`
-- `scope_request.status`：`pending | approved | denied | expired`
+- `board_task.status`（`src/board.mjs` `BOARD_STATUSES`）：`todo | planning | planned | inprogress | done | failed`
+
+## 看板状态机要点（`src/board.mjs`，ADR-012）
+
+```text
+board_task: todo → planning →（board_plan_submit）planned →（claim/start）inprogress →（board_task_status）done | failed
+           todo/inprogress --claim 同步模式--> planning/inprogress（same 模式：规划会话即执行会话）
+```
+
+- `claim` 发放一次性 `claim_token`；`stopTask` 会联动 `core.stopTeam()` 强制中断成员会话。
+- `board_task_team` 记录任务 ↔ team 多对多绑定；`board_event` 只增留痕。
+- 迁移示例：`ensureColumn(db,'board_task','resumed',…)`；`meta.schema_version` 就地升版，幂等（`db-migration` 测试覆盖）。
 
 ## 状态机要点
 

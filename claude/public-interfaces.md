@@ -55,6 +55,15 @@
 **模型目录**
 - `POST|GET /api/llm/catalog`、`GET /api/llm/models`、`PATCH /api/llm/routes`
 
+**工作区看板（ADR-012，`src/board.mjs`）**
+- `GET /api/board?workspaceId=…[&archived=1]`、`GET /api/board/live`
+- `GET /api/board/by-session/{sessionId}`、`GET /api/board/by-team/{teamId}`
+- `GET|PUT /api/board/settings?workspaceId=…`
+- `POST /api/board/tasks`、`POST /api/board/claim`、`GET /api/board/tasks/{id}`
+- `PATCH /api/board/tasks/{id}`、`POST …/start|stop|retry|archive|restore`、`DELETE /api/board/tasks/{id}`
+- `GET|POST /api/host/web`（宿主面板地址登记）
+- `stopTask` 命中运行中的团队时会联动 `POST /api/teams/{id}/stop` 强制中断成员会话
+
 **SSE**
 - `GET /api/events`（支持 `lastEventId` 续传；7 种基础帧 + 4 种合成帧）
 
@@ -101,7 +110,6 @@
 - `/dsh-team-api/*` → `{baseUrl}/*`，自动补 `Authorization`（读 `home/token`）。
 - 浏览器因此不接触 token；iframe 用 `?api=/dsh-team-api&embed=1`。
 
-## 5. 进程内 RPC（worker ↔ sidecar）
+## 5. 进程内 RPC（worker ↔ sidecar，已移除）
 
-标准输入输出 NDJSON，一行一帧。请求 `{id, op, args}`，响应 `{id, ok, result}` 或 `{id, ok:false, error:{code,message,detail}}`。
-op 覆盖面 = `broker.mjs` 的公开方法：`fs.read/fs.write/fs.delete/fs.rename/fs.list`、`exec.spawn`、`net.connect`、`env.read/env.write`、`scope.request`、`msg.*`、`step.append`。
+worker 运行时已随 v2 删除（ADR-009）；历史描述见 git 历史或 `docs/CONTRACT.md` §5。

@@ -27,7 +27,7 @@
 
 ## 扫描状态
 
-- 更新时间：2026-11-01
-- 已扫描：`panel.html`、`main.tsx`、`App.tsx`、`store.tsx`（导出面与 TAB/PHASE 常量）、`shell.tsx`、`types.ts`、`lib/{api,dsh-bridge,workspace,model-brand,model-icons,format,json,utils}.ts`、`components/` 与 `components/ui/` 目录清单、`vite.config.ts`、`tsconfig`、`package.json`、`scripts/sync-coss.mjs`。
-- 未逐行：`store.tsx` 与 `views/Home.tsx` 的完整实现（各约千行量级）；`views/` 下各文件内部细节。
-- 下一步：改 SSE 增量逻辑前精读 `store.tsx` 的 reducer 与 `pendingTimelineRef`；改首页前读 `views/Home.tsx` 与 `AppShell`。
+- 更新时间：2026-11-05（增量，含深读）
+- 已扫描：`panel.html`、`main.tsx`、`App.tsx`、`store.tsx`（深读：路由/SSE 帧/去抖/轮询/竞态约定，见 overview.md）、`shell.tsx`、`types.ts`、`lib/{api,board,dsh-bridge,workspace,model-brand,model-icons,format,json,utils}.ts`、`views/`（`Board.tsx`/`BoardPage.tsx`/`board-status-icon.tsx`/`tasks/TasksView` 深读）、`components/` 目录清单、构建配置。
+- 未逐行：`views/Home.tsx`（约千行）与 `tasks/TasksView.tsx` 内部细节。
+- 下一步：改首页前读 `views/Home.tsx`；改看板交互前读 `views/tasks/TasksView.tsx`。

@@ -22,29 +22,29 @@
 
 ```text
 util.mjs  ◀── 全部模块（错误/ID/时间/glob/脱敏/队列）
-db.mjs    ◀── 全部持久化（schema v7 + q/tx）
+db.mjs    ◀── 全部持久化（schema v14 + q/tx）
    ├─ eventstore.mjs   事件溯源（append/rebuild/tail）
-   ├─ policy.mjs       纯函数求值（无 IO）
-   ├─ broker.mjs       四域唯一 IO 出口 + audit + grant
-   ├─ runner.mjs       worker 进程 / 租约 / 中断 / 恢复
-   ├─ scheduler.mjs    DAG / 派发 / 关键路径
+   ├─ scheduler.mjs    DAG / 派发 / 关键路径（settleMs 200, tickMs 150）
    ├─ bus.mjs          持久信箱 / 三态回执
    ├─ sse.mjs          SSE Hub / lastEventId
    ├─ llm.mjs          模型目录（只存不调）
+   ├─ board.mjs        工作区看板状态机（ADR-012）
    └─ server.mjs       HTTP 路由 + 静态托管
         └─ core.mjs    组合根，装配以上全部 + recoverAll
-worker/worker.mjs  ◀── 被 runner 以受限模式拉起，只走 stdio NDJSON
 web/               ◀── 被 server.mjs 静态托管
 web-ui/            ◀── 源码，构建进 web/
 ```
+
+（`policy.mjs` / `broker.mjs` / `runner.mjs` / `worker/` 已随 v2 移除，见页首横幅。）
 
 ## 修改落点速查
 
 - 加/改 REST 接口 → `src/server.mjs`（`createRoutes`）+ `docs/CONTRACT.md`。
 - 加状态或事件类型 → `src/db.mjs`（表/迁移）+ `src/eventstore.mjs` + 契约。
-- 改权限语义 → `src/policy.mjs`（纯求值）+ `src/broker.mjs`（执行与审计）。
+- 改权限语义 → DSH 权限预设（成员/团队级 `permissionPreset`），sidecar 只镜像审批。
 - 改派发时机 → `src/scheduler.mjs`（注意 `settleMs`/`tickMs` 与 ADR-005）。
-- 改成员生命周期 → `src/runner.mjs`（worker）或 `dsh-plugin/index.js`（agent）。
+- 改成员生命周期 → `dsh-plugin/index.js`（agent 派发与状态回写）。
+- 改看板 → `src/board.mjs` + `src/server.mjs` 的 `/api/board/**` 路由 + 契约 §3.13。
 - 改工具参数/描述 → `dsh-plugin/index.js` 的 `buildTools`，并同步 `skills/dsh-agent-team/SKILL.md`、`README.md`。
 - 改面板 → `src/web-ui/src/**`，再 `npm run build`。
 - 改挂载方式 → `dsh-plugin-ui/`。

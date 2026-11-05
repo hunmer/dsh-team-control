@@ -12,7 +12,7 @@
 | 团队看板 | `node bin/dsh-team.mjs status <teamId> [--json]` |
 | DAG | `node bin/dsh-team.mjs dag <teamId> [--json]` |
 | 成员日志 | `node bin/dsh-team.mjs logs <memberId> [-f] [--since N]` |
-| 审批越界 | `node bin/dsh-team.mjs approve <requestId> [--deny] [--reason TEXT] [--ttl SEC]` |
+| 查审批镜像 | `node bin/dsh-team.mjs approvals <teamId> [--status pending\|allowed\|rejected] [--json]` |
 | 导出报告 | `node bin/dsh-team.mjs report <teamId> -o run.md` |
 | 全量测试 | `npm test` → `node tests/run-all.mjs` |
 | 单条验收 | `node tests/run-all.mjs --only ac-05` |
@@ -35,7 +35,7 @@
 
 - 不新增后端第三方依赖（见 ADR-001）。
 - 不直接 `UPDATE member_state`，改状态走 `EventStore.append()`（见 C2）。
-- 不在 `broker.mjs` 之外做文件/exec/net/env IO（见 C1）。
+- 不在 sidecar 内做文件/exec/net/env IO 代理（v2 起 IO 归 DSH 权限预设与宿主沙箱，见 C1 与 ADR-009）。
 - 不手改 `src/web/assets/*`；不把 `src/web-ui/node_modules` 带进提交。
 - 不把 sidecar 绑到 `0.0.0.0`（默认免鉴权）。
 - 不在日志/事件/报告里打印 token、API Key、敏感 env 明文。
