@@ -1,26 +1,153 @@
 /**
  * 看板对话框：新建任务、看板设置。
- * 拆分自 Tasks.tsx，行为不变。
+ * 团队模型限制用 coss 多选 Combobox：候选项按 provider 分组，已选列表逐项可移除，
+ * 每个模型行右侧可单独指定思考强度（单选，默认跟随该模型）。
  */
-import { useEffect, useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Loader2, SearchIcon, XIcon } from 'lucide-react';
+import { ModelAvatar } from '@/components/ModelAvatar';
 import { Button } from '@/components/ui/button';
+import {
+  Combobox,
+  ComboboxCollection,
+  ComboboxEmpty,
+  ComboboxGroup,
+  ComboboxGroupLabel,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+  ComboboxPopup,
+} from '@/components/ui/combobox';
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogPanel,
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { boardApi, type BoardMode, type BoardSettings, type BoardTask } from '@/lib/board';
 import { usePanel } from '@/store';
 import { Field, ModePicker, RouteSelect } from './fields';
-import { errText, routeFromKey, type ModelOption } from './shared';
+import { errText, routeFromKey, type ModelEffort, type ModelOption } from './shared';
+
+/** 已选团队模型 + 该项单独指定的思考强度（null = 跟随该模型默认）。 */
+type TeamModelChoice = { key: string; reasoningEffort: string | null };
+
+/** Combobox 分组渲染用的形状：基座把所有组的 items 拍平后过滤。 */
+type ModelGroup = { group: string; items: ModelOption[] };
+
+/** Select 用哨兵值表示「跟随默认」。 */
+const EFFORT_DEFAULT = '\u0000__default__';
+
+/** 新建任务表单需要跨会话记住的选项（标题/描述除外）。 */
+type CreateDraft = {
+  auto: boolean;
+  mode: BoardMode;
+  planKey: string;
+  leadKey: string;
+  limitTeams: boolean;
+  teamModels: TeamModelChoice[];
+};
+
+const CREATE_DRAFT_KEY = 'dsh-panel:board-create-draft';
+
+/** 兼容旧草稿里的 string[]（只存 key）与新结构。 */
+function parseTeamChoices(value: unknown): TeamModelChoice[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: TeamModelChoice[] = [];
+  for (const item of value) {
+    if (typeof item === 'string') {
+      if (item) out.push({ key: item, reasoningEffort: null });
+      continue;
+    }
+    if (!item || typeof item !== 'object') continue;
+    const entry = item as { key?: unknown; reasoningEffort?: unknown };
+    if (typeof entry.key !== 'string' || !entry.key) continue;
+    out.push({
+      key: entry.key,
+      reasoningEffort: typeof entry.reasoningEffort === 'string' ? entry.reasoningEffort : null,
+    });
+  }
+  return out;
+}
+
+function loadCreateDraft(): Partial<CreateDraft> {
+  try {
+    const raw = localStorage.getItem(CREATE_DRAFT_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Partial<CreateDraft> | null;
+    if (!parsed || typeof parsed !== 'object') return {};
+    return {
+      auto: typeof parsed.auto === 'boolean' ? parsed.auto : undefined,
+      mode: parsed.mode === 'same' || parsed.mode === 'new' ? parsed.mode : undefined,
+      planKey: typeof parsed.planKey === 'string' ? parsed.planKey : undefined,
+      leadKey: typeof parsed.leadKey === 'string' ? parsed.leadKey : undefined,
+      limitTeams: typeof parsed.limitTeams === 'boolean' ? parsed.limitTeams : undefined,
+      teamModels: parseTeamChoices(parsed.teamModels),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function saveCreateDraft(draft: CreateDraft) {
+  try {
+    localStorage.setItem(CREATE_DRAFT_KEY, JSON.stringify(draft));
+  } catch {
+    /* 存储不可用时静默降级为不记忆 */
+  }
+}
+
+/** 已选模型行右侧的思考强度单选；value 为 null 表示跟随该模型默认。 */
+function EffortSelect({
+  value,
+  efforts,
+  onChange,
+  ariaLabel,
+}: {
+  value: string | null;
+  efforts: ModelEffort[];
+  onChange: (value: string | null) => void;
+  ariaLabel: string;
+}) {
+  return (
+    <Select
+      value={value ?? EFFORT_DEFAULT}
+      onValueChange={(next) => {
+        const id = typeof next === 'string' ? next : '';
+        onChange(id === EFFORT_DEFAULT ? null : id);
+      }}
+    >
+      <SelectTrigger
+        aria-label={ariaLabel}
+        className="h-7 min-h-0 w-auto min-w-0 shrink-0 gap-1 px-2 text-xs"
+        size="sm"
+      >
+        <SelectValue>
+          {(current) => {
+            const id = typeof current === 'string' ? current : '';
+            const effort = efforts.find((e) => e.id === id);
+            if (!effort) return <span className="truncate text-muted-foreground">默认</span>;
+            return <span className="truncate">{effort.name || effort.id}</span>;
+          }}
+        </SelectValue>
+      </SelectTrigger>
+      <SelectPopup>
+        <SelectItem value={EFFORT_DEFAULT}>跟随默认</SelectItem>
+        {efforts.map((effort) => (
+          <SelectItem key={effort.id} value={effort.id}>
+            {effort.name || effort.id}
+          </SelectItem>
+        ))}
+      </SelectPopup>
+    </Select>
+  );
+}
 
 export function CreateTaskDialog({
   open,
@@ -40,27 +167,48 @@ export function CreateTaskDialog({
   onCreated: (task: BoardTask) => void | Promise<void>;
 }) {
   const { toast } = usePanel();
+  const [lastDraft] = useState(loadCreateDraft);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [auto, setAuto] = useState(false);
-  const [mode, setMode] = useState<BoardMode>('same');
-  const [planKey, setPlanKey] = useState('');
-  const [leadKey, setLeadKey] = useState('');
-  const [limitTeams, setLimitTeams] = useState(false);
-  const [teamModels, setTeamModels] = useState<string[]>([]);
+  const [auto, setAuto] = useState(lastDraft.auto ?? false);
+  const [mode, setMode] = useState<BoardMode>(lastDraft.mode ?? 'same');
+  const [planKey, setPlanKey] = useState(lastDraft.planKey ?? '');
+  const [leadKey, setLeadKey] = useState(lastDraft.leadKey ?? '');
+  const [limitTeams, setLimitTeams] = useState(lastDraft.limitTeams ?? false);
+  const [teamModels, setTeamModels] = useState<TeamModelChoice[]>(lastDraft.teamModels ?? []);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setTitle('');
     setDescription('');
-    setAuto(false);
-    setMode('same');
-    setPlanKey('');
-    setLeadKey('');
-    setLimitTeams(false);
-    setTeamModels([]);
-  }, [open]);
+    setAuto(lastDraft.auto ?? false);
+    setMode(lastDraft.mode ?? 'same');
+    setPlanKey(lastDraft.planKey ?? '');
+    setLeadKey(lastDraft.leadKey ?? '');
+    setLimitTeams(lastDraft.limitTeams ?? false);
+    setTeamModels(lastDraft.teamModels ?? []);
+  }, [open, lastDraft]);
+
+  const teamRows = teamModels.flatMap((choice) => {
+    const option = models.find((m) => m.key === choice.key);
+    return option ? [{ choice, option }] : [];
+  });
+  const teamModelOptions = teamRows.map((row) => row.option);
+
+  const modelGroups = useMemo(() => {
+    const map = new Map<string, ModelOption[]>();
+    for (const option of models) {
+      const list = map.get(option.group);
+      if (list) list.push(option);
+      else map.set(option.group, [option]);
+    }
+    return [...map.entries()].map(([group, items]) => ({ group, items }));
+  }, [models]);
+
+  const setEffort = (key: string, reasoningEffort: string | null) => {
+    setTeamModels((prev) => prev.map((item) => (item.key === key ? { ...item, reasoningEffort } : item)));
+  };
 
   const submit = async () => {
     if (!title.trim()) { toast('请填写任务标题', 'warn'); return; }
@@ -76,8 +224,21 @@ export function CreateTaskDialog({
         executionMode: mode,
         planRoute: routeFromKey(planKey),
         leadRoute: routeFromKey(leadKey),
-        teamModels: limitTeams ? teamModels.map((key) => routeFromKey(key)!).filter(Boolean) : null,
+        teamModels: limitTeams
+          ? teamModels.flatMap(({ key, reasoningEffort }) => {
+              const route = routeFromKey(key);
+              if (!route) return [];
+              const option = models.find((m) => m.key === key);
+              // 目录里已不再声明的强度不发出去，避免后端拒绝
+              const effort =
+                reasoningEffort && option?.efforts?.some((e) => e.id === reasoningEffort)
+                  ? reasoningEffort
+                  : null;
+              return [{ ...route, reasoningEffort: effort }];
+            })
+          : null,
       });
+      saveCreateDraft({ auto, mode, planKey, leadKey, limitTeams, teamModels });
       await onCreated(task);
     } catch (err) {
       toast(errText(err), 'error');
@@ -91,7 +252,6 @@ export function CreateTaskDialog({
       <DialogContent className="max-h-[88vh] max-w-xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>新建任务</DialogTitle>
-          <DialogDescription>任务会进入当前工作区的 Waiting 列；开启 auto 后调度器自动接手。</DialogDescription>
         </DialogHeader>
         <DialogPanel className="space-y-3">
           <Field label="标题">
@@ -124,21 +284,88 @@ export function CreateTaskDialog({
             <span>限制团队模型（不开启 = 不限制）</span>
           </label>
           {limitTeams && (
-            <div className="ui-tb__checks">
-              {models.length === 0 ? (
-                <p className="text-xs text-muted-foreground">模型目录尚未加载。</p>
-              ) : models.map((m) => (
-                <label key={m.key} className="ui-tb__check">
-                  <input
-                    type="checkbox"
-                    checked={teamModels.includes(m.key)}
-                    onChange={(e) => {
-                      setTeamModels((prev) => e.target.checked ? [...prev, m.key] : prev.filter((key) => key !== m.key));
-                    }}
-                  />
-                  <span>{m.group} / {m.name}</span>
-                </label>
-              ))}
+            <div className="space-y-2">
+              <Combobox<ModelOption, true, ModelGroup>
+                autoHighlight
+                isItemEqualToValue={(item, value) => item.key === value.key}
+                itemToStringLabel={(m) => `${m.name || m.model} ${m.group}`}
+                items={modelGroups}
+                multiple
+                onValueChange={(next) =>
+                  setTeamModels((prev) => {
+                    const efforts = new Map(prev.map((item) => [item.key, item.reasoningEffort]));
+                    return next.map((option) => ({
+                      key: option.key,
+                      reasoningEffort: efforts.get(option.key) ?? null,
+                    }));
+                  })
+                }
+                value={teamModelOptions}
+              >
+                <ComboboxInput
+                  aria-label="选择团队可用模型"
+                  placeholder="搜索并添加模型…"
+                  startAddon={<SearchIcon />}
+                />
+                <ComboboxPopup>
+                  <ComboboxEmpty>{models.length === 0 ? '模型目录尚未加载。' : '没有匹配的模型。'}</ComboboxEmpty>
+                  <ComboboxList>
+                    {(group: ModelGroup) => (
+                      <ComboboxGroup key={group.group} items={group.items}>
+                        <ComboboxGroupLabel>{group.group}</ComboboxGroupLabel>
+                        <ComboboxCollection>
+                          {(option: ModelOption) => (
+                            <ComboboxItem key={option.key} value={option}>
+                              <span className="flex min-w-0 items-center gap-2">
+                                <ModelAvatar model={option.model} name={option.name} provider={option.provider} size={16} />
+                                <span className="truncate">{option.name || option.model}</span>
+                                {option.efforts?.length ? (
+                                  <span className="ms-auto shrink-0 text-[10px] text-muted-foreground">
+                                    {option.efforts.map((e) => e.name || e.id).join(' / ')}
+                                  </span>
+                                ) : null}
+                              </span>
+                            </ComboboxItem>
+                          )}
+                        </ComboboxCollection>
+                      </ComboboxGroup>
+                    )}
+                  </ComboboxList>
+                </ComboboxPopup>
+              </Combobox>
+              {teamRows.length > 0 && (
+                <ul className="divide-y rounded-lg border">
+                  {teamRows.map(({ choice, option }) => {
+                    const efforts = option.efforts ?? [];
+                    return (
+                      <li className="flex items-center gap-2 p-1 ps-2 sm:text-sm" key={option.key}>
+                        <ModelAvatar model={option.model} name={option.name} provider={option.provider} size={16} />
+                        <div className="min-w-0 flex-1 leading-tight">
+                          <div className="truncate font-medium">{option.name || option.model}</div>
+                          <div className="truncate text-[10px] text-muted-foreground">{option.group}</div>
+                        </div>
+                        {efforts.length > 0 && (
+                          <EffortSelect
+                            ariaLabel={`${option.name || option.model} 的思考强度`}
+                            efforts={efforts}
+                            onChange={(effort) => setEffort(option.key, effort)}
+                            value={choice.reasoningEffort}
+                          />
+                        )}
+                        <Button
+                          aria-label={`移除 ${option.name || option.model}`}
+                          onClick={() => setTeamModels((prev) => prev.filter((item) => item.key !== option.key))}
+                          size="icon-xs"
+                          type="button"
+                          variant="ghost"
+                        >
+                          <XIcon />
+                        </Button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
             </div>
           )}
         </DialogPanel>
@@ -186,6 +413,7 @@ export function SettingsDialog({
         workspaceId,
         planningConcurrency: Number(draft.planningConcurrency) || 1,
         inprogressConcurrency: Number(draft.inprogressConcurrency) || 1,
+        showTaskSessions: draft.showTaskSessions !== false,
         planProvider: draft.planProvider,
         planModel: draft.planModel,
         planReasoningEffort: draft.planReasoningEffort,
@@ -206,7 +434,6 @@ export function SettingsDialog({
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>看板设置</DialogTitle>
-          <DialogDescription>并发按工作区计算；模型留空时跟随 DSH 默认。</DialogDescription>
         </DialogHeader>
         <DialogPanel className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
@@ -229,6 +456,18 @@ export function SettingsDialog({
               />
             </Field>
           </div>
+          <div className="flex items-center justify-between gap-4 rounded-lg border border-border/60 px-3 py-2.5">
+            <div className="min-w-0">
+              <div className="text-sm">在工作区会话里显示任务会话</div>
+              <p className="text-xs leading-5 text-muted-foreground">
+                开启后，看板为任务创建的规划/执行会话会出现在 DSH 的工作区会话列表里；关闭则只在看板里可见。
+              </p>
+            </div>
+            <Switch
+              checked={draft.showTaskSessions !== false}
+              onCheckedChange={(checked) => setDraft({ ...draft, showTaskSessions: checked })}
+            />
+          </div>
           <Field label="默认规划模型">
             <RouteSelect
               value={draft.planProvider && draft.planModel ? `${draft.planProvider}\u0000${draft.planModel}` : ''}
@@ -249,9 +488,6 @@ export function SettingsDialog({
               }}
             />
           </Field>
-          <p className="text-xs text-muted-foreground">
-            权限预设：规划 {draft.planPermissionPreset}，执行 {draft.leadPermissionPreset}。无人值守规划会自动拒绝需要审批的操作。
-          </p>
         </DialogPanel>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>取消</Button>
