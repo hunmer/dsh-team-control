@@ -542,6 +542,9 @@ window.__ModuleLoader__.load({
       return openTeamPanel(getService, sessionId);
     }
 
+    /** 本会话是否已经自动推开过一次（用户手动收起后不再打扰）。 */
+    const AUTO_OPEN_KEY = 'dsh-team.autoopen.v1.';
+
     /* ------------------------------------------------------------------
      * 会话右上角团队卡片（移植 affectui `agent-findings`）
      * - 右上角 pill：本会话团队 · 运行中 n/m · 严重/警告计数，点击展开卡片
@@ -1090,8 +1093,9 @@ window.__ModuleLoader__.load({
           return undefined;
         }, [sessionId]);
 
-        // 解析本会话的团队并记住（供左侧栏「编排」入口用）；**不自动推开面板**，
-        // 团队创建/成员开跑都只更新数据，面板由用户点左侧栏入口自己打开。
+        // 解析本会话的团队并记住；首次解析到团队时把「编排」页自动推到右侧栏（每会话一次）。
+        // 只查团队每次挂载都做（很便宜），「自动打开」只有一次 —— 切回已经打开过的会话时
+        // 不再打扰用户，但仍能拿到自己的团队，避免面板显示第一个工作区的团队。
         React.useEffect(() => {
           if (!sessionId) return undefined;
           let stopped = false;
@@ -1110,6 +1114,13 @@ window.__ModuleLoader__.load({
             if (team) {
               sessionTeamStore.set(sessionId, team.id || null);
               pendingTeamId = team.id || null;
+              const key = AUTO_OPEN_KEY + sessionId;
+              let opened = false;
+              try { opened = window.sessionStorage.getItem(key) === '1'; } catch { /* ignore */ }
+              if (!opened) {
+                try { window.sessionStorage.setItem(key, '1'); } catch { /* ignore */ }
+                openTeamPanel(getService, sessionId);
+              }
               return;
             }
             // 连续几次都没有团队就先按「无团队」放行面板，之后仍然会继续轮询补上

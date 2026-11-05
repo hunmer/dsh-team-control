@@ -3,7 +3,7 @@
 //  - 只认本会话的子会话（= 团队成员），非团队会话不渲染
 //  - pill 上显示团队名 / 运行中 n/m / 严重·警告计数
 //  - 卡片默认收起（有人在跑也不自动展开），点击 pill 才展开在 shell.overlay
-//  - 解析到团队也不自动推开侧栏面板（入口常驻，由用户点击）
+//  - 解析到团队时自动推开一次右侧栏「编排」页（每会话一次，之后不再打扰）
 //  - 成员计划清单常驻展开（不再折叠、不再有「最新发现」列表）
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -96,11 +96,17 @@ const calls = [];
 let serveStatus = true;
 // 假 document：ensureStyles() 应把「全局唯一一份」样式挂到 head（不在组件树里）
 const headChildren = [];
+const storage = new Map();
 const sandbox = {
   window: {
     __ModuleLoader__: { load: (def) => { definition = def; } },
     innerWidth: 1280,
     innerHeight: 800,
+    // AUTO_OPEN_KEY 依赖：记住「本会话已自动开过一次编排页」
+    sessionStorage: {
+      getItem: (key) => (storage.has(key) ? storage.get(key) : null),
+      setItem: (key, value) => { storage.set(key, String(value)); },
+    },
   },
   document: {
     head: { appendChild: (node) => { headChildren.push(node); } },
@@ -245,10 +251,11 @@ assert.equal(strip.component({ sessionId: 's1', useSessions }), null, '快照未
 await new Promise((resolve) => setTimeout(resolve, 20));
 assert.ok(requested.some((u) => u === '/dsh-team-api/api/status'), '通过 Host 代理读 /status');
 
-// 解析到团队（by-lead 500ms 后首次查询）也不自动推开面板：入口常驻，由用户点击
+// 解析到团队（by-lead 500ms 后首次查询）自动把「编排」页推到右侧栏，但每会话只推一次
 await new Promise((resolve) => setTimeout(resolve, 600));
 assert.ok(requested.some((u) => u.includes('/api/teams/by-lead/s1')), '解析本会话团队');
-assert.equal(panels.length, 0, '拿到团队后不自动推开侧栏面板');
+assert.deepEqual(panels, ['dsh-team:panel'], '团队创建时自动打开一次右侧栏编排页');
+assert.equal(storage.get('dsh-team.autoopen.v1.s1'), '1', '记住已自动打开，之后不再打扰');
 
 const pill = strip.component({ sessionId: 's1', useSessions });
 assert.equal(pill.props['data-dsh-team-pill'], TEAM.id, 'pill 绑定团队 id');
