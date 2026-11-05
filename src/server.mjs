@@ -125,6 +125,10 @@ export function createRoutes(core) {
     ['GET', /^\/api\/workspaces$/, async () => C.listWorkspaces()],
     ['POST', /^\/api\/workspaces$/, async (ctx) => C.reportWorkspaces(ctx.body)],
 
+    // DSH Web 地址（Host 插件上报；独立面板据此在浏览器里深链打开会话）
+    ['GET', /^\/api\/host\/web$/, async () => ({ url: C.board.hostWebUrl() })],
+    ['POST', /^\/api\/host\/web$/, async (ctx) => C.board.reportHostWeb(ctx.body?.url)],
+
     // ---------- 工作区任务看板 ----------
     ['GET', /^\/api\/board$/, async (ctx) => C.board.view(need(qs(ctx.url).get('workspaceId'), 'workspaceId'), { archived: qs(ctx.url).get('archived') === '1' })],
     ['GET', /^\/api\/board\/live$/, async () => C.board.live()],

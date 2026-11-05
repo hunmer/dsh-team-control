@@ -10,6 +10,8 @@ const MODES = new Set(['same', 'new']);
 const DEFAULT_SETTINGS = {
   planningConcurrency: 1,
   inprogressConcurrency: 1,
+  // 默认把看板创建的规划/执行会话挂进 DSH 工作区会话列表
+  showTaskSessions: true,
   planProvider: null, planModel: null, planReasoningEffort: null,
   leadProvider: null, leadModel: null, leadReasoningEffort: null,
   planPermissionPreset: 'read-only',
@@ -36,6 +38,9 @@ function settingsFromRow(row, workspaceId, workspacePath) {
     workspacePath: row.workspace_path || workspacePath || '',
     planningConcurrency: row.planning_concurrency,
     inprogressConcurrency: row.inprogress_concurrency,
+    showTaskSessions: row.show_task_sessions === undefined || row.show_task_sessions === null
+      ? true
+      : !!row.show_task_sessions,
     planProvider: row.plan_provider || null,
     planModel: row.plan_model || null,
     planReasoningEffort: row.plan_reasoning_effort || null,
@@ -69,7 +74,25 @@ export class Board {
 
   settings(workspaceId, workspacePath) {
     const ws = this.workspace(workspaceId);
-    return settingsFromRow(this.settingsRow(workspaceId), String(workspaceId), workspacePath || ws?.path || '');
+    return {
+      ...settingsFromRow(this.settingsRow(workspaceId), String(workspaceId), workspacePath || ws?.path || ''),
+      // Host 插件上报的 DSH Web 地址：独立面板据此 window.open 深链打开会话
+      dshWebUrl: this.hostWebUrl(),
+    };
+  }
+
+  // ---------- DSH Web 地址（Host 上报，meta 表存一份） ----------
+  hostWebUrl() {
+    const row = this.get('SELECT value FROM meta WHERE key=?').get('host_web_url');
+    return row?.value || null;
+  }
+
+  reportHostWeb(url) {
+    const raw = String(url || '').trim().replace(/\/+$/, '');
+    if (!/^https?:\/\/[^\s/]{1,300}$/i.test(raw)) throw ERR.bad('url must be an http(s) origin');
+    this.get('INSERT INTO meta (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
+      .run('host_web_url', raw);
+    return { url: raw };
   }
 
   saveSettings(workspaceId, body = {}) {
@@ -79,6 +102,7 @@ export class Board {
       ...cur,
       planningConcurrency: asInt(body.planningConcurrency, 0, 64, cur.planningConcurrency),
       inprogressConcurrency: asInt(body.inprogressConcurrency, 0, 64, cur.inprogressConcurrency),
+      showTaskSessions: body.showTaskSessions !== undefined ? !!asBool(body.showTaskSessions) : cur.showTaskSessions,
       planProvider: body.planProvider !== undefined ? (body.planProvider || null) : cur.planProvider,
       planModel: body.planModel !== undefined ? (body.planModel || null) : cur.planModel,
       planReasoningEffort: body.planReasoningEffort !== undefined ? (body.planReasoningEffort || null) : cur.planReasoningEffort,
@@ -92,16 +116,17 @@ export class Board {
     };
     const t = nowIso();
     this.get(`INSERT INTO board_settings
-      (workspace_id, workspace_path, planning_concurrency, inprogress_concurrency,
+      (workspace_id, workspace_path, planning_concurrency, inprogress_concurrency, show_task_sessions,
        plan_provider, plan_model, plan_reasoning_effort,
        lead_provider, lead_model, lead_reasoning_effort,
        plan_permission_preset, lead_permission_preset, plan_agent_preset, lead_agent_preset,
        created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(workspace_id) DO UPDATE SET
         workspace_path=excluded.workspace_path,
         planning_concurrency=excluded.planning_concurrency,
         inprogress_concurrency=excluded.inprogress_concurrency,
+        show_task_sessions=excluded.show_task_sessions,
         plan_provider=excluded.plan_provider, plan_model=excluded.plan_model,
         plan_reasoning_effort=excluded.plan_reasoning_effort,
         lead_provider=excluded.lead_provider, lead_model=excluded.lead_model,
@@ -112,6 +137,7 @@ export class Board {
         lead_agent_preset=excluded.lead_agent_preset,
         updated_at=excluded.updated_at`)
       .run(s.workspaceId, s.workspacePath, s.planningConcurrency, s.inprogressConcurrency,
+        s.showTaskSessions ? 1 : 0,
         s.planProvider, s.planModel, s.planReasoningEffort,
         s.leadProvider, s.leadModel, s.leadReasoningEffort,
         s.planPermissionPreset, s.leadPermissionPreset, s.planAgentPreset, s.leadAgentPreset,

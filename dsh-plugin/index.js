@@ -1474,6 +1474,14 @@ function boardLeadPrompt(task, sameSession) {
   const models = Array.isArray(task.teamModels) && task.teamModels.length
     ? task.teamModels.map((m) => (typeof m === 'string' ? m : `${m.provider ? m.provider + '/' : ''}${m.model}`)).join('\n')
     : '不限制';
+  // 任务已有关联团队（重试、失败后继续、或完成后再次执行）时，在原团队上接着干，
+  // 不要每轮都 team_create 出一个新团队。
+  const teams = Array.isArray(task.teams) ? task.teams.filter(Boolean).map(String) : [];
+  const teamRule = teams.length
+    ? `1. 本任务已关联团队：${teams.join('、')}。不要调用 team_create 新建团队：先 team_status 查看这些团队的现状，`
+      + '在原团队里用 team_task 追加剩余工作继续推进；已经完成的成员任务不要重复创建。'
+      + '只有原团队已被删除或全部不可用时，才允许 team_create 新团队（若既有团队需要继续保留、只是要并行新建，必须显式传 force: true）。'
+    : '1. 先调用 team_create 创建团队；name 用任务标题，workspace 用上面的路径。需要多个团队就多次创建，所有团队都会自动绑定到本任务。';
   return [
     `你是任务「${task.title}」的 Lead。工作区：${task.workspacePath}`,
     sameSession ? '你刚刚在同一会话完成了规划，现在开始执行。' : '以下是规划会话产出的计划，现在开始执行。',
@@ -1485,7 +1493,7 @@ function boardLeadPrompt(task, sameSession) {
     task.planMd || '(无)',
     '',
     '规则：',
-    '1. 先调用 team_create 创建团队；name 用任务标题，workspace 用上面的路径。需要多个团队就多次创建，所有团队都会自动绑定到本任务。',
+    teamRule,
     '2. 调用 team_models 查看可用路由；只能使用以下模型：',
     models,
     '3. 用 team_task 拆解并派发；用 team_status / team_report 跟踪。不要自己写代码，不要重复成员的工作。',
@@ -1512,12 +1520,57 @@ async function bindBoardTeam(s, exec, teamId) {
   } catch { /* 绑定失败不影响团队创建 */ }
 }
 
+/**
+ * 重试/续跑出来的 Lead 会话（spawn 时任务已有团队）默认禁止重复建队：
+ * 提示词是软约束，这里做成硬约束，避免模型不听话又多出一个团队。
+ * 只有 `force:true` 或原团队全部已被删除/归档时才放行。
+ */
+async function guardBoardTeamReuse(s, sessionId, force) {
+  if (force || !sessionId) return;
+  const rec = boardSessions.get(String(sessionId));
+  if (!rec?.reusedRun) return;
+  const task = await boardTaskOf(s, String(sessionId));
+  const teamIds = Array.isArray(task?.teams) ? task.teams.filter(Boolean).map(String) : [];
+  if (!teamIds.length) return;
+  const alive = [];
+  for (const id of teamIds) {
+    try {
+      const team = await request(s, `/api/teams/${encodeURIComponent(id)}`);
+      if (team && !team.archivedAt) alive.push(`${team.id}（${team.name || '未命名'}）`);
+    } catch { /* 团队已不存在 */ }
+  }
+  if (!alive.length) return;
+  throw new Error(
+    `本任务已关联团队：${alive.join('、')}。重试/续跑请在原团队上继续：先用 team_status 查看现状，再用 team_task 追加剩余工作，不要重复 team_create。`
+    + '确实需要与之并行新建团队时，调用 team_create 并显式传 force: true。',
+  );
+}
+
+/**
+ * 把看板会话挂进 DSH 工作区会话账本，让它在「工作区会话」列表里可见。
+ * 受看板设置 showTaskSessions 控制（缺省开启）；失败只告警，不影响任务推进。
+ */
+async function attachBoardSessionToWorkspace(ctx, task, sessionId) {
+  try {
+    const registry = ctx.get('workspaceRegistry');
+    if (!registry || typeof registry.get !== 'function' || !task.workspaceId) return;
+    const workspace = registry.get(task.workspaceId);
+    if (!workspace || typeof workspace.attachSession !== 'function') return;
+    await workspace.attachSession(String(sessionId));
+  } catch (err) {
+    console.warn(`[dsh-team] attach board session to workspace failed: ${String(err?.message || err)}`);
+  }
+}
+
 async function spawnBoardSession(s, ctx, item) {
   const { task, workspace, settings, fence } = item;
   const agents = (() => { try { return ctx.get('agents'); } catch { return undefined; } })();
   if (!agents || typeof agents.create !== 'function') throw new Error('agents 服务不可用：无法创建看板会话');
 
   const kind = task.status === 'planning' ? 'planning' : 'inprogress';
+  // spawn 时任务已有团队（重试、失败后续跑、或再次执行）→ 该会话属于续跑，
+  // 允许复用既有团队但默认禁止再建新团队（见 guardBoardTeamReuse）。
+  const hadTeams = Array.isArray(task.teams) && task.teams.filter(Boolean).length > 0;
   // 任何已有 Lead 会话的 inprogress 都复用该会话：same 模式的首轮、
   // 以及 new 模式完成后用户追问，都不能再新建会话。
   const sameSession = kind === 'inprogress' && !!task.leadSessionId;
@@ -1539,7 +1592,8 @@ async function spawnBoardSession(s, ctx, item) {
       method: 'POST', body: { kind: 'inprogress', sessionId, fence },
     });
     boardSetPermission(ctx, agent, settings.leadPermissionPreset);
-    const rec = boardSessions.get(sessionId) || { taskId: task.id, handle: { agent }, sawRunning: false };
+    if (settings.showTaskSessions !== false) await attachBoardSessionToWorkspace(ctx, task, sessionId);
+    const rec = boardSessions.get(sessionId) || { taskId: task.id, handle: { agent }, sawRunning: false, reusedRun: hadTeams };
     rec.phase = 'execution';
     rec.sawRunning = false;
     boardSessions.set(sessionId, rec);
@@ -1581,7 +1635,8 @@ async function spawnBoardSession(s, ctx, item) {
     await request(s, `/api/board/tasks/${encodeURIComponent(task.id)}/attach`, {
       method: 'POST', body: { kind, sessionId, fence },
     });
-    boardSessions.set(sessionId, { taskId: task.id, phase: kind, handle, sawRunning: false });
+    if (settings.showTaskSessions !== false) await attachBoardSessionToWorkspace(ctx, task, sessionId);
+    boardSessions.set(sessionId, { taskId: task.id, phase: kind, handle, sawRunning: false, reusedRun: hadTeams });
     boardSessionIds.add(sessionId);
     handle.agent.followup(boardUserMessage(kind === 'planning'
       ? boardPlanningPrompt(task, settings)
@@ -1700,11 +1755,13 @@ function buildTools(s, ctx) {
         maxConcurrency: { type: 'integer', description: 'Max simultaneously running tasks. Default 8.' },
         failurePolicy: { type: 'string', enum: ['continue', 'abort'], description: 'Team-level default failure policy.' },
         maxAttempts: { type: 'integer', description: 'Per-task retry cap. Default 3.' },
+        force: { type: 'boolean', description: '仅看板任务相关：该任务已关联团队时默认禁止重复建队（重试应继续用原团队）；确认需要与之并行新建团队时传 true。' },
       },
       required: ['name', 'workspace'],
     },
     output: jsonOutput('{ team, panel }'),
     async execute(args, exec) {
+      await guardBoardTeamReuse(s, exec?.agent?.id, args.force);
       const permissionPreset = resolvePermissionPreset(ctx, args.permissionPreset, 'workspace-write');
       const agentPreset = await resolveAgentPreset(ctx, args.agentPreset, null, s);
       const team = await request(s, '/api/teams', {
@@ -2951,6 +3008,26 @@ export function apply(ctx, config) {
     }, Math.max(0, s.boardIdleGraceMs));
     timer.unref?.();
   });
+
+  // 把 DSH Web 的浏览器地址报给 sidecar：独立面板据此 window.open 到 `#dsh-session=<id>`
+  // 深链，由 dsh-plugin-ui 的客户端半边接管并打开对应会话。
+  ctx.effect(() => {
+    const report = () => {
+      try {
+        const ws = typeof ctx.get === 'function' ? ctx.get('webServer') : undefined;
+        if (!ws || !ws.port) return;
+        const host = String(ws.host || '127.0.0.1');
+        const authority = host.includes(':') ? `[${host}]` : host;
+        const proto = ws.config?.tls ? 'https' : 'http';
+        void request(s, '/api/host/web', { method: 'POST', body: { url: `${proto}://${authority}:${ws.port}` } })
+          .catch(() => { /* sidecar 未就绪时下一轮再报 */ });
+      } catch { /* 宿主没有 webServer 服务时跳过 */ }
+    };
+    report();
+    const timer = setInterval(report, 60000);
+    timer.unref?.();
+    return () => clearInterval(timer);
+  }, 'dsh-team.host-web()');
 
   // 看板调度泵：每个 tick 向 sidecar claim 规划/执行槽位，claim 到就建会话并投 prompt。
   if (s.boardEnabled) {

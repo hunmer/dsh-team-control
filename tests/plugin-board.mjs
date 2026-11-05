@@ -150,6 +150,32 @@ const main = async () => {
     await api.post(`/api/board/tasks/${manual.id}/start`, {});
     await waitFor('manual start claims', () => created.length >= 4);
 
+    // 重试续跑：已有团队时禁止重复建队，force 才放行
+    const teamTool = ctx.tools.get('team_create');
+    assert(teamTool, 'team_create 已注册');
+    const firstTeam = await teamTool.execute({ name: '续跑团队', workspace: tmp.ws }, { agent: { id: rec3.agent.id } });
+    assert(firstTeam.team?.id, '首次建队返回 team');
+    const bound = await api.get(`/api/board/tasks/${task2.id}/teams`);
+    assert.equal(bound.items.length, 1, '团队自动绑定到任务');
+    assert.equal(bound.items[0], firstTeam.team.id, '绑定的是刚创建的团队');
+
+    await statusTool.execute({ status: 'failed', summary: '故意失败' }, { agent: { id: rec3.agent.id } });
+    assert.equal((await api.get(`/api/board/tasks/${task2.id}`)).status, 'failed', '任务置 failed');
+    await api.post(`/api/board/tasks/${task2.id}/retry`, {});
+    const recRetry = await waitFor('retry lead session', () => created.find((r) => {
+      const text = r.followups[0]?.content?.[0]?.text || '';
+      return text.includes('已关联团队');
+    }));
+    assert.match(recRetry.followups[0].content[0].text, new RegExp(firstTeam.team.id), '重试 prompt 带上既有团队 id');
+    await assert.rejects(
+      () => teamTool.execute({ name: '不该新建', workspace: tmp.ws }, { agent: { id: recRetry.agent.id } }),
+      /已关联团队/,
+      '续跑会话禁止重复建队',
+    );
+    const forced = await teamTool.execute({ name: '并行新团队', workspace: tmp.ws, force: true }, { agent: { id: recRetry.agent.id } });
+    assert(forced.team?.id && forced.team.id !== firstTeam.team.id, 'force 放行并行新团队');
+    await statusTool.execute({ status: 'done', summary: '续跑完成' }, { agent: { id: recRetry.agent.id } });
+
     console.log('plugin-board: ok');
   } finally {
     await sidecar.close();
