@@ -7,6 +7,7 @@
  */
 import type { ReactNode } from 'react';
 import {
+  Brain,
   Database,
   FileDiff,
   House,
@@ -25,6 +26,7 @@ export const TAB_LABELS: Record<TabName, string> = {
   board: '成员看板',
   review: '审阅',
   context: '上下文分析',
+  memory: '记忆',
   dag: '依赖 DAG',
   models: '模型路由',
   messages: '消息',
@@ -36,6 +38,7 @@ const TAB_ICONS: Record<TabName, LucideIcon> = {
   board: LayoutDashboard,
   review: FileDiff,
   context: Layers,
+  memory: Brain,
   dag: Network,
   models: Database,
   messages: Mail,
@@ -43,7 +46,7 @@ const TAB_ICONS: Record<TabName, LucideIcon> = {
 };
 
 /** FR-3.2：主页在前（即时间线），其余沿用 TAB_NAMES 的顺序。 */
-export const TAB_ORDER: TabName[] = ['home', 'board', 'review', 'context', 'dag', 'models', 'messages', 'presets'];
+export const TAB_ORDER: TabName[] = ['home', 'board', 'review', 'context', 'memory', 'dag', 'models', 'messages', 'presets'];
 
 export type TabBadges = Partial<Record<TabName, number | null>>;
 

@@ -303,6 +303,27 @@ export interface MemberChange {
   createdAt?: string;
 }
 
+/** 显式记忆（/api/memory）：一条记忆一个 JSON 文件；`slot` 是空间内唯一的 key。 */
+export interface MemoryEntry {
+  id: string;
+  scope: 'member' | 'team';
+  teamId?: string | null;
+  ownerMemberId?: string | null;
+  /** 空间内唯一的槽位名（后端字段 key，出口改名为 slot 以避开全局脱敏） */
+  slot: string;
+  kind: 'handoff' | 'fact' | 'decision' | 'open-question' | string;
+  title: string;
+  value?: string;
+  summary?: string;
+  size?: number;
+  tags: string[];
+  visibility: 'private' | 'team' | 'shared';
+  source?: { kind?: string; memberId?: string | null; taskId?: string | null };
+  createdAt?: string;
+  updatedAt?: string;
+  version: number;
+}
+
 /** agentPreset 目录行：Host 插件同步到 sidecar，面板只读展示；团队自建可排队删除。 */
 export interface PresetRow {
   id: string;

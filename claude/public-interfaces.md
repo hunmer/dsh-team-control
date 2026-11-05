@@ -84,7 +84,7 @@
 
 全局：`--url`、`--token`、`--data`。
 
-## 3. 插件工具（`dsh-plugin/index.js` `buildTools`，共 16 个（14 个 `team_*` + 2 个 `board_*`））
+## 3. 插件工具（`dsh-plugin/index.js` `buildTools`，共 21 个（19 个 `team_*` + 2 个 `board_*`））
 
 | 工具 | 作用 |
 |---|---|
@@ -102,6 +102,11 @@
 | `team_approve` | Lead 裁决成员审批（allow/deny），转成宿主 outcome |
 | `team_control` | interrupt（任务转 paused）/resume/assign/abort（任务作废） |
 | `team_report` | 导出 Markdown 运行报告（含审批与 audit） |
+| `team_memory_write` | 写一条显式记忆（member 自己的空间 / team 共享空间；同 key upsert，`expectedVersion` 做 CAS） |
+| `team_memory_read` | 按 `memoryId` 或 `scope+key` 读一条记忆（含正文） |
+| `team_memory_list` | 列记忆元数据（slot/title/kind/来源/更新时间，不含正文） |
+| `team_memory_share` | 改可见性：private / team / shared（shared 可凭 id 跨队读） |
+| `team_memory_delete` | 删除一条记忆文件（团队删除不级联） |
 | `board_plan_submit` | 规划会话提交计划，任务 `planning → planned`（same 模式同时绑定执行会话） |
 | `board_task_status` | Lead 会话回报看板任务 `done`/`failed`/`inprogress` |
 

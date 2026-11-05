@@ -111,6 +111,19 @@ export function createRoutes(core) {
     ['DELETE', /^\/api\/deps\/([^/]+)$/, async (ctx) => C.scheduler.removeDep(Number(ctx.p[0]))],
     ['GET', /^\/api\/dag$/, async (ctx) => C.scheduler.dag(need(qs(ctx.url).get('team'), 'team'))],
 
+    // 显式记忆（文件持久化，一条记忆一个 JSON；session 用于识别成员/Lead 身份）
+    ['GET', /^\/api\/memory$/, async (ctx) => C.listMemories(qs(ctx.url).get('team'), {
+      scope: qs(ctx.url).get('scope'), memberId: qs(ctx.url).get('member'), slot: qs(ctx.url).get('slot'), kind: qs(ctx.url).get('kind'),
+      tag: qs(ctx.url).get('tag'), q: qs(ctx.url).get('q'), limit: qs(ctx.url).get('limit'),
+    }, qs(ctx.url).get('session'))],
+    ['POST', /^\/api\/memory\/reindex$/, async () => C.reindexMemories()],
+    ['POST', /^\/api\/memory\/prune$/, async (ctx) => C.pruneMemories(ctx.body)],
+    ['POST', /^\/api\/memory$/, async (ctx) => C.writeMemory(ctx.body, ctx.body?.sessionId ?? qs(ctx.url).get('session'))],
+    ['GET', /^\/api\/memory\/([^/]+)$/, async (ctx) => C.getMemory(decodeURIComponent(ctx.p[0]), qs(ctx.url).get('team'), qs(ctx.url).get('session'))],
+    ['PATCH', /^\/api\/memory\/([^/]+)$/, async (ctx) => C.updateMemory(decodeURIComponent(ctx.p[0]), ctx.body, qs(ctx.url).get('team'), ctx.body?.sessionId ?? qs(ctx.url).get('session'))],
+    ['DELETE', /^\/api\/memory\/([^/]+)$/, async (ctx) => C.deleteMemory(decodeURIComponent(ctx.p[0]), qs(ctx.url).get('team'), qs(ctx.url).get('session'))],
+    ['POST', /^\/api\/memory\/([^/]+)\/share$/, async (ctx) => C.shareMemory(decodeURIComponent(ctx.p[0]), ctx.body?.visibility, qs(ctx.url).get('team'), ctx.body?.sessionId ?? qs(ctx.url).get('session'))],
+
     // 成员产物（Host 插件采集 present / workspace 变更后推送到这里）
     ['GET', /^\/api\/artifacts$/, async (ctx) => C.listArtifacts(need(qs(ctx.url).get('team'), 'team'), { taskId: qs(ctx.url).get('task'), limit: qs(ctx.url).get('limit') })],
     ['POST', /^\/api\/artifacts$/, async (ctx) => C.addArtifacts(ctx.body)],

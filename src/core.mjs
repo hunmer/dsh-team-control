@@ -8,6 +8,7 @@ import { MessageBus, rowToMessage } from './bus.mjs';
 import { SseHub } from './sse.mjs';
 import { LlmCatalog } from './llm.mjs';
 import { Board } from './board.mjs';
+import { MemoryStore } from './memory.mjs';
 import {
   ERR, now, nowIso, newId, json, parseJson, clamp, redactor, REDACTED,
   isSensitiveName, percentile, sha256, truncate,
@@ -49,6 +50,9 @@ export class DshTeam {
     });
     this.scheduler = new Scheduler({ db: this.db, events: this.events, sse: this.sse, log });
     this.board = new Board({ db: this.db, get: this.get, sse: this.sse, log });
+    // 记忆正文只存文件；归属（team/member/scope）记在 team 数据 memory_link。
+    this.memory = new MemoryStore({ home, log });
+    this.bindMemoryLinks();
     this.registerSecretsFromEnv();
     this.recovered = this.recoverAll();
   }
@@ -171,13 +175,15 @@ export class DshTeam {
     const t = this.getTeam(teamId);
     if (!confirm) throw ERR.bad('delete requires confirm=1');
     const memberIds = this.get('SELECT id FROM member WHERE team_id=?').all(teamId).map((r) => r.id);
+    const memoryIds = this.get('SELECT memory_id FROM memory_link WHERE team_id=?').all(teamId).map((r) => r.memory_id);
     tx(this.db, () => {
       for (const id of memberIds) this.get('DELETE FROM member_state WHERE member_id=?').run(id);
-      for (const table of ['member', 'task', 'dep', 'event', 'approval', 'message', 'todo', 'audit', 'span', 'artifact', 'member_change', 'context_snapshot']) {
+      for (const table of ['member', 'task', 'dep', 'event', 'approval', 'message', 'todo', 'audit', 'span', 'artifact', 'member_change', 'context_snapshot', 'memory_link']) {
         this.get(`DELETE FROM ${table} WHERE team_id=?`).run(teamId);
       }
       this.get('DELETE FROM team WHERE id=?').run(teamId);
     });
+    for (const id of memoryIds) this.memory.unbind(id);
     return { removed: true, id: teamId, name: t.name };
   }
 
@@ -1331,6 +1337,195 @@ export class DshTeam {
 
   listMessages(teamId, filter = {}) { return { asOf: nowIso(), version: this.scheduler.version(teamId), items: this.bus.list(teamId, filter) }; }
   ackMessage(id, state) { return this.bus.ack(id, state); }
+
+  // ---------- 显式记忆（正文文件持久化；归属记在 team 数据 memory_link） ----------
+  memorySpace(teamId, scope, memberId) {
+    return `${scope}:${String(teamId)}:${scope === 'member' ? String(memberId || '') : ''}`;
+  }
+  memoryLink(id) {
+    return this.get('SELECT * FROM memory_link WHERE memory_id=?').get(String(id)) || null;
+  }
+  memoryMeta(link) {
+    if (!link) return { scope: null, teamId: null, ownerMemberId: null, source: { kind: 'unknown', memberId: null, taskId: null } };
+    return {
+      scope: link.scope,
+      teamId: link.team_id,
+      ownerMemberId: link.scope === 'member' ? (link.member_id ?? null) : null,
+      source: { kind: link.member_id ? 'member' : 'lead', memberId: link.member_id ?? null, taskId: link.task_id ?? null },
+    };
+  }
+  memoryEnrich(rec, link) { return { ...this.memory.view(rec), ...this.memoryMeta(link) }; }
+  /** 读：shared 凭 id 全开；无 link 的孤儿文件（删团队/手写）panel 与 Lead 可读，private 只 panel。 */
+  memoryReadable(rec, link, actor) {
+    if (rec.visibility === 'shared') return true;
+    if (actor.kind === 'panel') return true;
+    if (!link) return actor.kind === 'lead' && rec.visibility !== 'private';
+    if (actor.kind === 'lead') return actor.teamId === link.team_id;
+    if (link.scope === 'team') return actor.teamId === link.team_id;
+    return link.member_id === actor.memberId;
+  }
+  memoryWritable(rec, link, actor) {
+    if (actor.kind === 'panel') return true;
+    if (!link) return actor.kind === 'lead';
+    if (actor.kind === 'lead') return actor.teamId === link.team_id;
+    if (link.scope === 'team') return actor.teamId === link.team_id;
+    return link.member_id === actor.memberId;
+  }
+  /** 启动/reindex 时把 memory_link 的空间灌回文件索引（只影响同 key upsert 的归并）。 */
+  bindMemoryLinks() {
+    try {
+      for (const l of this.get('SELECT * FROM memory_link').all()) {
+        this.memory.bind(l.memory_id, this.memorySpace(l.team_id, l.scope, l.member_id));
+      }
+    } catch { /* 旧库表缺失时不影响启动 */ }
+  }
+  broadcastMemory(link, action) {
+    try {
+      this.sse.broadcastSynthetic('memory.updated', {
+        teamId: link?.team_id ?? null, memoryId: link?.memory_id ?? null, scope: link?.scope ?? null, action,
+      }, { teamId: link?.team_id ?? null });
+    } catch { /* ignore */ }
+  }
+
+  /** 解析调用者身份：无 session = 面板；命中成员 = member；否则视为该队 Lead。 */
+  memoryActor(teamId, sessionId) {
+    const tid = teamId == null || teamId === '' ? null : String(teamId);
+    const sid = sessionId == null || sessionId === '' ? null : String(sessionId);
+    if (!sid) return { kind: 'panel', memberId: null, teamId: tid };
+    const m = this.memberBySession(sid);
+    if (m) return { kind: 'member', memberId: m.id, teamId: m.teamId };
+    if (tid) {
+      const t = this.get('SELECT * FROM team WHERE id=?').get(tid);
+      if (t && t.lead_session_id && String(t.lead_session_id) !== sid) throw ERR.denied('session is not the lead of this team');
+    }
+    return { kind: 'lead', memberId: null, teamId: tid };
+  }
+
+  listMemories(teamId, filter = {}, sessionId = null) {
+    const tid = teamId == null || teamId === '' ? null : String(teamId);
+    if (!tid) throw ERR.bad('teamId required');
+    this.getTeam(tid);
+    const actor = this.memoryActor(tid, sessionId);
+    let rows = this.get('SELECT * FROM memory_link WHERE team_id=?').all(tid);
+    if (actor.kind === 'member') {
+      rows = rows.filter((l) => (l.scope === 'team' ? l.team_id === actor.teamId : l.member_id === actor.memberId));
+    }
+    if (filter.scope) rows = rows.filter((l) => l.scope === String(filter.scope));
+    if (filter.memberId) rows = rows.filter((l) => l.member_id === String(filter.memberId));
+    const linkById = new Map(rows.map((l) => [l.memory_id, l]));
+    const out = this.memory.list({ ...filter, ids: new Set(linkById.keys()) });
+    return {
+      asOf: nowIso(),
+      total: out.total,
+      items: out.items.map((item) => ({ ...item, ...this.memoryMeta(linkById.get(item.id)) })),
+    };
+  }
+
+  getMemory(id, teamId = null, sessionId = null) {
+    const rec = this.memory.get(id);
+    const link = this.memoryLink(rec.id);
+    const actor = this.memoryActor(teamId ?? link?.team_id ?? null, sessionId);
+    if (!this.memoryReadable(rec, link, actor)) throw ERR.denied('memory is not visible to this actor');
+    return { memory: this.memoryEnrich(rec, link) };
+  }
+
+  writeMemory(body = {}, sessionId = null) {
+    const teamId = body.teamId == null || body.teamId === '' ? null : String(body.teamId);
+    if (!teamId) throw ERR.bad('teamId required');
+    this.getTeam(teamId);
+    const actor = this.memoryActor(teamId, sessionId);
+    const scope = body.scope === 'team' ? 'team' : 'member';
+    let ownerMemberId = null;
+    if (scope === 'member') {
+      ownerMemberId = body.memberId ? String(body.memberId) : actor.memberId;
+      if (!ownerMemberId) throw ERR.bad('memberId required for member scope');
+      if (actor.kind === 'member' && ownerMemberId !== actor.memberId) throw ERR.denied('members can only write their own space');
+      const row = this.get('SELECT id FROM member WHERE id=? AND team_id=?').get(ownerMemberId, teamId);
+      if (!row) throw ERR.bad('member is not in this team');
+    } else if (actor.kind === 'member' && actor.teamId !== teamId) {
+      throw ERR.denied('members can only write memories of their own team');
+    }
+    const visibility = body.visibility == null || body.visibility === ''
+      ? (scope === 'team' ? 'team' : 'private')
+      : String(body.visibility);
+    if (scope === 'team' && visibility === 'private') throw ERR.bad('team scope cannot be private');
+    const space = this.memorySpace(teamId, scope, ownerMemberId);
+    const taskId = body.taskId ?? body.source?.taskId ?? null;
+    const out = this.memory.write({
+      space, key: body.key, value: body.value, kind: body.kind, title: body.title,
+      tags: body.tags, visibility, expectedVersion: body.expectedVersion,
+    });
+    // team 空间的 member_id 记录上传者（仅溯源，不参与 owner 判定）；member 空间记录 owner。
+    const linkMemberId = scope === 'member' ? ownerMemberId : (actor.kind === 'member' ? actor.memberId : null);
+    this.get(`INSERT INTO memory_link (memory_id, team_id, scope, member_id, task_id, created_at)
+      VALUES (?,?,?,?,?,?)
+      ON CONFLICT(memory_id) DO UPDATE SET team_id=excluded.team_id, scope=excluded.scope,
+        member_id=excluded.member_id, task_id=excluded.task_id`)
+      .run(out.memory.id, teamId, scope, linkMemberId, taskId == null ? null : String(taskId), nowIso());
+    const link = this.memoryLink(out.memory.id);
+    this.broadcastMemory(link, out.created ? 'create' : 'update');
+    return { memory: this.memoryEnrich(this.memory.records.get(out.memory.id), link), created: out.created };
+  }
+
+  updateMemory(id, patch = {}, teamId = null, sessionId = null) {
+    const rec = this.memory.get(id);
+    const link = this.memoryLink(rec.id);
+    const actor = this.memoryActor(teamId ?? link?.team_id ?? null, sessionId);
+    if (!this.memoryWritable(rec, link, actor)) throw ERR.denied('not allowed to update this memory');
+    this.memory.update(id, patch);
+    this.broadcastMemory(link, 'update');
+    return { memory: this.memoryEnrich(this.memory.records.get(id), link) };
+  }
+
+  shareMemory(id, visibility, teamId = null, sessionId = null) {
+    const rec = this.memory.get(id);
+    const link = this.memoryLink(rec.id);
+    const actor = this.memoryActor(teamId ?? link?.team_id ?? null, sessionId);
+    if (!this.memoryWritable(rec, link, actor)) throw ERR.denied('not allowed to share this memory');
+    this.memory.share(id, visibility);
+    this.broadcastMemory(link, 'share');
+    return { memory: this.memoryEnrich(this.memory.records.get(id), link) };
+  }
+
+  deleteMemory(id, teamId = null, sessionId = null) {
+    const rec = this.memory.get(id);
+    const link = this.memoryLink(rec.id);
+    const actor = this.memoryActor(teamId ?? link?.team_id ?? null, sessionId);
+    if (!this.memoryWritable(rec, link, actor)) throw ERR.denied('not allowed to delete this memory');
+    this.broadcastMemory(link, 'delete');
+    this.memory.remove(id);
+    this.get('DELETE FROM memory_link WHERE memory_id=?').run(String(id));
+    return { id: String(id), removed: true };
+  }
+
+  reindexMemories() {
+    const out = this.memory.reindex();
+    const links = this.get('SELECT * FROM memory_link').all();
+    let bound = 0;
+    for (const l of links) {
+      if (this.memory.bind(l.memory_id, this.memorySpace(l.team_id, l.scope, l.member_id))) bound++;
+    }
+    const linked = new Set(links.map((l) => l.memory_id));
+    const orphans = out.ids.filter((id) => !linked.has(id));
+    return { ...out, links: links.length, bound, orphans };
+  }
+
+  /**
+   * 清理无归属（orphan）记忆文件：团队删除/手写文件没有 memory_link。
+   * 必须 confirm=true；body.ids 省略时清全部 orphan。只删文件，不动 link（本来也没有）。
+   */
+  pruneMemories(body = {}) {
+    if (body?.confirm !== true) throw ERR.bad('prune requires confirm=true');
+    const linked = new Set(this.get('SELECT memory_id FROM memory_link').all().map((r) => r.memory_id));
+    const orphans = [...this.memory.records.keys()].filter((id) => !linked.has(id));
+    const wanted = Array.isArray(body?.ids) ? body.ids.map(String) : orphans;
+    const targets = wanted.filter((id) => orphans.includes(id));
+    const removed = [];
+    for (const id of targets) {
+      try { this.memory.remove(id); removed.push(id); } catch { /* 单个失败不阻塞其余 */ }
+    }
+    return { removed, count: removed.length, orphans: orphans.length };
+  }
 
   // ---------- 产物 ----------
   artifactView(r) {

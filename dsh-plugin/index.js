@@ -1014,9 +1014,10 @@ function taskBrief(teamId, task, member) {
     '执行要求：',
     '1) 直接在本会话里做这件事（用你自己的工具，不要委派给别的 agent）。',
     '2) 每开始或完成一步、以及验收通过后，调用 team_todo 更新该任务的计划清单（teamId/taskId 同上）。',
-    '3) 完成或失败后必须调用 team_report_task，例如：',
+    '3) 收工前，如果这次任务产生了对后续任务可复用的结论（接口约定、坑、决策理由、未决问题），调用 team_memory_write 存一条简短 handoff（scope="member"，kind="handoff"，value 不超过 300 字）；没有可复用结论就跳过，不要为了留记忆而写。只有 Lead 明确要求上传时才写 scope="team"。',
+    '4) 完成或失败后必须调用 team_report_task，例如：',
     `   team_report_task({ teamId: "${teamId}", taskId: "${task.id}", status: "done", summary: "一句话结果 + 关键产物路径" })`,
-    '4) 需要 Lead 决策或补充信息时用 team_send（teamId 同上，to: "lead"），不要自己猜测。',
+    '5) 需要 Lead 决策或补充信息时用 team_send（teamId 同上，to: "lead"），不要自己猜测。',
   ].join('\n');
 }
 
@@ -2447,6 +2448,159 @@ function buildTools(s, ctx) {
       } catch { /* 产物采集失败不影响任务汇报 */ }
       const dispatched = await dispatchLoop(s, ctx, args.teamId).catch(() => null);
       return { ...res, ...(dispatched ? { dispatched } : {}) };
+    },
+  });
+
+  // ---------- 显式记忆（文件持久化；成员收工时保存 handoff，Lead 可要求上传团队空间） ----------
+  const memorySession = (exec) => (exec?.agent?.sessionId ?? exec?.agent?.id ?? null) == null
+    ? null : String(exec.agent.sessionId ?? exec.agent.id);
+  const memoryQuery = (params, sessionId) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v != null && v !== '') q.set(k, String(v));
+    if (sessionId) q.set('session', sessionId);
+    const s = q.toString();
+    return s ? `?${s}` : '';
+  };
+
+  tools.push({
+    name: 'team_memory_write',
+    description: 'Save ONE memory into the file-backed memory space (one JSON file per memory, never SQLite). scope=member writes the caller member\'s own space; scope=team writes the shared team space (use it when the Lead asks you to upload). Same (scope, team, owner, key) upserts and bumps version; pass expectedVersion for compare-and-set. Keep handoffs short (<=300 chars) and only save what is actually reusable — do NOT force a memory when the task produced nothing worth carrying.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        teamId: { type: 'string' },
+        scope: { type: 'string', enum: ['member', 'team'], description: 'member = caller\'s own space (default); team = shared space.' },
+        key: { type: 'string', description: 'Stable slot key inside the space, e.g. "handoff/api-contract" or "decision/db". Max 128 chars.' },
+        value: { description: 'Memory body: string, or JSON value (objects are stored as a JSON string). Max 64KB.' },
+        kind: { type: 'string', enum: ['handoff', 'fact', 'decision', 'open-question'], description: 'Default fact; use handoff when finishing a task.' },
+        title: { type: 'string', description: 'Optional short title; defaults to the first line of value.' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Optional tags (max 20).' },
+        visibility: { type: 'string', enum: ['private', 'team', 'shared'], description: 'private = owner + team Lead; team = this team\'s members; shared = any team by id. Default: private for member scope, team for team scope.' },
+        taskId: { type: 'string', description: 'Optional task provenance id.' },
+        expectedVersion: { type: 'integer', description: 'Optimistic concurrency: 0 = must be new; N = must currently be version N.' },
+      },
+      required: ['teamId', 'key', 'value'],
+    },
+    output: jsonOutput('{ memory, created }'),
+    async execute(args, exec) {
+      await teamOf(s, args.teamId, { sessionId: memorySession(exec) });
+      return await request(s, '/api/memory', {
+        method: 'POST',
+        body: {
+          teamId: args.teamId,
+          scope: args.scope ?? 'member',
+          key: args.key,
+          value: args.value,
+          kind: args.kind,
+          title: args.title,
+          tags: args.tags,
+          visibility: args.visibility,
+          expectedVersion: args.expectedVersion,
+          source: args.taskId ? { taskId: args.taskId } : undefined,
+          sessionId: memorySession(exec),
+        },
+      });
+    },
+  });
+
+  tools.push({
+    name: 'team_memory_read',
+    description: 'Read ONE memory by id, or find the first matching memory by scope+key (and optional memberId). Memory ids are portable: a shared memory id can be passed to a member of another team. Returns the full value and version.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        teamId: { type: 'string' },
+        memoryId: { type: 'string', description: 'mem_xxx id; takes precedence over scope/key.' },
+        scope: { type: 'string', enum: ['member', 'team'] },
+        key: { type: 'string', description: 'Slot key to look up when memoryId is absent.' },
+        memberId: { type: 'string', description: 'Owner member for member scope; defaults to the caller member.' },
+      },
+      required: ['teamId'],
+    },
+    output: jsonOutput('{ memory?, items? }'),
+    async execute(args, exec) {
+      const sessionId = memorySession(exec);
+      const binding = sessionId ? sessionMember.get(sessionId) : null;
+      if (args.memoryId) {
+        return await request(s, `/api/memory/${encodeURIComponent(args.memoryId)}${memoryQuery({ team: args.teamId }, sessionId)}`);
+      }
+      if (!args.key) throw new Error('需要 memoryId 或 key');
+      const memberId = args.scope === 'member' ? (args.memberId || binding?.memberId) : args.memberId;
+      const res = await request(s, `/api/memory${memoryQuery({ team: args.teamId, scope: args.scope ?? (memberId ? 'member' : undefined), member: memberId, slot: args.key, limit: 20 }, sessionId)}`);
+      const hit = (res.items || [])[0];
+      if (!hit) return { items: [] };
+      return await request(s, `/api/memory/${encodeURIComponent(hit.id)}${memoryQuery({ team: args.teamId }, sessionId)}`);
+    },
+  });
+
+  tools.push({
+    name: 'team_memory_list',
+    description: 'List memory metadata (slot/title/kind/source/updatedAt, no value body) for a team. Members see their own private memories + team-scope memories; the Lead sees all memories of the team; shared memories are visible across teams. Use q to search slot/title/tags/value text.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        teamId: { type: 'string' },
+        scope: { type: 'string', enum: ['member', 'team'] },
+        memberId: { type: 'string' },
+        kind: { type: 'string', enum: ['handoff', 'fact', 'decision', 'open-question'] },
+        tag: { type: 'string' },
+        q: { type: 'string' },
+        limit: { type: 'integer', description: 'Default 200, max 1000.' },
+      },
+      required: ['teamId'],
+    },
+    output: jsonOutput('{ asOf, total, items: [{ id, scope, slot, kind, title, summary, tags, visibility, source, updatedAt, version }] }'),
+    async execute(args, exec) {
+      const sessionId = memorySession(exec);
+      const binding = sessionId ? sessionMember.get(sessionId) : null;
+      const memberId = args.memberId || (args.scope === 'member' ? binding?.memberId : undefined);
+      return await request(s, `/api/memory${memoryQuery({
+        team: args.teamId, scope: args.scope, member: memberId, kind: args.kind, tag: args.tag, q: args.q, limit: args.limit,
+      }, sessionId)}`);
+    },
+  });
+
+  tools.push({
+    name: 'team_memory_share',
+    description: 'Change a memory\'s visibility: private (owner + team Lead), team (this team\'s members), shared (any team by id). The Lead uses this to hand a member\'s memory to other members; a member can share its own memory.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        teamId: { type: 'string' },
+        memoryId: { type: 'string' },
+        visibility: { type: 'string', enum: ['private', 'team', 'shared'] },
+      },
+      required: ['teamId', 'memoryId', 'visibility'],
+    },
+    output: jsonOutput('{ memory }'),
+    async execute(args, exec) {
+      await teamOf(s, args.teamId, { sessionId: memorySession(exec) });
+      return await request(s, `/api/memory/${encodeURIComponent(args.memoryId)}/share${memoryQuery({ team: args.teamId }, memorySession(exec))}`, {
+        method: 'POST',
+        body: { visibility: args.visibility, sessionId: memorySession(exec) },
+      });
+    },
+  });
+
+  tools.push({
+    name: 'team_memory_delete',
+    description: 'Delete ONE memory file permanently. The owner member or the team Lead may delete; team deletion does NOT cascade to memory files. Shared memory ids keep working across teams until deleted.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        teamId: { type: 'string' },
+        memoryId: { type: 'string' },
+      },
+      required: ['teamId', 'memoryId'],
+    },
+    output: jsonOutput('{ id, removed }'),
+    async execute(args, exec) {
+      return await request(s, `/api/memory/${encodeURIComponent(args.memoryId)}${memoryQuery({ team: args.teamId }, memorySession(exec))}`, { method: 'DELETE' });
     },
   });
 

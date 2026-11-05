@@ -44,7 +44,7 @@ openDb → EventStore(db) → Bus(db, events)
 ```text
 apply(ctx, config)
   ├ resolveConfig(config) → baseUrl/port/home/autoStart/entry/...
-  ├ ctx.effect(...) 注册 14 个 team_* + 2 个 board_* 工具
+  ├ ctx.effect(...) 注册 19 个 team_* + 2 个 board_* 工具
   ├ ctx.inject(['skills']) 注册 skills provider（rank 600，读 skills/ 目录）
   ├ ensureSidecar()：autoStart 时 spawn `bin/dsh-team.mjs up`，等 ready 行（startTimeoutMs 20s）
   ├ 事件钩子：
