@@ -43,6 +43,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
   const [query, setQuery] = useState('');
   const [archived, setArchived] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [editTaskId, setEditTaskId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [busy, setBusy] = useState('');
@@ -139,6 +140,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
 
   /** 选中任务；窄屏（上下排）时把详情容器滚进视野。 */
   const selectTask = useCallback((id: string) => {
+    setEditTaskId(null);
     if (detailRef.current) detailRef.current.scrollTop = 0;
     if (id === selectedId) {
       if (stacked) revealDetail();
@@ -147,6 +149,12 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
     scrollToDetail.current = stacked;
     setSelectedId(id);
   }, [selectedId, stacked, revealDetail]);
+
+  /** 卡片菜单“编辑”：选中任务并让详情面板自动打开编辑对话框。 */
+  const editTask = useCallback((id: string) => {
+    selectTask(id);
+    setEditTaskId(id);
+  }, [selectTask]);
 
   useEffect(() => {
     if (!scrollToDetail.current || !selectedId) return;
@@ -205,7 +213,10 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
   };
 
   const remove = (task: BoardTask) => {
-    if (selectedId === task.id) setSelectedId(null);
+    if (selectedId === task.id) {
+      setSelectedId(null);
+      setEditTaskId(null);
+    }
     void run(`${task.id}:delete`, () => boardApi.remove(task.id), '任务已删除');
   };
 
@@ -309,6 +320,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
                 archived
                 busy={busy}
                 onOpen={() => selectTask(task.id)}
+                onEdit={() => editTask(task.id)}
                 onStart={(mode) => start(task, mode)}
                 onStop={() => stop(task)}
                 onRetry={() => retry(task)}
@@ -353,6 +365,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
                         archived={false}
                         busy={busy}
                         onOpen={() => selectTask(task.id)}
+                        onEdit={() => editTask(task.id)}
                         onStart={(mode) => start(task, mode)}
                         onStop={() => stop(task)}
                         onRetry={() => retry(task)}
@@ -409,7 +422,9 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
                   models={models}
                   dshWebUrl={data?.settings?.dshWebUrl || null}
                   busy={busy}
-                  onClose={() => setSelectedId(null)}
+                  autoEdit={editTaskId === selected.id}
+                  onAutoEdit={() => setEditTaskId(null)}
+                  onClose={() => { setSelectedId(null); setEditTaskId(null); }}
                   onStart={start}
                   onStop={stop}
                   onRetry={retry}
