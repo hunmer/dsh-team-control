@@ -67,13 +67,8 @@ export function PlanCard({
   return (
     <div className={cn('flex h-full flex-col rounded-xl border bg-card', className)}>
       <header className="flex flex-wrap items-center gap-2 border-b px-4 py-2.5">
-        <span className="text-sm font-semibold">Plan</span>
+        <span className="text-sm font-semibold">Todo</span>
         <span className="truncate text-sm text-muted-foreground">{title}</span>
-        <span className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
-          <span>{(done ?? phase === 'done') ? '已完成' : '进行中'}</span>
-          {memberName && <span>· {memberName}</span>}
-          {attempts ? <span>· 第 {attempts} 次尝试</span> : null}
-        </span>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {steps.length ? (
