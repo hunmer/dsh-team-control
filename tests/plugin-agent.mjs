@@ -37,6 +37,7 @@ const mkFakeCtx = () => {
   };
   const presetDefs = new Map([['standard', { id: 'standard' }], ['reviewer', { id: 'reviewer' }]]);
   const agentPresets = {
+    defaultId: 'standard',
     async list() { return [...presetDefs.values()].map((d) => ({ id: d.id })); },
     async register(definition) {
       if (presetDefs.has(definition.id)) throw new Error(`Duplicate agent preset: ${definition.id}`);
@@ -380,9 +381,12 @@ const main = async () => {
     // ⑧ 第二个团队自定义预设：spawn 继承并可被成员覆盖
     const t2Team = (await tool('team_create').execute({ name: 'plugin-readonly', workspace: tmp.ws, permissionPreset: 'read-only' }, lead)).team;
     assert.equal(t2Team.permissionPreset, 'read-only', 'team_create 透传 permissionPreset');
+    assert.equal(t2Team.agentPreset ?? null, null, '团队默认仍为 null，由 spawn 时解析宿主默认');
     const bob = await tool('team_spawn').execute({ teamId: t2Team.id, name: 'bob', prompt: '你是 bob，只读。' }, lead);
     assert.equal(bob.member.permissionPreset, 'read-only', '成员继承团队 read-only 预设');
     assert.equal(bob.permissionPreset, 'read-only', '返回实际生效预设');
+    assert.equal(bob.agentPreset, 'standard', '未指定团队预设时回退宿主默认');
+    assert.equal(ctx.agents.spawned.at(-1).req.request.agentPreset, 'standard', '显式传宿主默认，避免继承 Lead 组合');
 
     await assert.rejects(
       () => tool('team_member').execute({ action: 'remove', teamId: t2Team.id, memberId: bob.member.id }, lead),

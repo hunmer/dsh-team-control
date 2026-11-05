@@ -10,6 +10,7 @@ const mkFakeCtx = () => {
   const handlers = new Map();
   const created = [];
   const permissions = [];
+  const mounted = [];
   const agents = {
     created,
     async create(options) {
@@ -21,6 +22,7 @@ const mkFakeCtx = () => {
       };
       rec.agent = agent;
       created.push(rec);
+      if (typeof options.setup === 'function') await options.setup({});
       return { agent, dispose: async () => { rec.disposed = true; } };
     },
     get(id) { return created.find((r) => r.agent.id === id)?.agent; },
@@ -28,9 +30,10 @@ const mkFakeCtx = () => {
     b: null,
   };
   const agentPresets = {
+    defaultId: 'standard',
     async list() { return []; },
     async resolve(id) { return { id }; },
-    async mount() {},
+    async mount(_ctx, id) { mounted.push(id); },
     async register() { return () => {}; },
   };
   const presets = {
@@ -65,7 +68,7 @@ const mkFakeCtx = () => {
     },
     emit(name, ...args) { for (const fn of handlers.get(name) || []) fn(...args); },
   };
-  return { ctx, created, permissions };
+  return { ctx, created, permissions, mounted };
 };
 
 const main = async () => {
@@ -74,7 +77,7 @@ const main = async () => {
   try {
     const api = sidecar.api;
     await api.post('/api/workspaces', { items: [{ id: 'ws-pb', title: 'PB', path: tmp.ws }] });
-    const { ctx, created, permissions } = mkFakeCtx();
+    const { ctx, created, permissions, mounted } = mkFakeCtx();
     apply(ctx, {
       baseUrl: sidecar.url, home: tmp.dataDir, autoStart: false,
       reportToolCalls: false, reportChanges: false, reportLlmCalls: false,
@@ -98,6 +101,8 @@ const main = async () => {
     });
     const rec = await waitFor('planning session', () => created[0]?.followups?.length ? created[0] : null);
     assert.equal(rec.options.meta.cwd, tmp.ws, 'cwd 是工作区路径');
+    assert.equal(rec.options.meta.agentPreset, 'standard', '未配置时规划会话显式挂宿主默认预设');
+    assert(mounted.includes('standard'), 'setup 里 mount 了宿主默认预设');
     assert.deepEqual(rec.options.agentOptions, { provider: 'p', model: 'plan-m' }, '规划用 planRoute');
     assert.equal(perm(permissions, rec.agent.id), 'read-only', '规划只读');
     assert.match(rec.followups[0].content[0].text, /规划 Agent/, '投了规划 prompt');

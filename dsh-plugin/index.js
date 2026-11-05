@@ -730,7 +730,7 @@ const agentPresetsOf = (ctx) => {
   try { return ctx.get('agentPresets'); } catch { return undefined; }
 };
 
-/** 解析并校验 agentPreset（组合预设：工具/skill/MCP/系统提示词）。空 = 不指定，沿用宿主默认。 */
+/** 解析并校验 agentPreset（组合预设：工具/skill/MCP/系统提示词）。空 = 不指定（调用方需用宿主默认兜底）。 */
 async function resolveAgentPreset(ctx, requested, fallback, store = null) {
   if (store) await ensureTeamPresets(store, ctx).catch(() => null);
   const preset = String(requested ?? fallback ?? '').trim();
@@ -747,6 +747,29 @@ async function resolveAgentPreset(ctx, requested, fallback, store = null) {
     throw new Error(`agentPreset「${preset}」不存在；可用预设：${ids.join(', ')}`);
   }
   return preset;
+}
+
+/**
+ * 宿主默认 agentPreset 的 id。
+ *
+ * DSH 的 subagent 在 request 里省略 agentPreset 时，会继承父会话的实时组合
+ * （`composeFrom(parent)`），并不会自动套用宿主默认。因此 team_spawn 必须显式
+ * 把默认预设传下去，否则成员就只能拿到 Lead 根组合里的宿主级工具（比如没有 shell）。
+ */
+async function hostDefaultAgentPreset(ctx) {
+  const svc = agentPresetsOf(ctx);
+  if (!svc) return null;
+  let id = '';
+  try {
+    if (typeof svc.defaultId === 'string') id = svc.defaultId.trim();
+  } catch { id = ''; }
+  if (!id && typeof svc.resolve === 'function') {
+    try {
+      const row = await svc.resolve(undefined);
+      if (row && row.id != null && row.broken === undefined) id = String(row.id).trim();
+    } catch { id = ''; }
+  }
+  return id || null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1605,6 +1628,8 @@ function boardPlanningPrompt(task, settings) {
     '可用模型（成员分配只能从这里选）：',
     models,
     '',
+    '开始规划前，先加载 `dsh-agent-team` 技能（调用 skill 工具，参数 {"name":"dsh-agent-team"}），按技能里的团队编排流程与工具字段规划。',
+    '',
     '请先阅读必要文件，然后输出一份可执行计划，必须包含：',
     '1. 目标与验收标准',
     '2. 实施步骤（到文件/模块级）',
@@ -1757,6 +1782,9 @@ async function spawnBoardSession(s, ctx, item) {
   const requestedPreset = kind === 'planning' ? settings.planAgentPreset : settings.leadAgentPreset;
   let presetId = null;
   try { presetId = await resolveAgentPreset(ctx, requestedPreset, null, s); } catch { presetId = null; }
+  // 看板会话是根会话，没有父组合可继承；不显式挂 preset 就只剩宿主级工具
+  // （没有 standard 的 shell/文件工具），成员再继承它也会一起缺。
+  if (!presetId) presetId = await hostDefaultAgentPreset(ctx);
   const presetSvc = agentPresetsOf(ctx);
   let resolved = null;
   if (presetId && presetSvc && typeof presetSvc.resolve === 'function') {
@@ -1960,7 +1988,7 @@ function buildTools(s, ctx) {
     async execute(args, exec) {
       const team = await teamOf(s, args.teamId, { sessionId: exec?.agent?.id });
       const permissionPreset = resolvePermissionPreset(ctx, args.permissionPreset, team.permissionPreset);
-      const requestedAgentPreset = await resolveAgentPreset(ctx, args.agentPreset, team.agentPreset, s);
+      let requestedAgentPreset = await resolveAgentPreset(ctx, args.agentPreset, team.agentPreset, s);
 
       // ---- 用 subagents 服务起一个 continuable 真子会话 ----
       const subs = subagentsOf(ctx);
@@ -1972,6 +2000,11 @@ function buildTools(s, ctx) {
       if (!args.prompt) throw new Error('team_spawn 需要 prompt（成员的初始指令）。');
 
       const context = args.contextMode === 'fork' ? 'fork' : 'fresh';
+      // 省略 preset 时 DSH 继承 Lead 的实时组合，不会套宿主默认；
+      // fresh 成员必须显式拿宿主默认，否则 Lead 是看板裸会话时成员就没有 shell/文件工具。
+      if (context !== 'fork' && !requestedAgentPreset) {
+        requestedAgentPreset = await hostDefaultAgentPreset(ctx);
+      }
       // fork provider 继承父方组装，DSH 会拒绝独立 agentPreset；这里显式降级为警告而不是静默传。
       const agentPreset = context === 'fork' ? null : requestedAgentPreset;
       const agentPresetWarning = context === 'fork' && requestedAgentPreset
@@ -2635,9 +2668,12 @@ function buildTools(s, ctx) {
       const context = has('contextMode')
         ? (args.contextMode === 'fork' ? 'fork' : 'fresh')
         : (current.contextMode === 'fork' ? 'fork' : 'fresh');
-      const requestedAgentPreset = has('agentPreset')
+      let requestedAgentPreset = has('agentPreset')
         ? await resolveAgentPreset(ctx, args.agentPreset, team.agentPreset, s)
         : (current.agentPreset || team.agentPreset || null);
+      if (context !== 'fork' && !requestedAgentPreset) {
+        requestedAgentPreset = await hostDefaultAgentPreset(ctx);
+      }
       const agentPreset = context === 'fork' ? null : requestedAgentPreset;
       const agentPresetWarning = context === 'fork' && requestedAgentPreset
         ? `contextMode=fork 继承 Lead 的组装，agentPreset「${requestedAgentPreset}」未生效`
