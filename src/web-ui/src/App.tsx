@@ -13,7 +13,6 @@ import { AppShell } from '@/components/app-shell';
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from '@/components/ui/sidebar';
 import { ToastProvider } from '@/components/ui/toast';
 import { buildNav, TAB_LABELS, tabFromLabel, type ShellChrome } from '@/shell';
-import { HomeView } from '@/views/Home';
 import { BoardView } from '@/views/Board';
 import { BoardPage } from '@/views/BoardPage';
 import { ReviewView } from '@/views/Review';
@@ -49,11 +48,10 @@ function ActiveView({ tab }: { tab: TabName }) {
     case 'review': return <ReviewView />;
     case 'context': return <ContextView />;
     case 'dag': return <DagView />;
-    case 'timeline': return <TimelineView />;
     case 'models': return <ModelsView />;
     case 'messages': return <MessagesView />;
     case 'presets': return <PresetsView />;
-    case 'home': return <HomeView />;
+    case 'home': return <TimelineView />;
   }
 }
 

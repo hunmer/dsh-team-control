@@ -20,19 +20,18 @@ App.tsx
 
 | 视图 | 文件 | 看什么 |
 |---|---|---|
-| Home | `views/Home.tsx` | 团队总览、成员条、实时活动（落地页，不算页签） |
+| Home | `views/Timeline.tsx` | 事件时间线（cap 2000；原独立 timeline 页签已并入主页，落地页不算页签） |
 | Board | `views/Board.tsx` | **成员 Trace 瀑布**（`GET /api/trace`，root(团队)→member→step/span）；注意不是任务看板 |
 | Review | `views/Review.tsx` | 待评审/变更（`member_change`） |
 | Context | `views/Context.tsx` | 上下文占用（`context_snapshot`） |
 | Dag | `views/Dag.tsx` | 依赖图与关键路径 |
-| Timeline | `views/Timeline.tsx` | 事件时间线（cap 2000） |
 | Models | `views/Models.tsx` | provider/route 与启停 |
 | Messages | `views/Messages.tsx` | 持久信箱 |
 | Presets | `views/Presets.tsx` | 组合预设目录 |
 | Tasks | `views/tasks/TasksView.tsx` | **工作区任务看板**（ADR-012），被 `BoardPage` 内嵌，也可在编排面板中用 |
 | BoardPage | `views/BoardPage.tsx` | 独立看板页（`#/board[/<ws>]`），69 行：仅工作区 Select + 主题按钮 + `<TasksView standalone/>` |
 
-`TAB_NAMES = ['board','review','context','dag','timeline','models','messages','presets']`（store.tsx:14）。
+`TAB_NAMES = ['board','review','context','dag','models','messages','presets']`（store.tsx:14）。
 
 ## 路由（store.tsx 手写 hash 路由，无 router 库）
 

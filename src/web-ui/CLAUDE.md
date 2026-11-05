@@ -4,7 +4,7 @@
 
 `src/web-ui/` 是 dsh-team 面板的源码（私有包 `@local/dsh-team-panel-ui` v1.0.0）：React 19 + Tailwind v4 + Vite 6 + **coss ui**（copy-paste registry）。它构建出的 `panel.html` + assets 落到 `../web/`，由 sidecar 静态托管到 `/panel`，再被 `dsh-plugin-ui` 用 iframe 挂进 DSH GUI。
 
-状态层是「REST 首屏快照 + SSE 增量」：`store.tsx` 的 `PanelProvider` 先拉全量，再订阅 `/api/events`，用 `lastEventId` 续传保证不丢帧。视图共 9 个（Home + 8 个页签，含「组合预设」），单一 `AppShell` 侧栏导航（ADR-010）。
+状态层是「REST 首屏快照 + SSE 增量」：`store.tsx` 的 `PanelProvider` 先拉全量，再订阅 `/api/events`，用 `lastEventId` 续传保证不丢帧。视图共 8 个（主页 = 时间线 `Timeline.tsx` + 7 个页签，含「组合预设」），单一 `AppShell` 侧栏导航（ADR-010）。
 
 ## 约定的规则
 
