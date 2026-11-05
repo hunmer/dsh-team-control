@@ -9,6 +9,7 @@ import {
   Archive,
   ArchiveRestore,
   ChevronRight,
+  CircleAlert,
   CircleStop,
   ExternalLink,
   Loader2,
@@ -22,6 +23,7 @@ import {
   X,
 } from 'lucide-react';
 import { Markdown } from '@/components/markdown';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -35,6 +37,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
+import { Tooltip, TooltipPopup, TooltipTrigger } from '@/components/ui/tooltip';
 import { api } from '@/lib/api';
 import {
   BOARD_STATUS_LABEL,
@@ -116,10 +119,23 @@ function taskKey(task: BoardTask): string {
   return `BT-${task.id.replace(/[^a-zA-Z0-9]/g, '').slice(-5).toUpperCase()}`;
 }
 
-function openTeamInSidebar(teamId: string): boolean {
-  if (typeof window === 'undefined' || window.parent === window) return false;
-  window.parent.postMessage({ type: 'dsh-team:open-team', teamId }, window.location.origin);
-  return true;
+type OpenTeamResult = 'sidebar' | 'window';
+
+/**
+ * 打开某团队的编排界面：嵌在 DSH 里交给宿主切侧栏；独立页面（非 DSH 环境）没有宿主，
+ * 直接在同一个面板地址上用新窗口打开该团队。
+ */
+function openTeamPanel(teamId: string): OpenTeamResult | null {
+  if (typeof window === 'undefined') return null;
+  if (window.parent !== window) {
+    window.parent.postMessage({ type: 'dsh-team:open-team', teamId }, window.location.origin);
+    return 'sidebar';
+  }
+  const url = new URL(window.location.href);
+  // ?team= 的优先级高于 hash，必须去掉，否则新窗口会被旧参数锁回上一个团队
+  url.searchParams.delete('team');
+  url.hash = `#/t/${encodeURIComponent(teamId)}`;
+  return window.open(url.toString(), '_blank') ? 'window' : null;
 }
 
 function errText(err: unknown): string {
@@ -352,24 +368,40 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
           <span className="ui-tb__crumb">{archived ? '封存箱' : '任务看板'}</span>
         </nav>
         <div className="ui-tb__top-actions">
-          <button
-            type="button"
-            className="ui-tb__ghost-btn"
-            onClick={() => { setArchived((v) => !v); setSelectedId(null); }}
-            title={archived ? '返回任务看板' : '查看封存任务'}
-          >
-            {archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
-            {archived ? '返回' : '封存箱'}
-          </button>
-          <button type="button" className="ui-tb__ghost-btn" onClick={() => setSettingsOpen(true)} title="看板设置">
-            <Settings2 size={14} />
-            设置
-          </button>
+          <Tooltip>
+            <TooltipTrigger
+              type="button"
+              className="ui-tb__ghost-btn"
+              aria-label={archived ? '返回任务看板' : '查看封存任务'}
+              onClick={() => { setArchived((v) => !v); setSelectedId(null); }}
+            >
+              {archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
+            </TooltipTrigger>
+            <TooltipPopup>{archived ? '返回任务看板' : '查看封存任务'}</TooltipPopup>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              type="button"
+              className="ui-tb__ghost-btn"
+              aria-label="看板设置"
+              onClick={() => setSettingsOpen(true)}
+            >
+              <Settings2 size={14} />
+            </TooltipTrigger>
+            <TooltipPopup>看板设置</TooltipPopup>
+          </Tooltip>
           {!archived && (
-            <button type="button" className="ui-tb__new-btn" onClick={() => setCreating(true)}>
-              <Plus size={14} />
-              新建任务
-            </button>
+            <Tooltip>
+              <TooltipTrigger
+                type="button"
+                className="ui-tb__new-btn"
+                aria-label="新建任务"
+                onClick={() => setCreating(true)}
+              >
+                <Plus size={14} />
+              </TooltipTrigger>
+              <TooltipPopup>新建任务</TooltipPopup>
+            </Tooltip>
           )}
         </div>
       </header>
@@ -412,6 +444,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
               <div
                 key={column.id}
                 className="ui-tb__column"
+                data-column={column.id}
                 onDragOver={(e) => { if (!archived) e.preventDefault(); }}
                 onDrop={() => onDropColumn(column.id)}
               >
@@ -545,7 +578,10 @@ function TaskCard({
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); } }}
     >
       <div className="ui-tb__card-top">
-        <span className="ui-tb__key">{taskKey(task)}</span>
+        <div className="ui-tb__card-top-left">
+          <span className="ui-tb__status-dot" data-status={task.status} title={BOARD_STATUS_LABEL[task.status]} />
+          <span className="ui-tb__key">{taskKey(task)}</span>
+        </div>
         <div className="flex items-center gap-1.5">
           <button
             type="button"
@@ -574,50 +610,63 @@ function TaskCard({
         )}
 
         <div className="ui-tb__props">
-          <span className="ui-tb__prop ui-tb__state" data-status={task.status}>
-            <StatusIcon kind={STATUS_ICON[task.status]} />
-            {BOARD_STATUS_LABEL[task.status]}
-          </span>
           <span className="ui-tb__prop" title="执行模型">
-            {shortModel(task.leadRoute)}
+            <span className="ui-tb__prop-text">{shortModel(task.leadRoute)}</span>
           </span>
-          {task.planSummary && <span className="ui-tb__prop ui-tb__prop--wide" title={task.planSummary}>{task.planSummary}</span>}
+          {task.planSummary && <span className="ui-tb__prop ui-tb__prop--wide" title={task.planSummary}><span className="ui-tb__prop-text">{task.planSummary}</span></span>}
         </div>
 
-        {task.lastError && <p className="ui-tb__error">{task.lastError}</p>}
+        {task.lastError && (
+          <Alert variant="error" className="mt-2 rounded-lg px-2.5 py-2 text-[11.5px] [&>svg]:size-3.5">
+            <CircleAlert />
+            <AlertDescription className="line-clamp-2 leading-4">{task.lastError}</AlertDescription>
+          </Alert>
+        )}
       </div>
 
-      <div className="ui-tb__card-side">
       {!compact && (
+      <div className="ui-tb__card-foot">
         <div className="ui-tb__actions" onClick={(e) => e.stopPropagation()}>
           {archived ? (
-            <button type="button" className="ui-tb__act" disabled={isBusy} onClick={onRestore}>
-              <ArchiveRestore size={12} /> 恢复
-            </button>
+            <Tooltip>
+              <TooltipTrigger type="button" className="ui-tb__act" aria-label="恢复" disabled={isBusy} onClick={onRestore}>
+                <ArchiveRestore size={12} />
+              </TooltipTrigger>
+              <TooltipPopup>恢复</TooltipPopup>
+            </Tooltip>
           ) : startable ? (
             <>
-              <button type="button" className="ui-tb__act" data-primary disabled={isBusy} onClick={() => onStart('same')}>
-                <Play size={12} /> 开始执行
-              </button>
-              <button type="button" className="ui-tb__act" disabled={isBusy} onClick={() => onStart('new')}>
-                <ExternalLink size={12} /> 新会话
-              </button>
+              <Tooltip>
+                <TooltipTrigger type="button" className="ui-tb__act" data-primary aria-label="开始执行" disabled={isBusy} onClick={() => onStart('same')}>
+                  <Play size={12} />
+                </TooltipTrigger>
+                <TooltipPopup>开始执行</TooltipPopup>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger type="button" className="ui-tb__act" aria-label="新会话执行" disabled={isBusy} onClick={() => onStart('new')}>
+                  <ExternalLink size={12} />
+                </TooltipTrigger>
+                <TooltipPopup>新会话执行</TooltipPopup>
+              </Tooltip>
             </>
           ) : active ? (
-            <button type="button" className="ui-tb__act" disabled={isBusy} onClick={onStop}>
-              <CircleStop size={12} /> 停止
-            </button>
+            <Tooltip>
+              <TooltipTrigger type="button" className="ui-tb__act" aria-label="停止" disabled={isBusy} onClick={onStop}>
+                <CircleStop size={12} />
+              </TooltipTrigger>
+              <TooltipPopup>停止</TooltipPopup>
+            </Tooltip>
           ) : task.status === 'failed' ? (
-            <button type="button" className="ui-tb__act" data-primary disabled={isBusy} onClick={onRetry}>
-              <RotateCcw size={12} /> 重试
-            </button>
+            <Tooltip>
+              <TooltipTrigger type="button" className="ui-tb__act" data-primary aria-label="重试" disabled={isBusy} onClick={onRetry}>
+                <RotateCcw size={12} />
+              </TooltipTrigger>
+              <TooltipPopup>重试</TooltipPopup>
+            </Tooltip>
           ) : null}
         </div>
-      )}
-      </div>
-
-      {!compact && (
         <p className="ui-tb__meta">更新于 {fmtTime(task.updatedAt)}</p>
+      </div>
       )}
     </article>
   );
@@ -722,32 +771,50 @@ function TaskPanel({
         <div className="ui-tb__panel-actions">
           {startable && (
             <>
-              <button type="button" className="ui-tb__act" data-primary disabled={isBusy} onClick={() => onStart(task, 'same')}>
-                <Play size={12} /> 开始执行
-              </button>
-              <button type="button" className="ui-tb__act" disabled={isBusy} onClick={() => onStart(task, 'new')}>
-                <ExternalLink size={12} /> 新的会话执行
-              </button>
+              <Tooltip>
+                <TooltipTrigger type="button" className="ui-tb__act" data-primary aria-label="开始执行" disabled={isBusy} onClick={() => onStart(task, 'same')}>
+                  <Play size={12} />
+                </TooltipTrigger>
+                <TooltipPopup>开始执行</TooltipPopup>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger type="button" className="ui-tb__act" aria-label="新的会话执行" disabled={isBusy} onClick={() => onStart(task, 'new')}>
+                  <ExternalLink size={12} />
+                </TooltipTrigger>
+                <TooltipPopup>新的会话执行</TooltipPopup>
+              </Tooltip>
             </>
           )}
           {active && (
-            <button type="button" className="ui-tb__act" disabled={isBusy} onClick={() => onStop(task)}>
-              <CircleStop size={12} /> 停止
-            </button>
+            <Tooltip>
+              <TooltipTrigger type="button" className="ui-tb__act" aria-label="停止" disabled={isBusy} onClick={() => onStop(task)}>
+                <CircleStop size={12} />
+              </TooltipTrigger>
+              <TooltipPopup>停止</TooltipPopup>
+            </Tooltip>
           )}
           {task.status === 'failed' && (
-            <button type="button" className="ui-tb__act" data-primary disabled={isBusy} onClick={() => onRetry(task)}>
-              <RotateCcw size={12} /> 重试
-            </button>
+            <Tooltip>
+              <TooltipTrigger type="button" className="ui-tb__act" data-primary aria-label="重试" disabled={isBusy} onClick={() => onRetry(task)}>
+                <RotateCcw size={12} />
+              </TooltipTrigger>
+              <TooltipPopup>重试</TooltipPopup>
+            </Tooltip>
           )}
           {task.archivedAt ? (
-            <button type="button" className="ui-tb__act" disabled={isBusy} onClick={() => onRestore(task)}>
-              <ArchiveRestore size={12} /> 恢复
-            </button>
+            <Tooltip>
+              <TooltipTrigger type="button" className="ui-tb__act" aria-label="恢复" disabled={isBusy} onClick={() => onRestore(task)}>
+                <ArchiveRestore size={12} />
+              </TooltipTrigger>
+              <TooltipPopup>恢复</TooltipPopup>
+            </Tooltip>
           ) : terminal ? (
-            <button type="button" className="ui-tb__act" disabled={isBusy} onClick={() => onArchive(task)}>
-              <Archive size={12} /> 封存
-            </button>
+            <Tooltip>
+              <TooltipTrigger type="button" className="ui-tb__act" aria-label="封存" disabled={isBusy} onClick={() => onArchive(task)}>
+                <Archive size={12} />
+              </TooltipTrigger>
+              <TooltipPopup>封存</TooltipPopup>
+            </Tooltip>
           ) : null}
         </div>
 
@@ -811,13 +878,14 @@ function TaskPanel({
                     key={teamId}
                     type="button"
                     className="ui-tb__team-link"
-                    title="在侧栏打开该团队的编排界面"
+                    title="打开该团队的编排界面"
                     onClick={() => {
-                      if (!openTeamInSidebar(teamId)) {
-                        onError('当前是独立页面，请在 DSH 侧栏的看板中打开编排');
+                      const opened = openTeamPanel(teamId);
+                      if (!opened) {
+                        onError('打开编排失败，请检查浏览器是否拦截了弹窗');
                         return;
                       }
-                      onOk('已在侧栏打开编排');
+                      onOk(opened === 'sidebar' ? '已在侧栏打开编排' : '已在新窗口打开编排');
                     }}
                   >
                     <Users size={12} />

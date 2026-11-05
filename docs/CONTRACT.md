@@ -326,7 +326,7 @@ root(run:team)                         ← 团队整体
 
 Host 插件默认 `boardEnabled=true`（显式 `false` 可关闭），每 `boardDispatchMs` 跑一次泵：`claim planning` → `ctx.agents.create`（cwd=workspace path）→ `attach` → `followup` 投规划 prompt；规划会话调 `board_plan_submit` 后进入 `planned`，泵再 `claim inprogress`。规划会话权限默认 `read-only`，执行默认 `danger-full-access`；规划阶段的审批请求由插件直接拒绝，避免无人值守卡住。规划超时（`boardPlanningTimeoutMs`，默认 30 分钟）自动置 failed。
 
-GUI 入口：`dsh-plugin-ui` 把「编排」与「任务看板」注册成两个独立页签（原生右侧栏对应 `dsh-team` / `dsh-team-board`）。看板页路由为 `#/board[/<workspaceId>]`，不渲染编排侧栏、不依赖当前 team；切换工作区只改 `workspaceId` 与 URL。编排页不再包含任务看板页签。看板任务详情里的「关联团队」按钮通过 `postMessage`（`dsh-team:open-team`）让 Host 切到「编排」页签并锁定该 team；独立浏览器页面无 Host 时提示改用侧栏。
+GUI 入口：`dsh-plugin-ui` 把「编排」与「任务看板」注册成两个独立页签（原生右侧栏对应 `dsh-team` / `dsh-team-board`）。看板页路由为 `#/board[/<workspaceId>]`，不渲染编排侧栏、不依赖当前 team；切换工作区只改 `workspaceId` 与 URL。编排页不再包含任务看板页签。看板任务详情里的「关联团队」按钮通过 `postMessage`（`dsh-team:open-team`）让 Host 切到「编排」页签并锁定该 team；独立浏览器页面（非 DSH 环境）没有 Host，改用 `window.open` 在新窗口打开同一面板的 `#/t/<teamId>` 路由。
 
 新增工具：`board_plan_submit({plan,summary?})`、`board_task_status({status,summary?})`。`team_create` 在 Lead 会话里创建团队后会自动把 team 绑到该会话对应的 board task；`team_spawn` 在该 task 配了 `teamModels` 时把成员 route 限制在白名单内（未指定 model 取第一条）。
 
