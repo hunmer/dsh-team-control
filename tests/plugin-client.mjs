@@ -1,7 +1,7 @@
 // tests/plugin-client.mjs — 客户端插件入口自测（不启动 DSH）：
 // ① 装了 dsh-better-sidebar：额外注册一个页签；DSH 原生右侧栏入口仍始终注册
 // ② 没装：右侧栏 Tab + 左下角入口照旧；better-sidebar 晚到时只补注册，不撤原生入口
-// ③ 连 sidebarRight 服务都没有：中央停靠面板兜底
+// ③ 左侧栏「编排」「看板」两个入口始终注册（不再只在老宿主兜底分支）
 // 用法：node tests/plugin-client.mjs
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -176,6 +176,29 @@ check('页签描述：编排与独立看板各一个，iframe 各自独立', () 
   assert.equal(boardFrame.props.src, '/dsh-team-api/panel?api=/dsh-team-api&embed=1#/board');
   assert.equal(render(board.icon(16)).type, 'svg', 'board icon 渲染成 svg');
   return 'iframe src ok';
+});
+
+check('左侧栏常驻入口：编排 / 看板始终注册（与 better-sidebar 并存）', () => {
+  const better = makeBetter();
+  const app = makeCtx({ betterSidebar: better, sidebarRight: { openTab() {} }, sidebarRightTabs: { register: () => () => {} } });
+  plugin.apply(app.ctx);
+  assert.deepEqual(
+    app.entries.filter((e) => e.spec.name === 'main').map((e) => e.spec.key).sort(),
+    ['dsh-team', 'dsh-team-board'],
+    '两个中央主面板各一份（与左侧栏 id 一一对应）',
+  );
+  const rows = app.entries.filter((e) => e.spec.name === 'sidebar.panellist');
+  assert.deepEqual(rows.map((e) => e.spec.id).sort(), ['dsh-team', 'dsh-team-board'], '左侧栏两个入口');
+  const team = rows.find((e) => e.spec.id === 'dsh-team');
+  const board = rows.find((e) => e.spec.id === 'dsh-team-board');
+  assert.equal(team.spec.order, 20);
+  assert.equal(team.spec.label(), 'side_nav');
+  assert.equal(board.spec.order, 21);
+  assert.equal(board.spec.label(), 'board_nav');
+  assert.equal(render(team.component({ size: 16, active: true })).type, 'span', '编排入口渲染成图标');
+  assert.equal(render(board.component({ size: 16, active: false })).type, 'span', '看板入口渲染成图标');
+  assert.equal(render(board.component({ size: 16 })).props['aria-label'], 'board_nav');
+  return 'panellist=dsh-team,dsh-team-board';
 });
 
 // ---------- ② 没装 better-sidebar（有 sidebarRight） ----------

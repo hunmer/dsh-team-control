@@ -37,15 +37,17 @@ window.__ModuleLoader__.load({
 })
 ```
 
-注册链（逐级回退）：
+注册项（左侧栏入口常驻，其余按宿主能力并存/降级）：
 
 ```text
-1) better-sidebar 页签：id = 'dsh-team:panel'，order 30，mode single
-2) 回退：sidebarRightTabs + sidebar.footer.action（右下角按钮）
-3) 回退：main panel（占满主区）
+1) 左侧栏常驻：main keyed 'dsh-team'（编排）+ 'dsh-team-board'（看板）
+   + sidebar.panellist id/order 20、21 —— 装没装扩展都注册
+2) 原生右侧栏：sidebarRightTabs 'dsh-team' / 'dsh-team-board' + sidebar.right.pane.tab
+   内容槽（服务晚到用 ctx.inject 等待）
+3) 可选：better-sidebar 页签 'dsh-team:panel'（order 30）/ 'dsh-team:board'（order 31）
 ```
 
-三种入口渲染的都是同一个 iframe：
+所有入口渲染的都是同一个 iframe：
 
 ```html
 <iframe src="{proxyBase}/panel?api=/dsh-team-api&embed=1" />

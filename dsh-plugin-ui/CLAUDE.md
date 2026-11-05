@@ -2,14 +2,15 @@
 
 ## 项目简单介绍
 
-`dsh-plugin-ui/`（`dsh-team-control-ui` v0.1.7）把 sidecar 自带的面板挂进 DSH GUI。它分两半：Host half（`index.js`，`inject:['webServer']`）挂一个**同源代理** `/dsh-team-api/*` 转发到 sidecar 并代填 token；Client half（`client.js`）在浏览器里注册两个独立入口——「编排」（team 维度）与「任务看板」（workspace 维度，路由 `#/board[/<ws>]`）；优先 better-sidebar 页签，退化到右侧栏 + 底栏按钮，再退化到 main panel，内容统一是 iframe 指向代理。
+`dsh-plugin-ui/`（`dsh-team-control-ui` v0.1.7）把 sidecar 自带的面板挂进 DSH GUI。它分两半：Host half（`index.js`，`inject:['webServer']`）挂一个**同源代理** `/dsh-team-api/*` 转发到 sidecar 并代填 token；Client half（`client.js`）在浏览器里常驻注册两个左侧栏入口——「编排」（team 维度，id `dsh-team`）与「任务看板」（workspace 维度，路由 `#/board[/<ws>]`，id `dsh-team-board`），各对应一个 `main` 主面板；另并存注册右侧栏页签与 better-sidebar 页签，内容统一是 iframe 指向代理。
 
 这样**浏览器永远拿不到 sidecar token**（ADR-008）。
 
 ## 约定的规则
 
 - Client half 零外部 import，只允许 `require('react')`；必须走 `window.__ModuleLoader__.load({id:'dsh-team-control-ui', factory})`。
-- 注册必须**逐级回退**，不能假设宿主一定有 better-sidebar。
+- 注册必须对宿主能力做降级并用 `ctx.slots.inject` / `ctx.inject` 等待服务就绪（不能假设宿主一定有 better-sidebar / sidebarRight）；但左侧栏「编排」「看板」两个入口**必须始终注册**。
+- **不自动推面板**：团队创建、成员开跑只更新数据（`sessionTeamStore` / `pendingTeamId`），右侧栏编排页与输入框团队卡片都只在用户点击时打开。
 - 面板 URL 固定带 `?api=/dsh-team-api&embed=1`；改参数要同时改 `src/web-ui/src/lib/api.ts`。
 - 代理路径前缀 `/dsh-team-api` 与面板里的 `api` 参数是**一对**，改一个必须改另一个。
 - Host half 不缓存、不改写响应体；只补 `Authorization`（读 `home/token`）并转发。
