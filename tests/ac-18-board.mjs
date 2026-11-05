@@ -102,6 +102,18 @@ const main = async () => {
     assertEqual(withWeb.settings.dshWebUrl, 'http://127.0.0.1:3080', 'Host 上报的 DSH Web 地址透出到设置');
     assert(view.tasks.length >= 2, '看板返回任务');
 
+    // 删除：活动任务拒绝；停止后连同团队绑定一并删除
+    let deleteBlocked = false;
+    try { await api.del(`/api/board/tasks/${t1.id}`); } catch (e) { deleteBlocked = e.status === 409; }
+    assert(deleteBlocked, '活动任务禁止删除');
+    await api.post(`/api/board/tasks/${t1.id}/stop`, { reason: '准备删除' });
+    const removed = await api.del(`/api/board/tasks/${t1.id}`);
+    assertEqual(removed.id, t1.id, '删除返回任务 id');
+    let gone = false;
+    try { await api.get(`/api/board/tasks/${t1.id}`); } catch (e) { gone = e.status === 404; }
+    assert(gone, '删除后任务不存在');
+    assertEqual((await api.get('/api/board/by-team/team-x')).ok, false, '团队绑定随任务删除');
+
     console.log('ac-18 board: ok');
   } finally {
     await sidecar.close();

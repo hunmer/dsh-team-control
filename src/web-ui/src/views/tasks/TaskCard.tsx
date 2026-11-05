@@ -12,6 +12,7 @@ import { ArchiveRestore, CircleAlert, CircleStop, ExternalLink, Play, RotateCcw 
 import { BOARD_STATUS_LABEL, type BoardMode, type BoardRoute, type BoardTask } from '@/lib/board';
 import { cn } from '@/lib/utils';
 import { StatusIcon } from '../board-status-icon';
+import { TaskActionsMenu } from './TaskActionsMenu';
 import { STATUS_ICON, fmtTime, taskKey } from './shared';
 
 /** 卡片右上角最多并排显示的模型头像数，其余折叠为 +N */
@@ -60,6 +61,7 @@ export function TaskCard({
   onRetry,
   onRestore,
   onToggleAuto,
+  onDelete,
   onDragStart,
   onDragEnd,
 }: {
@@ -73,6 +75,7 @@ export function TaskCard({
   onRetry: () => void;
   onRestore: () => void;
   onToggleAuto: () => void;
+  onDelete: () => void;
   onDragStart: () => void;
   onDragEnd: () => void;
 }) {
@@ -132,6 +135,13 @@ export function TaskCard({
               {hiddenRoutes > 0 && <AvatarGroupCount>+{hiddenRoutes}</AvatarGroupCount>}
             </AvatarGroup>
           )}
+          <TaskActionsMenu
+            task={task}
+            busy={busy}
+            onStop={onStop}
+            onDelete={onDelete}
+            triggerClassName="ui-tb__act"
+          />
         </div>
       </div>
 

@@ -13,14 +13,13 @@
  * - Open → 选中该任务（Plan/Activity 跟随）；Retry（失败任务）→ 按原参数重建任务再排队。
  */
 import { useMemo, useState } from 'react';
-import { ClipboardList, ListTree } from 'lucide-react';
 import { usePanel } from '@/store';
 import { api } from '@/lib/api';
 import { openMemberConversation } from '@/lib/dsh-bridge';
 import { fmtClockSec } from '@/lib/format';
 import type { Task, TimelineEntry, Todo } from '@/types';
 import { Button } from '@/components/ui/button';
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
+import { ActivityFeed } from '@/components/activity-feed';
 import {
   AgentInbox,
   type AgentTask,
@@ -28,8 +27,8 @@ import {
   type AgentTaskStatus,
   type AgentTaskStep,
 } from '@/components/agent-inbox';
-import { PlanSteps, type PlanStep, type PlanStepStatus } from '@/components/plan-steps';
-import { ToolCall } from '@/components/tool-call';
+import type { PlanStep } from '@/components/plan-steps';
+import { PlanCard, toPlanStep } from '@/components/plan-card';
 import { modelAvatar } from '@/components/ModelAvatar';
 
 
@@ -40,15 +39,6 @@ function laneStatus(status: string): AgentTaskStatus | null {
   if (status === 'in_progress' || status === 'running' || status === 'assigned') return 'running';
   return null;
 }
-
-/** sidecar todo.status → PlanSteps 状态。blocked 不是失败，按未开始渲染，阻塞原因走 detail。 */
-const PLAN_STATUS: Record<string, PlanStepStatus> = {
-  open: 'pending',
-  active: 'active',
-  done: 'done',
-  blocked: 'pending',
-  skipped: 'skipped',
-};
 
 /** `task.dispatch` / `task.retry` / `task.done` / `task.fail` / `task.todo` → 卡片步骤文案。 */
 const ACTION_LABELS: Record<string, string> = {
@@ -82,14 +72,6 @@ function elapsedOf(task?: Task): number | undefined {
   return end !== undefined && start !== undefined ? Math.max(0, end - start) : undefined;
 }
 
-/** 事件结果 → ToolCall 状态。落盘 result 是 OK / BLOCKED / FAIL 之类的短串。 */
-function eventStatus(entry: TimelineEntry): 'running' | 'success' | 'error' {
-  const result = String(entry.result ?? '').toUpperCase();
-  if (/FAIL|ERROR|DENIED|BLOCKED|TIMEOUT|ABORT/.test(result)) return 'error';
-  if (!result && (entry.phase === 'wait' || entry.phase === 'step')) return 'running';
-  return 'success';
-}
-
 export function HomeView() {
   const { state, refreshAll, setTab, setFilterMember, memberName, toast, focusReview } =
     usePanel();
@@ -97,8 +79,6 @@ export function HomeView() {
 
   /** 点击收件箱卡片的 Open 时切换 Plan/Activity 跟随的任务。 */
   const [selectedId, setSelectedId] = useState('');
-  /** 展开更多 Activity 条数（默认最近 20 条）。 */
-  const [activityLimit, setActivityLimit] = useState(20);
 
   /** 任务 id → 成员 id，供 Open 过滤时间线使用。 */
   const assignees = useMemo(() => {
@@ -148,33 +128,15 @@ export function HomeView() {
   const activeDone = activeTask?.status === 'done' || activeNode?.status === 'done';
 
   const planSteps = useMemo<PlanStep[]>(
-    () =>
-      todos
-        .filter((todo: Todo) => todo.taskId === activeId)
-        .map((todo) => ({
-          id: todo.id,
-          title: todo.title,
-          detail:
-            todo.blockedBy && todo.blockedBy.length
-              ? `blocked by ${todo.blockedBy.join(', ')}`
-              : undefined,
-          status: PLAN_STATUS[todo.status] ?? 'pending',
-        })),
+    () => todos.filter((todo: Todo) => todo.taskId === activeId).map(toPlanStep),
     [todos, activeId],
   );
-
-  /** PlanSteps 的阶段：清单全部完成才算 done（任务 done 但清单还有 open 项时不显示 Done in ...）。 */
-  const planPhase: 'running' | 'done' =
-    planSteps.length > 0 && planSteps.every((step) => step.status === 'done' || step.status === 'skipped')
-      ? 'done'
-      : 'running';
 
   /** 当前任务的真实事件流（时间线回填 + SSE 增量都在 state.timeline 里），按时间正序。 */
   const activity = useMemo(
     () => timeline.filter((entry) => entry.taskId === activeId),
     [timeline, activeId],
   );
-  const visibleActivity = activity.slice(-activityLimit);
 
   const board = useMemo<AgentTask[]>(() => {
     const logoOf = (memberId?: string) =>
@@ -183,10 +145,18 @@ export function HomeView() {
         : undefined;
     const active = (dag?.nodes ?? [])
       .map((node): AgentTask | null => {
-        const status = laneStatus(node.status ?? '');
+        let status = laneStatus(node.status ?? '');
         if (!status) return null;
         const row = taskById.get(node.taskId);
         const assignee = node.assignee ?? row?.assignee ?? undefined;
+        // 完成与否看成员是否还在跑：todo 全勾完但成员仍在收尾时保持「运行中」；
+        // 成员已停下（idle/failed/interrupted）时，即使任务状态还没落 done 也显示「完成」。
+        // 失败保持失败；成员缺失或心跳过期（stale）时退回 DAG 状态，避免误判。
+        const member = assignee ? members.find((item) => item.id === assignee) : undefined;
+        if (status !== 'failed' && member && !member.stale) {
+          if (member.status === 'running' && status === 'done') status = 'running';
+          else if (member.status !== 'running' && status === 'running') status = 'done';
+        }
         const startedAt = ms(row?.attemptedAt) ?? ms(row?.createdAt);
         const attempts = row?.attempts ?? node.attempts ?? 0;
         const maxAttempts = row?.maxAttempts;
@@ -219,7 +189,7 @@ export function HomeView() {
       const at = (task: AgentTask) => (typeof task.startedAt === 'number' ? task.startedAt : 0);
       return at(b) - at(a);
     });
-  }, [dag, taskById, artifactsByTask, memberName, modelByMember]);
+  }, [dag, taskById, artifactsByTask, members, memberName, modelByMember]);
 
   const queued = (dag?.nodes ?? []).filter((node) => !laneStatus(node.status ?? '')).length;
   const staleMembers = members.filter((member) => member.stale).length;
@@ -312,94 +282,18 @@ export function HomeView() {
         {/* ---------------- 右列：上 Plan、下 Activity ---------------- */}
         <div className="grid min-h-0 gap-3 xl:grid-rows-2">
           <section className="min-w-0 xl:min-h-0">
-            <div className="flex h-full flex-col rounded-xl border bg-card">
-              <header className="flex flex-wrap items-center gap-2 border-b px-4 py-2.5">
-                <span className="text-sm font-semibold">Plan</span>
-                <span className="truncate text-sm text-muted-foreground">{activeTitle}</span>
-                <span className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
-                  <span>{activeDone ? '已完成' : '进行中'}</span>
-                  {activeMemberId && <span>· {memberName(activeMemberId)}</span>}
-                  {activeTask?.attempts ? <span>· 第 {activeTask.attempts} 次尝试</span> : null}
-                </span>
-              </header>
-              <div className="min-h-0 flex-1 overflow-y-auto p-3">
-                {planSteps.length ? (
-                  <PlanSteps key={activeId} title={activeTitle} steps={planSteps} status={planPhase} />
-                ) : (
-                  <Empty className="gap-4 px-4 py-8 md:py-8">
-                    <EmptyHeader>
-                      <EmptyMedia variant="icon" className="mb-3">
-                        <ClipboardList />
-                      </EmptyMedia>
-                      <EmptyTitle className="text-sm">暂无计划</EmptyTitle>
-                      <EmptyDescription>Leader 用 team_todo 写入</EmptyDescription>
-                    </EmptyHeader>
-                  </Empty>
-                )}
-              </div>
-            </div>
+            <PlanCard
+              key={activeId}
+              title={activeTitle}
+              steps={planSteps}
+              done={activeDone}
+              memberName={activeMemberId ? memberName(activeMemberId) : undefined}
+              attempts={activeTask?.attempts}
+            />
           </section>
 
           <section className="min-w-0 xl:min-h-0">
-            <div className="flex h-full flex-col rounded-xl border bg-card">
-              <header className="flex flex-wrap items-center gap-2 border-b px-4 py-2.5">
-                <span className="text-sm font-semibold">Activity</span>
-                <span className="text-xs text-muted-foreground">
-                  {activity.length ? `当前任务 ${activity.length} 条事件` : '暂无事件'}
-                </span>
-                <Button className="ml-auto" onClick={jumpToTimeline} size="xs" type="button" variant="link">
-                  在时间线视图查看
-                </Button>
-              </header>
-              <div className="min-h-0 max-h-[480px] flex-1 space-y-1 overflow-y-auto p-3 xl:max-h-none">
-                {visibleActivity.length ? (
-                  visibleActivity.map((entry) => (
-                    <div key={entry.id} className="flex items-start gap-2">
-                      {/* 高度对齐 ToolCall 头部（min-height 44px），展开时时间也不会被拉偏 */}
-                      <span className="flex h-11 w-14 shrink-0 items-center justify-end text-[11px] leading-none tabular-nums text-muted-foreground">
-                        {fmtClockSec(entry.ts)}
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <ToolCall
-                          name={entry.action || entry.phase}
-                          summary={
-                            <span>
-                              {entry.phase}
-                              {entry.target ? ` · ${entry.target}` : ''}
-                              {entry.memberId ? ` · ${memberName(entry.memberId)}` : ''}
-                            </span>
-                          }
-                          status={eventStatus(entry)}
-                          args={{ phase: entry.phase, action: entry.action, target: entry.target, next: entry.next }}
-                          result={entry.result ? { result: entry.result } : undefined}
-                        />
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <Empty className="gap-4 px-4 py-8 md:py-8">
-                    <EmptyHeader>
-                      <EmptyMedia variant="icon" className="mb-3">
-                        <ListTree />
-                      </EmptyMedia>
-                      <EmptyTitle className="text-sm">暂无事件</EmptyTitle>
-                      <EmptyDescription>成员开始执行后实时出现</EmptyDescription>
-                    </EmptyHeader>
-                  </Empty>
-                )}
-                {activity.length > visibleActivity.length && (
-                  <Button
-                    className="mt-2 w-full"
-                    onClick={() => setActivityLimit((limit) => limit + 40)}
-                    size="sm"
-                    type="button"
-                    variant="outline"
-                  >
-                    显示更早的 {activity.length - visibleActivity.length} 条
-                  </Button>
-                )}
-              </div>
-            </div>
+            <ActivityFeed entries={activity} memberName={memberName} onOpenTimeline={jumpToTimeline} />
           </section>
         </div>
       </div>

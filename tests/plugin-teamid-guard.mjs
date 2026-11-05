@@ -54,6 +54,19 @@ const main = async () => {
       /团队不存在或 teamId 无效: team_nope/, '404 明确报团队不存在');
     assert.equal((await sidecar.api.get(`/api/teams/${team.id}/members`)).items.length, 0, '失败的调用没有往真实团队里建成员');
 
+    // ③b 同会话 team_create 后漏传 teamId：自动落到该会话刚建的团队，不再报「缺少 teamId」
+    const create = fake.tools.get('team_create');
+    const created = await create.execute(
+      { name: 'plugin-teamid-bound', workspace: tmp.ws },
+      { agent: { id: 'sess-teamid-bound' } },
+    );
+    assert.match(created.team.id, /^team_/, 'team_create 返回团队 id');
+    await rejects(
+      spawn.execute({ name: 'auto', prompt: '你是 auto。' }, { agent: { id: 'sess-teamid-bound' } }),
+      /subagents 服务不可用/,
+      '漏传 teamId 时回落到会话绑定的团队',
+    );
+
     // ④ 合法 teamId 但宿主没有 subagents 服务：明确报错，不静默建 worker 成员
     await rejects(spawn.execute({ teamId: team.id, name: 'probe', prompt: '你是 probe。' }, {}),
       /subagents 服务不可用/, '没有 subagents 时明确报错');

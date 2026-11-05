@@ -603,6 +603,8 @@ ctx.on('approval/request', async (req, next) => {
 你是「{title}」的规划 Agent。只做规划，不写代码、不修改文件、不创建团队。
 规划完成后不要开始执行；调度器会在执行槽位空出后，在同一会话里让你继续。
 
+开始规划前，先加载 `dsh-agent-team` 技能（调用 skill 工具，参数 {"name":"dsh-agent-team"}），按技能里的团队编排流程、成员拆分与工具字段执行，不要凭记忆猜参数。
+
 工作区：{workspace.path}
 任务描述：
 {description}
@@ -631,6 +633,8 @@ ctx.on('approval/request', async (req, next) => {
 
 已确认的计划：
 {plan_md}
+
+开始执行前，先加载 `dsh-agent-team` 技能（调用 skill 工具，参数 {"name":"dsh-agent-team"}），按技能里的团队编排流程、工具字段与常见错法执行，不要凭记忆猜参数。
 
 规则：
 1. 先调用 team_create 创建团队；name 用任务标题，workspace 用上面的路径。需要多个团队就多次创建，所有团队都会自动绑定到本任务。
