@@ -21,6 +21,7 @@ import {
   type ReactNode,
 } from "react";
 import { jsx, jsxs } from "react/jsx-runtime";
+import { ModelAvatar } from "@/components/ModelAvatar";
 import { AGENT_LANES_CSS } from "./agent-lanes-css";
 
 /* ------------------------------------------------------------------ types */
@@ -101,6 +102,18 @@ const fmtSpan = (ms: number): string => {
     return mins % 60 ? `${hours}h ${mins % 60}m` : `${hours}h`;
   const days = Math.floor(hours / 24);
   return hours % 24 ? `${days}d ${hours % 24}h` : `${days}d`;
+};
+
+/** 刻度用绝对时钟，保证从左到右数值递增；长跨度补日期 */
+const fmtClock = (ts: number, span: number): string => {
+  const d = new Date(ts);
+  const date = `${d.getMonth() + 1}/${d.getDate()}`;
+  const clock = `${String(d.getHours()).padStart(2, "0")}:${String(
+    d.getMinutes(),
+  ).padStart(2, "0")}`;
+  if (span >= 3 * 24 * 60 * MIN_MS) return date;
+  if (span >= 24 * 60 * MIN_MS) return `${date} ${clock}`;
+  return clock;
 };
 
 /** first letter of the first two words, uppercased */
@@ -394,10 +407,20 @@ export function AgentLanes({
                               className: "ui-alc__model",
                               children:
                                 agent.model &&
-                                jsx("span", {
-                                  className: "ui-alc__model-name",
-                                  title: agent.model,
-                                  children: agent.model,
+                                jsxs("span", {
+                                  className: "ui-alc__model-line",
+                                  children: [
+                                    jsx(
+                                      ModelAvatar,
+                                      { model: agent.model, size: 13 },
+                                      "brand",
+                                    ),
+                                    jsx("span", {
+                                      className: "ui-alc__model-name",
+                                      title: agent.model,
+                                      children: agent.model,
+                                    }),
+                                  ],
                                 }),
                             }),
                           ],
@@ -420,8 +443,8 @@ export function AgentLanes({
                         {
                           className: "ui-alc__tick",
                           style: { left: `${100 - (ago / span) * 100}%` },
-                          children: jsxs("span", {
-                            children: [`−`, fmtSpan(ago)],
+                          children: jsx("span", {
+                            children: fmtClock(nowMs - ago, span),
                           }),
                         },
                         ago,

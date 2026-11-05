@@ -356,6 +356,20 @@ export class Board {
     return task;
   }
 
+  deleteTask(id) {
+    const cur = this.getTask(id);
+    if (ACTIVE.has(cur.status)) throw ERR.invalidState('stop the task before deleting');
+    tx(this.db, () => {
+      this.get('DELETE FROM board_task_team WHERE task_id=?').run(cur.id);
+      this.get('DELETE FROM board_event WHERE task_id=?').run(cur.id);
+      this.get('DELETE FROM board_task WHERE id=?').run(cur.id);
+    });
+    try {
+      this.sse?.broadcastSynthetic('board.task', { taskId: cur.id, workspaceId: cur.workspaceId, deleted: true });
+    } catch { /* SSE 只是提示，删除已落库 */ }
+    return { ok: true, id: cur.id };
+  }
+
   restoreTask(id) {
     const cur = this.getTask(id);
     if (!cur.archivedAt) throw ERR.invalidState('task is not archived');

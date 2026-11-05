@@ -101,6 +101,7 @@ const main = async () => {
     assert.deepEqual(rec.options.agentOptions, { provider: 'p', model: 'plan-m' }, '规划用 planRoute');
     assert.equal(perm(permissions, rec.agent.id), 'read-only', '规划只读');
     assert.match(rec.followups[0].content[0].text, /规划 Agent/, '投了规划 prompt');
+    assert.match(rec.followups[0].content[0].text, /dsh-agent-team/, '规划 prompt 要求先加载 dsh-agent-team 技能');
     assert.equal((await api.get(`/api/board/tasks/${task.id}`)).status, 'planning', '任务进入 planning');
 
     const planTool = ctx.tools.get('board_plan_submit');
@@ -114,6 +115,7 @@ const main = async () => {
     assert.equal(created.length, 1, 'same 模式不新建会话');
     assert.equal(perm(permissions, rec.agent.id), 'danger-full-access', '执行切到 danger-full-access');
     assert.match(rec.followups[1].content[0].text, /现在开始执行/, '投了执行 prompt');
+    assert.match(rec.followups[1].content[0].text, /dsh-agent-team/, '执行 prompt 要求先加载 dsh-agent-team 技能');
     assert.equal((await api.get(`/api/board/tasks/${task.id}`)).status, 'inprogress', '任务进入 inprogress');
 
     const statusTool = ctx.tools.get('board_task_status');

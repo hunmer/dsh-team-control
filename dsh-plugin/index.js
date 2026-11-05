@@ -693,10 +693,16 @@ function rememberMember(sessionId, teamId, memberId, cwd, permissionPreset = nul
   });
 }
 
-async function teamOf(s, teamId, { refresh = false } = {}) {
-  // 模型偶尔会漏掉必填的 teamId。先显式挡住，避免 /api/teams/undefined 被误报成「团队不存在」。
+async function teamOf(s, teamId, { refresh = false, sessionId = null } = {}) {
+  // 模型偶尔会漏掉必填的 teamId。先显式挡住，避免 /api/teams/undefined 被误报成「团队不存在」；
+  // 同一会话内 team_create 过的团队可以直接兜底（DSH 对直接注册的工具不做 required 运行时校验）。
+  const missing = teamId == null || String(teamId).trim() === '' || String(teamId) === 'undefined' || String(teamId) === 'null';
+  if (missing && sessionId) {
+    const bound = sessionMember.get(String(sessionId))?.teamId || teamBySession.get(String(sessionId));
+    if (bound) teamId = bound;
+  }
   if (teamId == null || String(teamId).trim() === '' || String(teamId) === 'undefined' || String(teamId) === 'null') {
-    throw new Error('缺少 teamId：请把 team_create 返回的团队 id（形如 team_xxx）作为 teamId 参数传入后重试。');
+    throw new Error('缺少 teamId：请把 team_create 返回的 result.team.id（形如 team_xxx）作为 teamId 参数传入后重试。');
   }
   const key = String(teamId);
   if (!refresh && teamCache.has(key)) return teamCache.get(key);
@@ -1452,6 +1458,8 @@ function boardPlanningPrompt(task, settings) {
     `你是「${task.title}」的规划 Agent。只做规划，不写代码、不修改文件、不创建团队。`,
     '规划完成后不要开始执行；调度器会在执行槽位空出后，在同一会话里让你继续。',
     '',
+    '开始规划前，先加载 `dsh-agent-team` 技能（调用 skill 工具，参数 {"name":"dsh-agent-team"}），按技能里的团队编排流程、成员拆分与工具字段执行，不要凭记忆猜参数。',
+    '',
     `工作区：${task.workspacePath}`,
     '任务描述：',
     task.description || '(无)',
@@ -1491,6 +1499,8 @@ function boardLeadPrompt(task, sameSession) {
     '',
     '已确认的计划：',
     task.planMd || '(无)',
+    '',
+    '开始执行前，先加载 `dsh-agent-team` 技能（调用 skill 工具，参数 {"name":"dsh-agent-team"}），按技能里的团队编排流程、工具字段与常见错法执行，不要凭记忆猜参数。',
     '',
     '规则：',
     teamRule,
@@ -1780,6 +1790,8 @@ function buildTools(s, ctx) {
       });
       teamCache.set(team.id, team);
       if (exec?.agent) leadByTeam.set(team.id, exec.agent);
+      // 会话级粘性绑定：即使后续 team_spawn 漏传 teamId，也能解析到本会话刚建的团队。
+      if (exec?.agent?.id != null) teamBySession.set(String(exec.agent.id), String(team.id));
       await bindBoardTeam(s, exec, team.id);
       return { team, panel: panelUrl(s) };
     },
@@ -1792,7 +1804,7 @@ function buildTools(s, ctx) {
       type: 'object',
       additionalProperties: false,
       properties: {
-        teamId: { type: 'string', description: 'Team id from team_create.' },
+        teamId: { type: 'string', description: 'team_create 返回的 result.team.id（形如 team_xxx）。漏传时自动使用当前会话刚创建的团队。' },
         name: { type: 'string', description: 'Unique member name inside the team; this is the addressable target.' },
         role: { type: 'string', description: 'Role label shown on the panel.' },
         permissionPreset: { type: 'string', description: "DSH permission preset for this member (sandbox + approval policy). Defaults to the team's permissionPreset." },
@@ -1808,7 +1820,7 @@ function buildTools(s, ctx) {
     },
     output: jsonOutput('{ member, agent, panel, permissionPreset, agentPreset, agentPresetWarning?, permissionPresetApplied?, permissionPresetWarning? }'),
     async execute(args, exec) {
-      const team = await teamOf(s, args.teamId);
+      const team = await teamOf(s, args.teamId, { sessionId: exec?.agent?.id });
       const permissionPreset = resolvePermissionPreset(ctx, args.permissionPreset, team.permissionPreset);
       const requestedAgentPreset = await resolveAgentPreset(ctx, args.agentPreset, team.agentPreset, s);
 

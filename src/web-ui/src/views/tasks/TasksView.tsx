@@ -50,7 +50,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
   const rootRef = useRef<HTMLElement | null>(null);
   const detailRef = useRef<HTMLDivElement | null>(null);
   const scrollToDetail = useRef(false);
-  /** 容器宽度不够时改成上下排（与 board-page.css 的 1120px 断点保持一致） */
+  /** 容器宽度不够时改成上下排（与 board-page.css 的 1300px 断点保持一致） */
   const [stacked, setStacked] = useState(false);
 
   const load = useCallback(async (quiet = false) => {
@@ -124,7 +124,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
     if (!el || typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver((entries) => {
       const width = entries[0]?.contentRect.width ?? el.clientWidth;
-      setStacked(width < 1120);
+      setStacked(width < 1300);
     });
     observer.observe(el);
     return () => observer.disconnect();
@@ -201,6 +201,11 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
 
   const restore = (task: BoardTask) => {
     void run(`${task.id}:restore`, () => boardApi.restore(task.id), '已恢复');
+  };
+
+  const remove = (task: BoardTask) => {
+    if (selectedId === task.id) setSelectedId(null);
+    void run(`${task.id}:delete`, () => boardApi.remove(task.id), '任务已删除');
   };
 
   const toggleAuto = (task: BoardTask) => {
@@ -327,6 +332,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
                 onRetry={() => retry(task)}
                 onRestore={() => restore(task)}
                 onToggleAuto={() => toggleAuto(task)}
+                onDelete={() => remove(task)}
                 onDragStart={() => setDragTask(task)}
                 onDragEnd={() => setDragTask(null)}
               />
@@ -370,6 +376,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
                         onRetry={() => retry(task)}
                         onRestore={() => restore(task)}
                         onToggleAuto={() => toggleAuto(task)}
+                        onDelete={() => remove(task)}
                         onDragStart={() => setDragTask(task)}
                         onDragEnd={() => setDragTask(null)}
                       />
@@ -406,6 +413,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
                 onRetry={retry}
                 onArchive={archive}
                 onRestore={restore}
+                onDelete={remove}
                 onToggleAuto={() => toggleAuto(selected)}
                 onSaved={() => void load(true)}
                 onError={(message) => toast(message, 'error')}

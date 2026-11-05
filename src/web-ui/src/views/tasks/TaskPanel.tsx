@@ -13,6 +13,7 @@ import { brandOfModel } from '@/lib/model-brand';
 import { BOARD_STATUS_LABEL, boardApi, type BoardMode, type BoardRoute, type BoardTask } from '@/lib/board';
 import { StatusIcon } from '../board-status-icon';
 import { EditTaskDialog } from './dialogs';
+import { TaskActionsMenu } from './TaskActionsMenu';
 import { STATUS_ICON, errText, fmtTime, openDshSession, openTeamPanel, routeLabel, taskKey, type ModelOption } from './shared';
 
 /** 只读展示一条模型路由：有品牌图标时带图标，否则只显示文字。 */
@@ -81,6 +82,7 @@ export function TaskPanel({
   onRetry,
   onArchive,
   onRestore,
+  onDelete,
   onSaved,
   onError,
   onOk,
@@ -96,6 +98,7 @@ export function TaskPanel({
   onRetry: (task: BoardTask) => void;
   onArchive: (task: BoardTask) => void;
   onRestore: (task: BoardTask) => void;
+  onDelete: (task: BoardTask) => void;
   onToggleAuto: () => void;
   onSaved: () => void;
   onError: (message: string) => void;
@@ -155,6 +158,13 @@ export function TaskPanel({
               </TooltipTrigger>
               <TooltipPopup>{editable ? '编辑任务' : '仅待办状态的任务可以编辑'}</TooltipPopup>
             </Tooltip>
+            <TaskActionsMenu
+              task={task}
+              busy={busy}
+              onStop={() => onStop(task)}
+              onDelete={() => onDelete(task)}
+              triggerClassName="ui-tb__panel-close"
+            />
             <button type="button" className="ui-tb__panel-close" onClick={onClose} aria-label="关闭">
               <X size={15} />
             </button>
@@ -340,20 +350,6 @@ export function TaskPanel({
                 }}
               >
                 标记完成
-              </button>
-            )}
-            {(task.status === 'planning' || task.status === 'planned' || task.status === 'inprogress') && (
-              <button
-                type="button"
-                className="ui-tb__act ui-tb__danger"
-                disabled={isBusy}
-                onClick={() => {
-                  void boardApi.status(task.id, 'failed', '由看板手动标记失败')
-                    .then(() => { onSaved(); onOk('已标记失败'); })
-                    .catch((err) => onError(errText(err)));
-                }}
-              >
-                标记失败
               </button>
             )}
           </div>
