@@ -41,7 +41,7 @@
 .ui-tb__check{display:flex;align-items:center;gap:7px;min-height:28px;font-size:12px;color:var(--ui-tb-text);cursor:pointer}
 .ui-tb__check input{accent-color:var(--ui-tb-accent)}
 .ui-tb__checks{max-height:150px;overflow:auto;margin-top:4px;padding:5px 8px;border-radius:8px;background:#f7f7f7}
-.ui-tb__plan{margin-top:8px;padding:10px;border-radius:10px;background:#f8f8f8;font-size:12px;line-height:18px;max-height:220px;overflow:auto}
+.ui-tb__plan{margin-top:8px;padding:10px;border-radius:10px;background:#f8f8f8;font-size:12px;line-height:18px;overflow-wrap:anywhere}
 .ui-tb__plan-head{display:flex;align-items:center;justify-content:space-between;margin-top:14px;font-size:12px;color:var(--ui-tb-muted)}
 .ui-tb__panel-foot{border-top:1px solid var(--ui-tb-line);margin-top:14px}
 .ui-tb__danger{color:#e11d48!important}
@@ -64,6 +64,8 @@
 .ui-tb button.ui-tb__team-link:hover .ui-tb__team-link-hint{color:var(--ui-tb-accent)}
 .ui-tb__panel-close{width:26px;height:26px;border:0;border-radius:7px;background:transparent;color:var(--ui-tb-muted);display:grid;place-items:center}
 .ui-tb__panel-close:hover{background:#f3f3f3;color:var(--ui-tb-ink)}
+.ui-tb__panel-close:disabled{opacity:.35;cursor:not-allowed;background:transparent}
+.ui-tb__title{margin:8px 0 0;font-size:17px;font-weight:600;line-height:23px;overflow-wrap:anywhere;color:var(--ui-tb-ink)}
 .ui-tb__field-row{display:flex;flex-direction:column;gap:4px}
 .ui-tb__field-row .ui-tb__label{margin:0}
 :where(.dark,[data-theme="dark"]) .ui-tb__panel-close:hover{background:rgba(255,255,255,.08)}
