@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS member (
   role TEXT, model TEXT, context_mode TEXT,
   default_plan_json TEXT, quota_json TEXT,
   agent_session_id TEXT, reasoning_effort TEXT,
+  -- 成员子会话的直接父会话（Lead）；面板/看板停止时 Host 用它做 user 授权 interrupt
+  parent_session_id TEXT,
   -- 成员创建会话时实际使用的 LLM provider；NULL = 继承 Lead / 旧数据
   agent_provider TEXT,
   -- 成员级覆盖；NULL = 继承 team.permission_preset
@@ -318,6 +320,7 @@ export function openDb(file) {
   ensureColumn(db, 'member', 'permission_preset', 'TEXT');
   ensureColumn(db, 'member', 'agent_preset', 'TEXT');
   ensureColumn(db, 'member', 'agent_provider', 'TEXT');
+  ensureColumn(db, 'member', 'parent_session_id', 'TEXT');
   ensureColumn(db, 'llm_route', 'efforts_json', 'TEXT');
   ensureColumn(db, 'llm_route', 'default_effort', 'TEXT');
   ensureColumn(db, 'llm_route', 'allowed_efforts_json', 'TEXT');

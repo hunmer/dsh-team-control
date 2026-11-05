@@ -58,6 +58,7 @@
 | `agentIdleSettleMs` | — | idle 判定窗口 |
 | `agentHeartbeatMs` | — | 心跳间隔 |
 | `agentDispatchMs` | — | 派发保底泵间隔 |
+| `forceStopPollMs` | `1000` | 面板/看板停止后轮询 `interrupted` 成员并真正中断其会话的间隔（最小 250ms） |
 | `steerPollMs` | `1200` | 面板 steer 队列投递泵间隔 |
 | `contextReportMs` | — | 上下文泵间隔 |
 | `workspaceReportMs` | — | 工作区泵间隔 |

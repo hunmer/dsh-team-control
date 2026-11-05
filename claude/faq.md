@@ -32,6 +32,9 @@ sidecar 的 ready 横幅是 **stdout 第一行单行 JSON**。若前面有任何
 **Q：`interrupt` 之后还有 `running` 残留？**
 违反 C5。`interrupt()` 必须同步写 `member.status=interrupted` + `agent.interrupt` 事件 + 在途任务 `paused`，**提交后**才调 `subagents.interrupt`。若在事务里杀了会话，就会出现「已死但状态还在跑」。
 
+**Q：面板点了停止，成员还在跑？**
+团队停止先由 sidecar 落 `interrupted`/`paused`，再靠 Host 插件 `forceStopPump` 轮询 `/api/status` 调 `subagents.interrupt`；看板停止会对 `board_task_team` 绑定的团队执行同一路径。若仍不停，检查成员是否有 `parentSessionId`（旧数据/未由插件 register 的成员没有），以及插件是否在跑该泵（`forceStopPollMs` 默认 1000ms）。
+
 **Q：`npm test` 里某条 AC 偶发失败？**
 AC 全部是真实子进程 + 真实端口。失败时脚本**保留临时目录并打印路径**，进那个目录看 `team.db`（`sqlite3 team.db '.tables'`）与 `logs/`。抖动多半是 `waitFor` 超时太短。
 

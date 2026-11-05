@@ -1,5 +1,5 @@
 // tests/ac-18-board.mjs — 工作区任务看板：状态机、并发槽位、claim/attach、同会话/新会话、封存
-import { mkTmp, startSidecar, assert, assertEqual } from './lib/harness.mjs';
+import { mkTmp, startSidecar, assert, assertEqual, sleep } from './lib/harness.mjs';
 
 const main = async () => {
   const tmp = mkTmp('dsh-team-board');
@@ -102,6 +102,47 @@ const main = async () => {
     const withWeb = await api.get('/api/board?workspaceId=ws-board');
     assertEqual(withWeb.settings.dshWebUrl, 'http://127.0.0.1:3080', 'Host 上报的 DSH Web 地址透出到设置');
     assert(view.tasks.length >= 2, '看板返回任务');
+
+    // 看板 stop 联动绑定团队：在途任务转 paused，成员转 interrupted
+    const stopTeam = await api.post('/api/teams', {
+      name: 'board-stop-team', workspace: tmp.ws, maxConcurrency: 1,
+    });
+    const stopMember = await api.post(`/api/teams/${stopTeam.id}/members`, {
+      name: 'board-stop-worker', agentSessionId: 'sess-board-stop',
+    });
+    const teamTask = await api.post('/api/tasks', {
+      teamId: stopTeam.id, subject: '看板停止联动',
+    });
+    await sleep(250);
+    const claim = await api.post('/api/agents/dispatch', { teamId: stopTeam.id });
+    assertEqual(claim.dispatched, true, '看板联动用例任务已派发');
+    await api.put('/api/board/settings', {
+      workspaceId: 'ws-board', planningConcurrency: 5, inprogressConcurrency: 5,
+    });
+    const boardStop = await api.post('/api/board/tasks', {
+      workspaceId: 'ws-board', title: '停止联动', auto: true, priority: 1000,
+    });
+    const planClaim = await api.post('/api/board/claim', { kind: 'planning' });
+    assertEqual(planClaim.item.task.id, boardStop.id, '联动用例拿到规划槽位');
+    await api.post(`/api/board/tasks/${boardStop.id}/attach`, {
+      kind: 'planning', sessionId: 'sess-board-stop-plan', fence: planClaim.item.fence,
+    });
+    await api.post('/api/board/agents/plan', {
+      sessionId: 'sess-board-stop-plan', plan: '# 停止联动', summary: '联动',
+    });
+    const execClaim = await api.post('/api/board/claim', { kind: 'inprogress' });
+    assertEqual(execClaim.item.task.id, boardStop.id, '联动用例拿到执行槽位');
+    await api.post(`/api/board/tasks/${boardStop.id}/attach`, {
+      kind: 'inprogress', sessionId: 'sess-board-stop-plan', fence: execClaim.item.fence,
+    });
+    await api.post(`/api/board/tasks/${boardStop.id}/teams`, { teamId: stopTeam.id });
+    await api.post(`/api/board/tasks/${boardStop.id}/stop`, { reason: '联动测试' });
+    assertEqual((await api.get(`/api/tasks/${teamTask.id}`)).status, 'paused', '看板停止暂停绑定团队任务');
+    assertEqual(
+      (await api.get(`/api/status?member=${stopMember.id}`)).members[0].status,
+      'interrupted',
+      '看板停止中断绑定团队成员',
+    );
 
     // 删除：活动任务拒绝；failed/封存恢复过的任务连同团队绑定一并删除
     let deleteBlocked = false;

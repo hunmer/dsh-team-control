@@ -58,7 +58,7 @@ insert:
 
 ## 泵
 
-心跳（`agentHeartbeatMs`）、上下文（`contextReportMs`）、工作区（`workspaceReportMs`）、模型目录（`llmCatalogMs`）、派发保底（`agentDispatchMs`，`agentAutoDispatch` 开关）、steer 队列投递（`steerPollMs`，把面板排进 sidecar 的 `kind='steer'` 消息推进成员会话）。
+心跳（`agentHeartbeatMs`）、上下文（`contextReportMs`）、工作区（`workspaceReportMs`）、模型目录（`llmCatalogMs`）、派发保底（`agentDispatchMs`，`agentAutoDispatch` 开关）、强制停止（`forceStopPollMs`，轮询 `interrupted` 成员并调 `subagents.interrupt`）、steer 队列投递（`steerPollMs`，把面板排进 sidecar 的 `kind='steer'` 消息推进成员会话）。
 
 ## agent 成员派发时序（插件侧）
 

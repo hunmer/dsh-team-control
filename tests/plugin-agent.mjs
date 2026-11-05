@@ -93,7 +93,7 @@ const main = async () => {
     const presetDir = path.join(tmp.dataDir, 'presets');
     fs.mkdirSync(presetDir, { recursive: true });
     fs.writeFileSync(path.join(presetDir, 'boot-preset.json'), JSON.stringify({ id: 'boot-preset', plugins: [{ name: '@deepseek-ai/dsh-tool-fs' }] }));
-    apply(ctx, { baseUrl: sidecar.url, autoStart: false, reportToolCalls: false, agentDispatchMs: 600, agentIdleSettleMs: 1200, presetDir });
+    apply(ctx, { baseUrl: sidecar.url, autoStart: false, reportToolCalls: false, agentDispatchMs: 600, agentIdleSettleMs: 1200, forceStopPollMs: 100, presetDir });
     const tool = (name) => {
       const t = ctx.tools.get(name);
       assert(t, `工具 ${name} 已注册`);
@@ -124,6 +124,7 @@ const main = async () => {
     assert.equal(typeof spec.request.cwd, 'string', '成员 cwd 落在团队工作目录');
     assert.equal(spec.request.cwd, team.workspace, 'cwd 就是 team.workspace');
     assert.equal(spawned.agent.sessionId, sessionId, '返回 agent 诊断信息');
+    assert.equal(spawned.member.parentSessionId, 'sess-lead', '登记直接父会话，供面板停止时 user 授权中断');
     assert.equal(spawned.permissionPreset, 'workspace-write', 'spawn 继承团队预设');
     assert.equal(spawned.permissionPresetApplied, true, '预设已落到子会话');
     assert.deepEqual(ctx.presets.applied.at(-1), { session: sessionId, name: 'workspace-write' }, 'permissionPresets.set 被调用');
@@ -341,6 +342,29 @@ const main = async () => {
     assert.equal(ctx.agents.spawned.length, spawnedBeforeRole, '没有新增子会话');
     assert.equal(roleUpdated.member.role, 'reviewer', 'role 已更新');
 
+    // ⑦f 面板/看板停止：sidecar 只能把成员置 interrupted，Host 泵要真正中断成员会话
+    const t4 = await tool('team_task').execute({ teamId: team.id, subject: '强制停止用例' }, lead);
+    await waitFor('t4 自动派发', async () => (
+      (await api.get(`/api/tasks/${t4.task.id}`)).status === 'running' ? true : null
+    ), 8000);
+    const interruptsBeforeStop = ctx.agents.interrupts.length;
+    await api.post(`/api/teams/${team.id}/stop`, { reason: 'panel force stop' });
+    const stoppedAlice = (await api.get(`/api/status?member=${spawned.member.id}`)).members[0];
+    assert.equal(stoppedAlice.status, 'interrupted', '团队停止把成员置 interrupted');
+    assert.equal((await api.get(`/api/tasks/${t4.task.id}`)).status, 'paused', '在途任务转 paused');
+    const forced = await waitFor('force-stop 泵中断成员会话', async () => (
+      ctx.agents.interrupts.slice(interruptsBeforeStop).find((i) => i.targetId === newSession) || null
+    ), 5000);
+    assert.equal(forced.authority.kind, 'user', '没有活跃 Lead 句柄时用 user 授权');
+    assert.equal(String(forced.authority.parentSessionId), 'sess-lead', 'user 授权带持久化的直接父会话');
+    ctx.emit('agent/status', { agent: { id: newSession }, status: 'idle' });
+    await sleep(300);
+    assert.equal(
+      (await api.get(`/api/status?member=${spawned.member.id}`)).members[0].status,
+      'interrupted',
+      '强制停止后 DSH 的 idle 回报不得解冻成员',
+    );
+
     // ⑦e team_member retire / remove：释放子会话，remove 必须 confirm
     const retired = await tool('team_member').execute(
       { action: 'retire', teamId: team.id, memberId: custom.member.id }, lead,
@@ -372,7 +396,7 @@ const main = async () => {
     assert(ctx.agents.drains.some((d) => d.childIds.includes(bob.member.agentSessionId)), 'remove 释放子会话');
     await assert.rejects(() => api.get(`/api/members/${bob.member.id}`), (err) => err.status === 404, '删除后成员 404');
 
-    console.log('PASS plugin-agent — agent 成员闭环：preset/权限预设落会话/spawn/register/dispatch 简报/report/归属校验/idle 兜底/interrupt');
+    console.log('PASS plugin-agent — agent 成员闭环：preset/权限预设落会话/spawn/register/dispatch 简报/report/归属校验/idle 兜底/interrupt/force-stop');
     process.exitCode = 0;
   } finally {
     try { await sidecar.close(); } catch { /* ignore */ }
