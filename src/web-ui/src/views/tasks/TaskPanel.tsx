@@ -1,6 +1,6 @@
 /**
- * 任务详情侧滑面板：字段只读展示；仅在「待办」状态时可通过右上角编辑按钮打开编辑对话框。
- * 拆分自 Tasks.tsx。
+ * 任务详情卡片：放在看板右侧（窄屏时下方）的详情容器里，字段只读展示；
+ * 仅在「待办」状态时可通过右上角编辑按钮打开编辑对话框。拆分自 Tasks.tsx。
  */
 import { Fragment, useState } from 'react';
 import { Archive, ArchiveRestore, CircleStop, ExternalLink, MessageSquare, Pencil, Play, RotateCcw, Users, X } from 'lucide-react';
@@ -112,8 +112,7 @@ export function TaskPanel({
 
   return (
     <>
-      <div className="ui-tb__scrim" data-open="true" onClick={onClose} />
-      <aside className="ui-tb__panel" data-open="true" aria-label="任务详情">
+      <section className="ui-tb__panel ui-tb__panel--card" aria-label="任务详情">
         <div className="ui-tb__panel-head">
           <span className="ui-tb__key">{taskKey(task)}</span>
           <div className="flex items-center gap-1">
@@ -359,7 +358,7 @@ export function TaskPanel({
             )}
           </div>
         </div>
-      </aside>
+      </section>
       <EditTaskDialog
         open={editing}
         onOpenChange={setEditing}

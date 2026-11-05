@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -117,7 +117,9 @@ CREATE TABLE IF NOT EXISTS todo (
   id TEXT PRIMARY KEY, team_id TEXT NOT NULL, member_id TEXT,
   title TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open', order_no INTEGER NOT NULL DEFAULT 0,
   blocked_by_json TEXT NOT NULL DEFAULT '[]',
-  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  -- 进入执行 / 完成的时间：看板用它算每个 todo 的实际用时（老库由 ensureColumn 补列）
+  started_at TEXT, done_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS audit (
@@ -317,6 +319,8 @@ export function openDb(file) {
   ensureColumn(db, 'llm_route', 'default_effort', 'TEXT');
   ensureColumn(db, 'llm_route', 'allowed_efforts_json', 'TEXT');
   ensureColumn(db, 'todo', 'task_id', 'TEXT');
+  ensureColumn(db, 'todo', 'started_at', 'TEXT');
+  ensureColumn(db, 'todo', 'done_at', 'TEXT');
   ensureColumn(db, 'artifact', 'added', 'INTEGER');
   ensureColumn(db, 'artifact', 'deleted', 'INTEGER');
   ensureColumn(db, 'preset', 'doc_json', 'TEXT');
