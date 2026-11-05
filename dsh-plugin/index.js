@@ -1598,8 +1598,6 @@ function boardPlanningPrompt(task, settings) {
     `你是「${task.title}」的规划 Agent。只做规划，不写代码、不修改文件、不创建团队。`,
     '规划完成后不要开始执行；调度器会在执行槽位空出后，在同一会话里让你继续。',
     '',
-    '开始规划前，先加载 `dsh-agent-team` 技能（调用 skill 工具，参数 {"name":"dsh-agent-team"}），按技能里的团队编排流程、成员拆分与工具字段执行，不要凭记忆猜参数。',
-    '',
     `工作区：${task.workspacePath}`,
     '任务描述：',
     task.description || '(无)',
