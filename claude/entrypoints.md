@@ -27,32 +27,24 @@ node bin/dsh-team.mjs up [--port N] [--data DIR] [--foreground]
 ## 2. `createCore` 装配顺序（`src/core.mjs`）
 
 ```text
-openDb → EventStore(db) → PermBroker(db, events, bus?) → Bus(db, events)
-→ Scheduler({db, events, broker, runner, bus, settleMs:200, tickMs:150})
-→ Runner({db, events, broker, home}) → SSE Hub → LlmCatalog(db)
-→ recoverAll()  // 收敛遗留 running/provisioning、过期租约、未决 scope_request
+openDb → EventStore(db) → Bus(db, events)
+→ Scheduler({db, events, bus, settleMs:200, tickMs:150})
+→ SSE Hub → LlmCatalog(db) → Board(db, …)
+→ recoverAll()  // 收敛遗留 running/provisioning、过期租约
 ```
 
 `core` 上暴露的方法就是 `server.mjs` 路由能用的全部能力面：`teams/members/tasks/events/...`。新增能力先加 `core`，再在 `createRoutes` 里挂。
 
-## 3. Worker 启动（`src/runner.mjs`）
+## 3. Worker 启动（已移除）
 
-```text
-spawn(process.execPath, [
-  '--permission',
-  `--allow-fs-read=${bundleDir}`,
-  workerEntry                           // 复制到 home/workers/<member>/
-], {stdio:['pipe','pipe','pipe']})
-```
-
-bundle 首行是 `module.registerHooks({resolve})`，白名单只有 `node:module`；随后中和 `fetch/WebSocket/EventSource/XMLHttpRequest/process.binding/process._linkedBinding/process.dlopen`。之后所有能力请求都写 stdout NDJSON，sidecar 侧按 `op` 分派到 `broker.*`，结果写回 stdin。**没有第二通道**。
+`src/runner.mjs` / `src/worker/worker.mjs` 已随 v2 删除（ADR-009）；成员一律是 Host 侧 sub-agent，进程生命周期归 DSH 宿主。
 
 ## 4. Host 插件启动（`dsh-plugin/index.js`）
 
 ```text
 apply(ctx, config)
   ├ resolveConfig(config) → baseUrl/port/home/autoStart/entry/...
-  ├ ctx.effect(...) 注册 12 个 team_* 工具
+  ├ ctx.effect(...) 注册 14 个 team_* + 2 个 board_* 工具
   ├ ctx.inject(['skills']) 注册 skills provider（rank 600，读 skills/ 目录）
   ├ ensureSidecar()：autoStart 时 spawn `bin/dsh-team.mjs up`，等 ready 行（startTimeoutMs 20s）
   ├ 事件钩子：

@@ -1,6 +1,6 @@
 # 工具面与生命周期
 
-## 14 个 `team_*` 工具（`index.js` `buildTools`）
+## 16 个工具（14 个 `team_*` + 2 个 `board_*`，`index.js` `buildTools`）
 
 | 工具 | 关键参数 | 语义 |
 |---|---|---|
@@ -18,6 +18,8 @@
 | `team_approve` | `teamId`、`requestId`、`decision:"allow"\|"deny"`、`reason` | Lead 裁决成员审批；返回宿主 `allowed-once` / `rejected` |
 | `team_control` | `action:"interrupt"\|"resume"\|"assign"\|"abort"`、`memberId`、`taskId`、`teamId` | 中断（任务转 paused）/恢复/指派/作废任务（aborted，不重试） |
 | `team_report` | `teamId` | 导出 Markdown 运行报告（成员/任务/DAG/审批/audit） |
+| `board_plan_submit` | `plan`、`summary` | 规划会话提交计划：看板任务 `planning → planned`，same 模式同时绑定执行会话 |
+| `board_task_status` | `status:"done"|"failed"|"inprogress"`、`summary` | Lead 会话回报看板任务结果 |
 
 权限与审批不在工具里判定：`permissionPreset` 由插件 `ctx.permissionPresets.set(session, name)` 落到子会话，
 成员审批由 `ctx.on('approval/request', …)` 转发给 Lead。
@@ -40,7 +42,7 @@ insert:
 ## `apply(ctx, config)` 做的事
 
 1. `resolveConfig(config)` → 归一 `baseUrl/port/home/autoStart/entry/...`（键表见 [根目录依赖与配置](../../claude/dependencies-and-config.md)）。
-2. `ctx.effect(...)` 注册 11 个工具。
+2. `ctx.effect(...)` 注册 14 个 `team_*` + 2 个 `board_*` 工具。
 3. `ctx.inject(['skills'])` 注册 skills provider（rank 600，目录 `skills/`）——模型因此能看到 `dsh-agent-team` 技能。
 4. `ensureSidecar()`：`autoStart` 时 spawn `bin/dsh-team.mjs up`，等第一行 ready JSON，超时 `startTimeoutMs`（20s）。
 5. 挂事件钩子（见下）。

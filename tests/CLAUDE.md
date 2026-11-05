@@ -2,7 +2,7 @@
 
 ## 项目简单介绍
 
-`tests/` 是 dsh-team 的验收套件：全部**真子进程 + 真 HTTP/SSE**，禁止 mock sidecar。`run-all.mjs` 顺序跑 `tests/*.mjs`，每条脚本自己建临时 workspace/data、起 sidecar（`--port 0`）、跑断言、收尾清理。AC-01~AC-16 对应 `docs/CONTRACT.md` 的验收条目；另有插件/面板/路由/CLI/迁移/计价等专项脚本。
+`tests/` 是 dsh-team 的验收套件：全部**真子进程 + 真 HTTP/SSE**，禁止 mock sidecar。`run-all.mjs` 顺序跑 `tests/*.mjs`，每条脚本自己建临时 workspace/data、起 sidecar（`--port 0`）、跑断言、收尾清理。AC-01~AC-18 对应 `docs/CONTRACT.md` 的验收条目（AC-18 为工作区看板）；另有插件/面板/路由/CLI/迁移/计价/todo-plan 等专项脚本，共 31 个。
 
 插件类脚本（`plugin-*`）不拉真 sidecar，用**假 ctx** 捕获工具注册与调用（AC-15 是典型）。
 
@@ -25,7 +25,7 @@
 
 ## 扫描状态
 
-- 更新时间：2026-11-01
+- 更新时间：2026-11-05（增量）
 - 已扫描：`run-all.mjs` 机制（顺序执行、`--only` 过滤、PASS/FAIL 契约）；`lib/harness.mjs` 全部导出与 `startSidecar` 实现要点；全部脚本文件名与覆盖主题。
 - 未逐行：各 AC 脚本内部断言细节。
 - 下一步：改契约时按 `ac-NN` 编号对照 `docs/CONTRACT.md` 的验收表逐条核。

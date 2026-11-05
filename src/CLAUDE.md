@@ -2,7 +2,7 @@
 
 ## 项目简单介绍
 
-`src/` 是 dsh-team 的 sidecar 内核：一个零依赖 Node ESM 进程，持有 SQLite（WAL，schema v12）、事件流、审批镜像、DAG 调度、持久信箱、SSE Hub 和 HTTP 服务。它不认识 LLM，不保存任何 API Key，只做「谁在跑、卡在哪个审批、做到哪、留下什么证据」。
+`src/` 是 dsh-team 的 sidecar 内核：一个零依赖 Node ESM 进程，持有 SQLite（WAL，schema v14）、事件流、审批镜像、DAG 调度、持久信箱、SSE Hub 和 HTTP 服务。它不认识 LLM，不保存任何 API Key，只做「谁在跑、卡在哪个审批、做到哪、留下什么证据」。
 
 `core.mjs` 是唯一的组合根，把 `db / eventstore / scheduler / bus / sse / llm` 装配起来并暴露给 `server.mjs` 的路由层；成员是 Host 侧的 sub-agent，sidecar 不管理任何子进程。除 `web/`（面板静态产物）外，本目录没有子模块再分层。
 
@@ -36,7 +36,7 @@
 
 ## 扫描状态
 
-- 更新时间：2026-11-01
-- 已扫描：全部 9 个 `*.mjs` 的导出面与关键函数签名；`web/` 仅看 `panel.html` 引用。
+- 更新时间：2026-11-05（增量）
+- 已扫描：全部 10 个 `*.mjs`（含 `board.mjs` 看板状态机）的导出面与关键函数签名；`web/` 仅看 `panel.html` 引用。
 - 未逐行：`core.mjs` 与 `scheduler.mjs` 的内部实现细节，仅按导出面与契约核对。
 - 下一步：若要改调度时序，优先精读 `scheduler.mjs` 的 `evaluate/readiness/onTaskDone` 与 `core.mjs` 的 `dispatchAgentTask`。

@@ -25,7 +25,6 @@
 
 ## 扫描状态
 
-- 更新时间：2026-11-01
-- 已扫描：`index.js` 的 `buildTools` 工具清单与行号、`resolveConfig` 全部键、`apply` 的钩子与泵清单；`changes.js`、`pricing.js` 导出面；`cordis.patch.yml`；`locale/*.json`。
-- 未逐行：`index.js` 内各工具 `execute` 的具体实现（2126 行）。
+- 更新时间：2026-11-05（增量，含深读）
+- 已扫描：`index.js` 的 `buildTools` 工具清单与行号、`resolveConfig` 全部键、`apply` 的钩子与泵清单；**全部 16 个工具的 `execute` 实现已深读**（端点、参数覆盖关系、校验、冻结/审批机制，见 [claude/overview.md](claude/overview.md) 的「逐工具实现速查」与「关键内存态」）；`changes.js`、`pricing.js` 导出面；`cordis.patch.yml`；`locale/*.json`。
 - 下一步：改某个工具前，先读该工具 `execute` 与对应 sidecar 路由两端。
