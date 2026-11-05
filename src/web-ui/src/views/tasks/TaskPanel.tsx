@@ -146,6 +146,26 @@ export function TaskPanel({
                 <TooltipPopup>封存</TooltipPopup>
               </Tooltip>
             ) : null}
+            {task.leadSessionId && (
+              <Tooltip>
+                <TooltipTrigger
+                  type="button"
+                  className="ui-tb__panel-close"
+                  aria-label="打开该任务的 Lead（执行）DSH 会话"
+                  onClick={() => {
+                    const opened = openDshSession(task.leadSessionId!, dshWebUrl);
+                    if (!opened) {
+                      onError('新窗口被浏览器拦截：请允许本站弹窗后重试');
+                      return;
+                    }
+                    onOk(opened === 'window' ? '已在新窗口打开 DSH 执行会话' : '已在 DSH 中打开执行会话');
+                  }}
+                >
+                  <MessageSquare size={13} />
+                </TooltipTrigger>
+                <TooltipPopup>在 DSH 查看执行会话</TooltipPopup>
+              </Tooltip>
+            )}
             <Tooltip>
               <TooltipTrigger
                 type="button"
@@ -275,30 +295,6 @@ export function TaskPanel({
                     </Button>
                   </Fragment>
                 ))}
-                {task.leadSessionId && (
-                  <>
-                    {task.teams?.length ? <GroupSeparator orientation="horizontal" /> : null}
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="w-full justify-start"
-                      title="打开该任务的 Lead（执行）DSH 会话"
-                      onClick={() => {
-                        const opened = openDshSession(task.leadSessionId!, dshWebUrl);
-                        if (!opened) {
-                          onError('新窗口被浏览器拦截：请允许本站弹窗后重试');
-                          return;
-                        }
-                        onOk(opened === 'window' ? '已在新窗口打开 DSH 执行会话' : '已在 DSH 中打开执行会话');
-                      }}
-                    >
-                      <MessageSquare size={12} />
-                      <span className="min-w-0 flex-1 truncate text-left">在DSH查看执行会话</span>
-                      <ExternalLink className="ml-auto shrink-0" size={11} />
-                    </Button>
-                  </>
-                )}
               </Group>
             ) : (
               <p className="mt-1 text-xs text-muted-foreground">

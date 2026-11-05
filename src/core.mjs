@@ -44,7 +44,7 @@ export class DshTeam {
     this.sse = new SseHub({ events: this.events, log });
     this.bus = new MessageBus(this.db, {
       log,
-      onDeliver: (m) => { try { this.sse.broadcastSynthetic('message.delivered', { teamId: m.teamId, memberId: m.to, messageId: m.id, to: m.to, status: 'delivered' }, { teamId: m.teamId }); } catch { /* ignore */ } },
+      onDeliver: (m) => { try { this.sse.broadcastSynthetic('message.delivered', { teamId: m.teamId, memberId: m.to, messageId: m.id, to: m.to, status: m.status ?? 'delivered' }, { teamId: m.teamId }); } catch { /* ignore */ } },
       onWake: (memberId) => { try { this.wakeMember(memberId); } catch { /* ignore */ } },
     });
     this.scheduler = new Scheduler({ db: this.db, events: this.events, sse: this.sse, log });

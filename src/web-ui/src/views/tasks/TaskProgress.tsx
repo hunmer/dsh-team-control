@@ -2,11 +2,14 @@
  * 看板详情容器里的「团队执行进度」卡片。
  * 数据来自选中任务关联团队的 todo（不是看板任务 id）：成员用 todo_write 提交的待办。
  * 同一 done_at 的多个 todo 是「一次勾好几个」的同一批，合成 AgentLanes 里的一个进度块。
- * 底部附 PlanCard（与首页右列同款）：该团队的 todo 计划清单。
+ * 下方是按成员分组的垂直 tabs（coss p-tabs-4 用法）：tab 头用成员模型头像 + 名字，
+ * 面板渲染该成员的 PlanCard（与首页右列同款）；卡片限高内滚，避免撑破详情容器。
  */
 import { useEffect, useMemo, useState } from 'react';
 import { AgentLanes, type LaneAgent, type LaneTask } from '@/components/agent-lanes/agent-lanes';
+import { modelAvatar } from '@/components/ModelAvatar';
 import { PlanCard, toPlanStep } from '@/components/plan-card';
+import { Tabs, TabsList, TabsPanel, TabsTab } from '@/components/ui/tabs';
 import { buildTodoBatches, fmtDuration, todoDuration, todosApi, type TodoItem } from '@/lib/todos';
 import type { Member } from '@/types';
 import { errText } from './shared';
@@ -22,6 +25,7 @@ export function TaskProgress({ teamId }: { teamId: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [tick, setTick] = useState(() => Date.now());
+  const [activeTab, setActiveTab] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     const timer = window.setInterval(() => setTick(Date.now()), 1000);
@@ -69,18 +73,40 @@ export function TaskProgress({ teamId }: { teamId: string }) {
 
   const memberById = useMemo(() => new Map(members.map((member) => [member.id, member])), [members]);
 
-  /** 全团队 todo → PlanCard 步骤（与首页右列 Plan 卡片同款展示）。 */
-  const planSteps = useMemo(() => todos.map(toPlanStep), [todos]);
+  /** todo 按成员分组（保持首次出现顺序），每组 = 垂直 tabs 的一个 tab + 一张 PlanCard。 */
+  const memberGroups = useMemo(() => {
+    const byMember = new Map<string, TodoItem[]>();
+    for (const todo of todos) {
+      const id = todo.memberId || 'unassigned';
+      if (!byMember.has(id)) byMember.set(id, []);
+      byMember.get(id)!.push(todo);
+    }
+    return [...byMember.entries()].map(([id, items]) => {
+      const member = id === 'unassigned' ? undefined : memberById.get(id);
+      const name =
+        id === 'unassigned'
+          ? '未分配成员'
+          : member?.name || member?.role || id.slice(0, 8);
+      return {
+        id,
+        name,
+        model: member?.model,
+        steps: items.map(toPlanStep),
+      };
+    });
+  }, [todos, memberById]);
 
   const batches = useMemo(() => buildTodoBatches(todos, tick), [todos, tick]);
   const agentIds = useMemo(() => [...new Set(batches.map((batch) => batch.memberId || 'unassigned'))], [batches]);
 
   const agents = useMemo<LaneAgent[]>(() => agentIds.map((id) => {
     const member = id === 'unassigned' ? null : memberById.get(id);
+    const name = id === 'unassigned' ? '未分配成员' : (member?.name || member?.role || id.slice(0, 8));
     return {
       id,
-      name: id === 'unassigned' ? '未分配成员' : (member?.name || member?.role || id.slice(0, 8)),
+      name,
       model: member?.model,
+      avatar: member ? modelAvatar(member.model, name, undefined, 16) : undefined,
     };
   }), [agentIds, memberById]);
 
@@ -127,13 +153,39 @@ export function TaskProgress({ teamId }: { teamId: string }) {
               span={span}
               now={tick}
               title={`执行进度 · ${teamName || teamId.slice(0, 8)}`}
+              onAgentClick={(agent) => {
+                if (memberGroups.some((group) => group.id === agent.id)) {
+                  setActiveTab(agent.id);
+                }
+              }}
             />
           )}
-          <PlanCard
-            title={teamName || teamId.slice(0, 8)}
-            steps={planSteps}
-            emptyHint="成员调用 todo_write 后会显示在这里"
-          />
+          <Tabs
+            key={teamId}
+            className={batches.length > 0 ? 'mt-4 w-full flex-row' : 'w-full flex-row'}
+            orientation="vertical"
+            value={memberGroups.some((group) => group.id === activeTab) ? activeTab : memberGroups[0]?.id}
+            onValueChange={(value) => setActiveTab(value ?? undefined)}
+          >
+            <div className="border-s">
+              <TabsList variant="underline">
+                {memberGroups.map((group) => (
+                  <TabsTab key={group.id} value={group.id} title={group.name}>
+                    {modelAvatar(group.model, group.name, undefined, 16) ?? (
+                      <span className="flex h-4 w-4 items-center justify-center text-xs font-medium">
+                        {group.name.slice(0, 1)}
+                      </span>
+                    )}
+                  </TabsTab>
+                ))}
+              </TabsList>
+            </div>
+            {memberGroups.map((group) => (
+              <TabsPanel key={group.id} value={group.id} className="min-h-0 min-w-0">
+                <PlanCard className="max-h-[480px]" title={group.name} steps={group.steps} />
+              </TabsPanel>
+            ))}
+          </Tabs>
         </>
       )}
     </section>

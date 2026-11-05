@@ -167,6 +167,8 @@ root(run:team)                         ← 团队整体
 | `GET /api/messages?team=&correlation=&member=&status=` | `{items:[message]}` |
 | `POST /api/messages/{id}/ack` | `{state:"read"\|"acked"}` → `{message}` |
 
+`kind='steer'` 是面板「成员引导」用的队列消息：`payload={text, immediate?}`。它和其它消息一样先落信箱 `queued`，由 Host 插件的 steer 泵（`steerPollMs`）推进成员会话：每成员每轮一条，`immediate=true` 排到最前（只是优先投递，不打断当前回合），投递成功后 ack 成 `delivered`；面板用 `state:"acked"` 把消息从队列里撤掉。`ack` 的状态变化都会广播 `message.delivered`（`payload.status` 为实际状态）供面板刷新。
+
 `message` = `{id,teamId,from,to,kind,correlationId,payload,sentAt,deliveredAt,readAt,ackedAt,ttlSeconds,status}`
 `status`（派生）：`queued | delivered | read | acked | expired`
 

@@ -97,6 +97,7 @@ dsh plugin --profile web add dsh-team-control
 | `traceInputMax` | `1200` | 上报参数/结果预览的截断长度（字符） |
 | `agentAutoDispatch` | `true` | 调度器自动把 ready 任务派给 idle 成员 |
 | `agentDispatchMs` | `1500` | 调度器跳间隔 |
+| `steerPollMs` | `1200` | steer 队列投递泵间隔（面板排队消息 → 成员会话） |
 | `agentDispatchMax` | `16` | 每跳最多认领的任务数 |
 | `agentSettleMs` | `250` | 建任务后的「声明依赖」窗口（sidecar 侧是 200ms） |
 | `freshProvider` | `spawn` | `subagents.startActivation` 的 provider（`context: fresh`） |

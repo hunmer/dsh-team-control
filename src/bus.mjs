@@ -89,7 +89,9 @@ export class MessageBus {
     if (!r) throw ERR.notFound('message');
     const at = nowIso();
     const st = state === 'read' ? 'read' : (state === 'delivered' ? 'delivered' : 'acked');
+    let changed = false;
     if (RANK[st] > RANK[r.status] && r.status !== 'expired') {
+      changed = true;
       if (st === 'delivered') {
         // agent 团队成员由 Host 插件直接推进成员信箱：只记送达，不冒充已读/已确认
         this.get('UPDATE message SET status=?, delivered_at=COALESCE(delivered_at,?) WHERE id=?')
@@ -99,7 +101,10 @@ export class MessageBus {
           .run(st, at, st === 'acked' ? at : r.acked_at, id);
       }
     }
-    return rowToMessage(this.get('SELECT * FROM message WHERE id=?').get(id));
+    const next = rowToMessage(this.get('SELECT * FROM message WHERE id=?').get(id));
+    // 面板靠这条 SSE 刷新队列：投递成功、以及从队列撤掉（acked）都要推一帧
+    if (changed) { try { this.onDeliver(next); } catch { /* ignore */ } }
+    return next;
   }
 
   list(teamId, { correlation = null, member = null, status = null, limit = 200 } = {}) {
