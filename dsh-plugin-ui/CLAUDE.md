@@ -10,7 +10,7 @@
 
 - Client half 零外部 import，只允许 `require('react')`；必须走 `window.__ModuleLoader__.load({id:'dsh-team-control-ui', factory})`。
 - 注册必须对宿主能力做降级并用 `ctx.slots.inject` / `ctx.inject` 等待服务就绪（不能假设宿主一定有 better-sidebar / sidebarRight）；但左侧栏「编排」「看板」两个入口**必须始终注册**。
-- **不自动推面板**：团队创建、成员开跑只更新数据（`sessionTeamStore` / `pendingTeamId`），右侧栏编排页与输入框团队卡片都只在用户点击时打开。
+- **自动开面板只限一次**：团队创建时自动把右侧栏「编排」页推开一次（`AUTO_OPEN_KEY` 记在 sessionStorage，每会话一次，用户收起后不再打扰）；输入框团队卡片始终默认收起，点胶囊才展开。
 - 面板 URL 固定带 `?api=/dsh-team-api&embed=1`；改参数要同时改 `src/web-ui/src/lib/api.ts`。
 - 代理路径前缀 `/dsh-team-api` 与面板里的 `api` 参数是**一对**，改一个必须改另一个。
 - Host half 不缓存、不改写响应体；只补 `Authorization`（读 `home/token`）并转发。
