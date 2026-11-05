@@ -1,17 +1,74 @@
 /**
- * 任务详情侧滑面板：编辑标题/描述、执行方式、模型路由、关联团队、计划内容。
- * 拆分自 Tasks.tsx，行为不变。
+ * 任务详情侧滑面板：字段只读展示；仅在「待办」状态时可通过右上角编辑按钮打开编辑对话框。
+ * 拆分自 Tasks.tsx。
  */
-import { useEffect, useState } from 'react';
-import { Archive, ArchiveRestore, CircleStop, ExternalLink, Loader2, MessageSquare, Play, RotateCcw, Users, X } from 'lucide-react';
+import { Fragment, useState } from 'react';
+import { Archive, ArchiveRestore, CircleStop, ExternalLink, MessageSquare, Pencil, Play, RotateCcw, Users, X } from 'lucide-react';
 import { Markdown } from '@/components/markdown';
-import { Switch } from '@/components/ui/switch';
-import { Textarea } from '@/components/ui/textarea';
+import { ModelAvatar } from '@/components/ModelAvatar';
+import { Button } from '@/components/ui/button';
+import { Group, GroupSeparator } from '@/components/ui/group';
 import { Tooltip, TooltipPopup, TooltipTrigger } from '@/components/ui/tooltip';
-import { BOARD_STATUS_LABEL, boardApi, type BoardMode, type BoardTask } from '@/lib/board';
+import { brandOfModel } from '@/lib/model-brand';
+import { BOARD_STATUS_LABEL, boardApi, type BoardMode, type BoardRoute, type BoardTask } from '@/lib/board';
 import { StatusIcon } from '../board-status-icon';
-import { Field, ModePicker, RouteSelect } from './fields';
-import { STATUS_ICON, errText, fmtTime, openDshSession, openTeamPanel, routeFromKey, routeKey, taskKey, type ModelOption } from './shared';
+import { EditTaskDialog } from './dialogs';
+import { STATUS_ICON, errText, fmtTime, openDshSession, openTeamPanel, routeLabel, taskKey, type ModelOption } from './shared';
+
+/** 只读展示一条模型路由：有品牌图标时带图标，否则只显示文字。 */
+function RouteValue({ route }: { route?: BoardRoute | null }) {
+  if (!route?.model) return <p className="text-xs text-muted-foreground">跟随工作区默认</p>;
+  return (
+    <p className="flex items-center gap-2 text-xs text-muted-foreground">
+      <ModelAvatar model={route.model} provider={route.provider} size={14} />
+      <span className="truncate">{routeLabel(route)}</span>
+    </p>
+  );
+}
+
+/** 团队模型既可能是 BoardRoute，也可能是历史遗留字符串（`provider\0model` 或 `provider/model`）。 */
+function teamModelRoutes(task: BoardTask): BoardRoute[] {
+  return (task.teamModels ?? []).flatMap((entry) => {
+    if (typeof entry !== 'string') return entry.model ? [entry] : [];
+    if (!entry) return [];
+    const separator = entry.includes('\u0000') ? '\u0000' : entry.includes('/') ? '/' : '';
+    if (!separator) return [{ provider: null, model: entry, reasoningEffort: null }];
+    const index = entry.indexOf(separator);
+    return [{ provider: entry.slice(0, index) || null, model: entry.slice(index + 1), reasoningEffort: null }];
+  });
+}
+
+/** 团队模型头像列表：厂商图标 + 展示名（目录里没有时回退 provider/model）+ 已指定的思考强度。 */
+function TeamModelList({ task, models }: { task: BoardTask; models: ModelOption[] }) {
+  const routes = teamModelRoutes(task).filter((route) => route.model);
+  if (!routes.length) return <p className="text-xs text-muted-foreground">不限制</p>;
+  return (
+    <ul className="mt-1 flex flex-col gap-1.5">
+      {routes.map((route) => {
+        const option = models.find((m) => m.provider === (route.provider ?? '') && m.model === route.model);
+        const brand = brandOfModel(route.model, option?.name, route.provider);
+        const effort = option?.efforts?.find((e) => e.id === route.reasoningEffort);
+        return (
+          <li key={`${route.provider ?? ''}/${route.model}`} className="flex items-center gap-2 text-xs text-muted-foreground">
+            {brand ? (
+              <ModelAvatar model={route.model} name={option?.name} provider={route.provider} size={16} />
+            ) : (
+              <span className="grid size-4 shrink-0 place-items-center rounded-sm bg-muted text-[9px] font-semibold uppercase">
+                {(route.model || '?').slice(0, 2)}
+              </span>
+            )}
+            <span className="truncate">{option?.name || routeLabel(route)}</span>
+            {effort && (
+              <span className="shrink-0 rounded bg-muted px-1.5 text-[10px] leading-4">
+                {effort.name || effort.id}
+              </span>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
 
 export function TaskPanel({
   task,
@@ -24,7 +81,6 @@ export function TaskPanel({
   onRetry,
   onArchive,
   onRestore,
-  onToggleAuto,
   onSaved,
   onError,
   onOk,
@@ -45,42 +101,14 @@ export function TaskPanel({
   onError: (message: string) => void;
   onOk: (message: string) => void;
 }) {
-  const [title, setTitle] = useState(task.title);
-  const [description, setDescription] = useState(task.description || '');
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    setTitle(task.title);
-    setDescription(task.description || '');
-  }, [task.id]);
-
-  const save = async (patch: { title?: string; description?: string }) => {
-    setSaving(true);
-    try {
-      await boardApi.update(task.id, patch);
-      onSaved();
-    } catch (err) {
-      onError(errText(err));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const commitTitle = () => {
-    const value = title.trim();
-    if (!value || value === task.title) { setTitle(task.title); return; }
-    void save({ title: value }).then(() => onOk('标题已更新'));
-  };
-
-  const commitDescription = () => {
-    if (description === (task.description || '')) return;
-    void save({ description }).then(() => onOk('描述已更新'));
-  };
+  const [editing, setEditing] = useState(false);
 
   const startable = task.status === 'todo' || task.status === 'planned';
   const active = task.status === 'planning' || task.status === 'inprogress';
   const terminal = task.status === 'done' || task.status === 'failed';
   const isBusy = busy.startsWith(`${task.id}:`);
+  // 只有待办（且未封存）的任务可以编辑字段
+  const editable = task.status === 'todo' && !task.archivedAt;
 
   return (
     <>
@@ -88,26 +116,60 @@ export function TaskPanel({
       <aside className="ui-tb__panel" data-open="true" aria-label="任务详情">
         <div className="ui-tb__panel-head">
           <span className="ui-tb__key">{taskKey(task)}</span>
-          <button type="button" className="ui-tb__panel-close" onClick={onClose} aria-label="关闭">
-            <X size={15} />
-          </button>
+          <div className="flex items-center gap-1">
+            {task.archivedAt ? (
+              <Tooltip>
+                <TooltipTrigger
+                  type="button"
+                  className="ui-tb__panel-close"
+                  aria-label="恢复任务"
+                  disabled={isBusy}
+                  onClick={() => onRestore(task)}
+                >
+                  <ArchiveRestore size={13} />
+                </TooltipTrigger>
+                <TooltipPopup>恢复</TooltipPopup>
+              </Tooltip>
+            ) : terminal ? (
+              <Tooltip>
+                <TooltipTrigger
+                  type="button"
+                  className="ui-tb__panel-close"
+                  aria-label="封存任务"
+                  disabled={isBusy}
+                  onClick={() => onArchive(task)}
+                >
+                  <Archive size={13} />
+                </TooltipTrigger>
+                <TooltipPopup>封存</TooltipPopup>
+              </Tooltip>
+            ) : null}
+            <Tooltip>
+              <TooltipTrigger
+                type="button"
+                className="ui-tb__panel-close"
+                aria-label="编辑任务"
+                disabled={!editable}
+                onClick={() => setEditing(true)}
+              >
+                <Pencil size={13} />
+              </TooltipTrigger>
+              <TooltipPopup>{editable ? '编辑任务' : '仅待办状态的任务可以编辑'}</TooltipPopup>
+            </Tooltip>
+            <button type="button" className="ui-tb__panel-close" onClick={onClose} aria-label="关闭">
+              <X size={15} />
+            </button>
+          </div>
         </div>
 
-        <input
-          className="ui-tb__title-input"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          onBlur={commitTitle}
-          onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-        />
+        <h2 className="ui-tb__title">{task.title}</h2>
 
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <span className="ui-tb__state ui-tb__prop" data-status={task.status}>
             <StatusIcon kind={STATUS_ICON[task.status]} />
             {BOARD_STATUS_LABEL[task.status]}
           </span>
-          <span className="ui-tb__meta">更新 {fmtTime(task.updatedAt)}</span>
-          {saving && <Loader2 className="animate-spin text-muted-foreground" size={13} />}
+          <span className="text-[11px] text-muted-foreground">更新 {fmtTime(task.updatedAt)}</span>
         </div>
 
         {task.lastError && <p className="ui-tb__error">{task.lastError}</p>}
@@ -145,136 +207,105 @@ export function TaskPanel({
               <TooltipPopup>重试</TooltipPopup>
             </Tooltip>
           )}
-          {task.archivedAt ? (
-            <Tooltip>
-              <TooltipTrigger type="button" className="ui-tb__act" aria-label="恢复" disabled={isBusy} onClick={() => onRestore(task)}>
-                <ArchiveRestore size={12} />
-              </TooltipTrigger>
-              <TooltipPopup>恢复</TooltipPopup>
-            </Tooltip>
-          ) : terminal ? (
-            <Tooltip>
-              <TooltipTrigger type="button" className="ui-tb__act" aria-label="封存" disabled={isBusy} onClick={() => onArchive(task)}>
-                <Archive size={12} />
-              </TooltipTrigger>
-              <TooltipPopup>封存</TooltipPopup>
-            </Tooltip>
-          ) : null}
         </div>
 
         <div className="ui-tb__fields">
-          <div className="ui-tb__field-row">
-            <span className="ui-tb__label">执行方式</span>
-            <ModePicker
-              value={task.executionMode}
-              onChange={(mode) => {
-                void boardApi.update(task.id, { executionMode: mode })
-                  .then(() => { onSaved(); onOk('执行方式已更新'); })
-                  .catch((err) => onError(errText(err)));
-              }}
-            />
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <span className="ui-tb__label">执行方式</span>
+              <span className="text-xs text-muted-foreground">
+                {task.executionMode === 'new' ? '新会话' : '同一会话'}
+              </span>
+            </div>
+            <div>
+              <span className="ui-tb__label">自动入队</span>
+              <span className="text-xs text-muted-foreground">{task.auto ? '已开启' : '已关闭'}</span>
+            </div>
           </div>
 
-          <label className="ui-tb__check">
-            <Switch checked={task.auto} onCheckedChange={onToggleAuto} />
-            <span>自动入队（auto）</span>
-          </label>
+          <div>
+            <span className="ui-tb__label">规划模型</span>
+            <RouteValue route={task.planRoute} />
+          </div>
 
-          <Field label="规划模型">
-            <RouteSelect
-              value={routeKey(task.planRoute)}
-              options={models}
-              onChange={(key) => {
-                void boardApi.update(task.id, { planRoute: routeFromKey(key) })
-                  .then(() => { onSaved(); onOk('规划模型已更新'); })
-                  .catch((err) => onError(errText(err)));
-              }}
-            />
-          </Field>
-
-          <Field label="执行模型">
-            <RouteSelect
-              value={routeKey(task.leadRoute)}
-              options={models}
-              onChange={(key) => {
-                void boardApi.update(task.id, { leadRoute: routeFromKey(key) })
-                  .then(() => { onSaved(); onOk('执行模型已更新'); })
-                  .catch((err) => onError(errText(err)));
-              }}
-            />
-          </Field>
+          <div>
+            <span className="ui-tb__label">执行模型</span>
+            <RouteValue route={task.leadRoute} />
+          </div>
 
           <div>
             <span className="ui-tb__label">团队模型</span>
-            <p className="text-xs text-muted-foreground">
-              {task.teamModels?.length
-                ? task.teamModels.map((m) => (typeof m === 'string' ? m : `${m.provider ? `${m.provider}/` : ''}${m.model}`)).join('、')
-                : '不限制'}
-            </p>
+            <TeamModelList task={task} models={models} />
           </div>
 
           <div>
             <span className="ui-tb__label">关联团队</span>
-            {task.teams?.length ? (
-              <div className="ui-tb__teams">
-                {task.teams.map((teamId) => (
-                  <button
-                    key={teamId}
-                    type="button"
-                    className="ui-tb__team-link"
-                    title="打开该团队的编排界面"
-                    onClick={() => {
-                      const opened = openTeamPanel(teamId);
-                      if (!opened) {
-                        onError('打开编排失败，请检查浏览器是否拦截了弹窗');
-                        return;
-                      }
-                      onOk(opened === 'sidebar' ? '已在侧栏打开编排' : '已在新窗口打开编排');
-                    }}
-                  >
-                    <Users size={12} />
-                    <span>{teamId}</span>
-                    <span className="ui-tb__team-link-hint">打开编排</span>
-                    <ExternalLink size={11} />
-                  </button>
+            {task.teams?.length || task.leadSessionId ? (
+              <Group aria-label="关联团队与执行会话" orientation="vertical" className="mt-1.5 w-full">
+                {task.teams?.map((teamId, index) => (
+                  <Fragment key={teamId}>
+                    {index > 0 && <GroupSeparator orientation="horizontal" />}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="w-full justify-start"
+                      title={`打开团队 ${teamId} 的编排界面`}
+                      onClick={() => {
+                        const opened = openTeamPanel(teamId);
+                        if (!opened) {
+                          onError('打开编排失败，请检查浏览器是否拦截了弹窗');
+                          return;
+                        }
+                        onOk(opened === 'sidebar' ? '已在侧栏打开编排' : '已在新窗口打开编排');
+                      }}
+                    >
+                      <Users size={12} />
+                      <span className="min-w-0 flex-1 truncate text-left">{teamId}</span>
+                      <ExternalLink className="ml-auto shrink-0" size={11} />
+                    </Button>
+                  </Fragment>
                 ))}
-              </div>
+                {task.leadSessionId && (
+                  <>
+                    {task.teams?.length ? <GroupSeparator orientation="horizontal" /> : null}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="w-full justify-start"
+                      title="打开该任务的 Lead（执行）DSH 会话"
+                      onClick={() => {
+                        const opened = openDshSession(task.leadSessionId!, dshWebUrl);
+                        if (!opened) {
+                          onError('新窗口被浏览器拦截：请允许本站弹窗后重试');
+                          return;
+                        }
+                        onOk(opened === 'window' ? '已在新窗口打开 DSH 执行会话' : '已在 DSH 中打开执行会话');
+                      }}
+                    >
+                      <MessageSquare size={12} />
+                      <span className="min-w-0 flex-1 truncate text-left">在DSH查看执行会话</span>
+                      <ExternalLink className="ml-auto shrink-0" size={11} />
+                    </Button>
+                  </>
+                )}
+              </Group>
             ) : (
-              <p className="text-xs text-muted-foreground">
+              <p className="mt-1 text-xs text-muted-foreground">
                 尚未关联团队；执行阶段调用 team_create 后会自动绑定。
               </p>
             )}
-            {task.leadSessionId && (
-              <button
-                type="button"
-                className="ui-tb__team-link mt-2"
-                title="打开该任务的 Lead（执行）DSH 会话"
-                onClick={() => {
-                  const opened = openDshSession(task.leadSessionId!, dshWebUrl);
-                  if (!opened) {
-                    onError('新窗口被浏览器拦截：请允许本站弹窗后重试');
-                    return;
-                  }
-                  onOk(opened === 'window' ? '已在新窗口打开 DSH 执行会话' : '已在 DSH 中打开执行会话');
-                }}
-              >
-                <MessageSquare size={12} />
-                <span>执行会话</span>
-                <span className="ui-tb__team-link-hint">打开会话</span>
-                <ExternalLink size={11} />
-              </button>
-            )}
           </div>
 
-          <Field label="任务描述">
-            <Textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              onBlur={commitDescription}
-              className="ui-tb__field ui-tb__field--area ui-tb__field--desc"
-              rows={5}
-            />
-          </Field>
+          <div>
+            <span className="ui-tb__label">任务描述</span>
+            {task.description ? (
+              <p className="whitespace-pre-wrap text-xs leading-5">{task.description}</p>
+            ) : (
+              <p className="text-xs text-muted-foreground">没有描述</p>
+            )}
+          </div>
 
           {task.planSummary && (
             <div>
@@ -294,13 +325,6 @@ export function TaskPanel({
               </div>
             </>
           )}
-
-          <div className="ui-tb__meta space-y-1 pt-2">
-            <div>创建：{fmtTime(task.createdAt)}</div>
-            <div>完成：{fmtTime(task.doneAt)}</div>
-            <div>规划会话：{task.planningSessionId || '—'}</div>
-            <div>执行会话：{task.leadSessionId || '—'}</div>
-          </div>
         </div>
 
         <div className="ui-tb__panel-foot">
@@ -336,6 +360,13 @@ export function TaskPanel({
           </div>
         </div>
       </aside>
+      <EditTaskDialog
+        open={editing}
+        onOpenChange={setEditing}
+        task={task}
+        models={models}
+        onSaved={onSaved}
+      />
     </>
   );
 }

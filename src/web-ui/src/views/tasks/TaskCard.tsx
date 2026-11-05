@@ -3,13 +3,51 @@
  * 拆分自 Tasks.tsx，行为不变。
  */
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Avatar, AvatarFallback, AvatarGroup, AvatarGroupCount } from '@/components/ui/avatar';
 import { Switch } from '@/components/ui/switch';
 import { Tooltip, TooltipPopup, TooltipTrigger } from '@/components/ui/tooltip';
-import { ArchiveRestore, CircleAlert, CircleStop, ExternalLink, Play, RotateCcw, Users } from 'lucide-react';
-import { BOARD_STATUS_LABEL, type BoardMode, type BoardTask } from '@/lib/board';
+import { ModelAvatar } from '@/components/ModelAvatar';
+import { brandOfModel } from '@/lib/model-brand';
+import { ArchiveRestore, CircleAlert, CircleStop, ExternalLink, Play, RotateCcw } from 'lucide-react';
+import { BOARD_STATUS_LABEL, type BoardMode, type BoardRoute, type BoardTask } from '@/lib/board';
 import { cn } from '@/lib/utils';
 import { StatusIcon } from '../board-status-icon';
-import { STATUS_ICON, fmtTime, shortModel, taskKey } from './shared';
+import { STATUS_ICON, fmtTime, taskKey } from './shared';
+
+/** 卡片右上角最多并排显示的模型头像数，其余折叠为 +N */
+const MAX_MODEL_AVATARS = 3;
+
+/** teamModels 里可能是旧格式字符串（provider/model 或 provider\\u0000model），统一成路由对象 */
+function toRoute(entry: string | BoardRoute): BoardRoute | null {
+  if (typeof entry !== 'string') return entry?.model ? entry : null;
+  const raw = entry.trim();
+  if (!raw) return null;
+  if (raw.includes('\u0000')) {
+    const [provider, model] = raw.split('\u0000');
+    return model ? { provider: provider || null, model } : null;
+  }
+  const slash = raw.indexOf('/');
+  if (slash > 0) return { provider: raw.slice(0, slash), model: raw.slice(slash + 1) };
+  return { provider: null, model: raw };
+}
+
+/** 规划模型 + 执行模型 + 团队模型，按 provider/model 去重 */
+function taskModelRoutes(task: BoardTask): Array<{ key: string; role: string; route: BoardRoute }> {
+  const rows: Array<{ key: string; role: string; route: BoardRoute }> = [];
+  const seen = new Set<string>();
+  const push = (role: string, route: BoardRoute | null | undefined) => {
+    const value = route?.model ? toRoute(route) : null;
+    if (!value?.model) return;
+    const key = `${value.provider || ''}/${value.model}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    rows.push({ key, role, route: value });
+  };
+  push('规划模型', task.planRoute);
+  push('执行模型', task.leadRoute);
+  for (const entry of task.teamModels ?? []) push('团队模型', typeof entry === 'string' ? toRoute(entry) : entry);
+  return rows;
+}
 
 export function TaskCard({
   task,
@@ -41,6 +79,9 @@ export function TaskCard({
   const active = task.status === 'planning' || task.status === 'inprogress';
   const startable = task.status === 'todo' || task.status === 'planned';
   const isBusy = busy.startsWith(`${task.id}:`);
+  const modelRoutes = taskModelRoutes(task);
+  const shownRoutes = modelRoutes.slice(0, MAX_MODEL_AVATARS);
+  const hiddenRoutes = modelRoutes.length - shownRoutes.length;
 
   return (
     <article
@@ -59,17 +100,37 @@ export function TaskCard({
           <span className="ui-tb__key">{taskKey(task)}</span>
         </div>
         <div className="flex items-center gap-1.5">
-          <Switch
-            checked={task.auto}
-            onCheckedChange={() => onToggleAuto()}
-            onClick={(e) => e.stopPropagation()}
-            title={task.auto ? '关闭自动入队' : '开启自动入队'}
-            aria-label={task.auto ? '关闭自动入队' : '开启自动入队'}
-          />
-          {!!task.teams?.length && (
-            <span className="ui-tb__count-badge" title={`${task.teams.length} 个团队`}>
-              <Users size={11} /> {task.teams.length}
-            </span>
+          {task.status === 'todo' && (
+            <Switch
+              checked={task.auto}
+              onCheckedChange={() => onToggleAuto()}
+              onClick={(e) => e.stopPropagation()}
+              title={task.auto ? '关闭自动入队' : '开启自动入队'}
+              aria-label={task.auto ? '关闭自动入队' : '开启自动入队'}
+            />
+          )}
+          {modelRoutes.length > 0 && (
+            <AvatarGroup className="[--avatar-size:--spacing(5)]" aria-label="任务涉及的模型">
+              {shownRoutes.map((item) => (
+                <Tooltip key={item.key}>
+                  <TooltipTrigger
+                    render={<Avatar className="bg-muted ring-1 ring-background" />}
+                  >
+                    <AvatarFallback className="bg-muted">
+                      {brandOfModel(item.route.model, null, item.route.provider) ? (
+                        <ModelAvatar model={item.route.model} provider={item.route.provider} size={12} />
+                      ) : (
+                        <span className="text-[8px] font-medium uppercase text-muted-foreground">
+                          {item.route.model?.slice(0, 2)}
+                        </span>
+                      )}
+                    </AvatarFallback>
+                  </TooltipTrigger>
+                  <TooltipPopup>{item.role} · {item.route.model}</TooltipPopup>
+                </Tooltip>
+              ))}
+              {hiddenRoutes > 0 && <AvatarGroupCount>+{hiddenRoutes}</AvatarGroupCount>}
+            </AvatarGroup>
           )}
         </div>
       </div>
@@ -85,9 +146,6 @@ export function TaskCard({
         )}
 
         <div className="ui-tb__props">
-          <span className="ui-tb__prop" title="执行模型">
-            <span className="ui-tb__prop-text">{shortModel(task.leadRoute)}</span>
-          </span>
           {task.planSummary && <span className="ui-tb__prop ui-tb__prop--wide" title={task.planSummary}><span className="ui-tb__prop-text">{task.planSummary}</span></span>}
         </div>
 
