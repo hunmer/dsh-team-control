@@ -4,7 +4,7 @@ import path from 'node:path';
 import { q } from './db.mjs';
 import { ERR, nowIso, newId, json, parseJson } from './util.mjs';
 
-const TERMINAL = ['done', 'failed', 'skipped'];
+const TERMINAL = ['done', 'failed', 'skipped', 'aborted'];
 
 export function rowToTask(r) {
   if (!r) return null;
@@ -174,7 +174,7 @@ export class Scheduler {
       const src = this.get('SELECT status FROM task WHERE id=?').get(d.from);
       states.push({ dep: d, status: src?.status || 'pending', ok: this.depSatisfied(d, workspace) });
     }
-    if (task.status === 'done' || task.status === 'skipped') return { ready: false, blockers: [] };
+    if (task.status === 'done' || task.status === 'skipped' || task.status === 'aborted') return { ready: false, blockers: [] };
 
     // any_success / on_failure：只要有一条满足即可
     const trigger = states.filter((s) => s.dep.condition === 'any_success' || s.dep.condition === 'on_failure');
@@ -238,6 +238,7 @@ export class Scheduler {
       return;
     }
     const plan = parseJson(task.plan_json, []);
+    if (task.status === 'aborted') return; // 作废后迟到的完成回报不再改写终态
     this.get("UPDATE task SET status='done', finished_at=?, updated_at=? WHERE id=?").run(nowIso(), nowIso(), taskId);
     this.events.append({
       teamId, memberId, taskId,
@@ -261,6 +262,7 @@ export class Scheduler {
       });
       return;
     }
+    if (task.status === 'aborted') return; // 作废后迟到的失败回报不再触发 retry
     const retryable = args?.retryable !== false;
     const attempts = Number(task.attempts);
     const maxAttempts = Number(task.max_attempts) || 1;
@@ -297,7 +299,7 @@ export class Scheduler {
   }
 
   abortTeam(teamId, reason) {
-    for (const t of this.get("SELECT id FROM task WHERE team_id=? AND status NOT IN ('done','failed','skipped')").all(teamId)) {
+    for (const t of this.get("SELECT id FROM task WHERE team_id=? AND status NOT IN ('done','failed','skipped','aborted')").all(teamId)) {
       this.get("UPDATE task SET status='failed', finished_at=?, updated_at=? WHERE id=?").run(nowIso(), nowIso(), t.id);
       this.emitTaskState(teamId, t.id, 'failed', null);
     }

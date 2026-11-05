@@ -4,11 +4,11 @@
 
 - 编排内核仍在 sidecar 进程里（[`../src/`](../src/)），本插件只做**适配 + 生命周期**，不重写调度/事件流。
 - 零第三方依赖：只用 Node 内置模块；工具以普通 `ToolDefinition` 对象注册（JSON Schema 参数），不依赖 `defineTool`。
-- 13 个工具：`team_create` `team_spawn` `team_preset` `team_models` `team_status` `team_task` `team_send` `team_todo` `team_report_task` `team_dispatch` `team_approve` `team_control` `team_report`。
+- 14 个工具：`team_create` `team_spawn` `team_member` `team_preset` `team_models` `team_status` `team_task` `team_send` `team_todo` `team_report_task` `team_dispatch` `team_approve` `team_control` `team_report`。
 
 ## 调用顺序写在哪（别让模型自己摸）
 
-- 13 个工具里**只有 `team_create` 标了 `START HERE`**：它的 description 直接给出 5 步顺序、`permissionPreset` 的语义、
+- 14 个工具里**只有 `team_create` 标了 `START HERE`**：它的 description 直接给出 5 步顺序、`permissionPreset` 的语义、
   以及 `teamId` 取自 `result.team.id`；`team_spawn` 写明返回的 `member.id` 就是后面 `assignee` 要的值；
   `team_task` 写明简报必须自包含（成员看不到 Lead 的对话）。模型只看工具面就能按序走。
 - 完整配方（字段陷阱、拆任务与并发、症状→修法表）在 skill **`dsh-agent-team`**：[`../skills/dsh-agent-team/SKILL.md`](../skills/dsh-agent-team/SKILL.md)。
@@ -24,7 +24,7 @@
 4. 成员报 `blocked` 时任务退回 `blocked`（**不消耗重试**），阻塞原因进 `blockers` 与 `/api/blockers`。
 5. 成员的 session 工具调用由 `tools/execute` 上报为 span；sidecar 用 `member.agent_session_id` 把这些 span 挂到成员节点下。
 
-`team_control`：`interrupt` 先落库 `interrupted` 再把任务退回 `ready`，然后 `subagents.interrupt` 中止成员当前回合；`resume` 重新武装并按需再派发。
+`team_control`：`interrupt` 先落库 `interrupted` 并把在途任务转 `paused`（不计 attempts、不自动重派），然后 `subagents.interrupt` 中止成员当前回合；`resume` 重新武装；`assign` 把 `paused`/ready 任务交给 idle 成员；`abort` 把任务永久置为 `aborted` 终态（不重试）。
 
 ## 权限：Leader 按成员分配 DSH 权限预设
 
@@ -68,7 +68,7 @@ sidecar 只存映射、启用开关和备注，**不代理 LLM 请求、不保�
 dsh plugin --profile web add dsh-team-control
 ```
 
-装完重启 DSH，工具面出现 13 个 `team_*` 工具；`autoStart` 会自己拉起 sidecar。
+装完重启 DSH，工具面出现 14 个 `team_*` 工具；`autoStart` 会自己拉起 sidecar。
 本地开发也可以按绝对路径装：`plugin_manager(action: "install_bundle", target: "<repo>/dsh-plugin")`。
 卸载：`dsh plugin --profile web remove dsh-team-control`。
 

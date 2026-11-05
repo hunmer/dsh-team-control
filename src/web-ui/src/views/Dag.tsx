@@ -19,7 +19,8 @@ function mapStatus(node: DagNode): AgentStatus {
   const status = String(node.status || 'pending');
   if (status === 'running') return 'running';
   if (status === 'done' || status === 'succeeded') return 'done';
-  if (status === 'failed') return 'failed';
+  if (status === 'failed' || status === 'aborted') return 'failed';
+  if (status === 'paused') return 'waiting';
   // 依赖未就绪（node.blocked）只是「排队等上游」，不是需要人来处理；只有成员被策略/审批挡住才显示 Needs you。
   if (status === 'blocked') return 'waiting';
   return 'queued';

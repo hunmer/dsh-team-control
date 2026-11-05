@@ -1,13 +1,13 @@
 ---
 name: dsh-agent-team
-description: 用 dsh-team 插件编排「真 sub-agent 成员」团队的最小可用流程：team_create → team_spawn → team_task → 成员 team_report_task → team_status/team_report；含 13 个 team_* 工具的字段清单、按任务难度给成员分配 provider/model/思考强度、按成员分配 permissionPreset 沙箱预设与 agentPreset 组合预设（工具/skill/MCP）、成员审批转发给 Lead 后由 team_approve 决定，以及 Lead（主 agent）的边界：只协调、不写代码、不做二次验收、派发完就结束回话、收尾提一个精简 commit。Use when the user asks to create an agent team, orchestrate teammates, dispatch parallel work to sub-agents, or when a team_* call failed with an unexpected shape (unknown teamId, assignee by name, member never reports, approval timeout).
+description: 用 dsh-team 插件编排「真 sub-agent 成员」团队的最小可用流程：team_create → team_spawn → team_task → 成员 team_report_task → team_status/team_report；含 14 个 team_* 工具的字段清单、按任务难度给成员分配 provider/model/思考强度、按成员分配 permissionPreset 沙箱预设与 agentPreset 组合预设（工具/skill/MCP）、成员审批转发给 Lead 后由 team_approve 决定，以及 Lead（主 agent）的边界：只协调、不写代码、不做二次验收、派发完就结束回话、收尾提一个精简 commit。Use when the user asks to create an agent team, orchestrate teammates, dispatch parallel work to sub-agents, or when a team_* call failed with an unexpected shape (unknown teamId, assignee by name, member never reports, approval timeout).
 user-invocable: true
 version: "2.0.0"
 ---
 
 # dsh-team：把活派给真 sub-agent 成员的流程
 
-插件提供 13 个工具：`team_create` `team_spawn` `team_preset` `team_models` `team_task` `team_report_task`
+插件提供 14 个工具：`team_create` `team_spawn` `team_member` `team_preset` `team_models` `team_task` `team_report_task`
 `team_send` `team_todo` `team_status` `team_dispatch` `team_control` `team_approve` `team_report`。
 **别按名字猜顺序**，按下面 5 步走，一次就能通。所有成员都是真 DSH 子会话（agent 运行时），不存在 worker 进程。
 
@@ -41,6 +41,7 @@ Lead 主动出手只有三种情况：用户给了新指令（改派/加任务/�
 - 插件在子会话创建后调 `ctx.permissionPresets.set(session, preset)`，返回里看 `permissionPresetApplied`；
   `false` 时 `permissionPresetWarning` 会说明宿主没有这个预设（别慌，成员仍按宿主默认权限运行）。
 - 预设名必须是宿主 `permissionPresets.names` 里的项；传错会直接报错并列出可用预设。
+- **`ops_bash` 报工作区缺 `WRITE_OWNER` / ACL 无法启动**：这不是 `agentPreset` 的问题；`workspace-write` 在 Windows 上要求工作区目录由当前用户拥有且具备 `WRITE_OWNER`。`procm-mcp`、文件读写能正常工作，不代表 bash 沙箱能完成 provisioning。先看 `team_status` 的 `permissionPreset`；临时可先 `team_control interrupt` 再 `team_member({action:"update", permissionPreset:"danger-full-access"})`，根因用 DSH 的 `diagnose-windows-sandbox-acl` 技能修目录权限。
 
 ## 0.1 组合：给成员换一套工具/skill/MCP（agentPreset）
 
@@ -164,6 +165,11 @@ team_spawn({ teamId, name:"architect", prompt:"...", agentProvider:"deepseek", m
 `team_task({dispatch:false})` 只建不派；`deps:[{from: taskId}]` 声明上游；
 `team_send({teamId, to: "writer"|"*"|"lead", content})` 给成员递话；
 `team_approve({teamId, requestId, decision:"allow"|"deny", reason})` 决定成员审批。
+`team_control({action, memberId, taskId})`：`interrupt` 停成员并把在途任务转 `paused`（不计重试）；
+`resume` 解冻；`assign` 把任务交给 idle 成员；`abort` 永久作废任务（`aborted`，不重试）。
+`team_member({action:"update", memberId, model?, agentProvider?, contextMode?, reasoningEffort?, agentPreset?, permissionPreset?, role?})`：
+改模型/上下文会重建该成员的子会话（旧上下文丢失）；只改 role/permissionPreset 不重建。成员须先 idle 或 interrupted。
+`team_member({action:"retire"|"remove", memberId, confirm?})`：retire 保留历史，remove 物理删除且必须 `confirm:true`；两者都会释放子会话。
 
 ## 3. 拆任务与并发
 
@@ -184,7 +190,8 @@ team_spawn({ teamId, name:"architect", prompt:"...", agentProvider:"deepseek", m
 | 返回 `agentPresetWarning` 提到 fork | `contextMode:'fork'` 继承 Lead 组合 | 改用 `fresh`，或接受成员与 Lead 同组合 |
 | `team_preset` save 报「已由宿主定义」 | id 与内置预设撞名 | 换 id；内置预设只读 |
 | `permissionPresetApplied: false` | 宿主没启用 permission-presets 服务 | 看 `permissionPresetWarning`；成员会按宿主默认权限运行，换团队预设或让用户开插件 |
-| 成员一直 `running` 不 done | 简报没让它调 `team_report_task`，或卡在审批 | 先看 `team_status` 的 blockers 与 `/api/approvals`；审批用 `team_approve`，否则补 `prompt` 后 interrupt 重派 |
+| `ops_bash` 启动报工作区缺 `WRITE_OWNER` | 成员是 `workspace-write`，但 Windows 工作区目录 ACL 不满足 bash 沙箱 provisioning；与 `agentPreset` 是否 `standard` 无关 | 先 `team_control interrupt`，再 `team_member({action:"update", permissionPreset:"danger-full-access"})` 临时绕过；根因用 `diagnose-windows-sandbox-acl` 修 ACL |
+| 成员一直 `running` 不 done | 简报没让它调 `team_report_task`，或卡在审批 | 先看 `team_status` 的 blockers 与 `/api/approvals`；审批用 `team_approve`，否则补 `prompt` 后 `interrupt` → `resume` → `assign` 重派；确定不要了就 `abort` 作废 |
 | `team_task` 建完没人接 | 成员全 busy/queued，或 `assignee` 用了 name | 省略 `assignee` 让调度器挑，或 `team_status` 看谁 idle |
 | 任务 `done` 但产物不对 | 成员看不到 Lead 的对话 | 简报自包含：目标文件、验收标准、不要假设它读过本对话；产物好坏交给用户判定，Lead 不自己返工复核 |
 | Lead 又去读 diff / 复跑 lint、测试「确认没问题」 | 做了二次验收，把用户的活抢了，还白烧一轮上下文 | 停手：只向用户转告改了什么、产物在哪、怎么验 |

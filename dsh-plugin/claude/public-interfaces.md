@@ -1,11 +1,12 @@
 # 工具面与生命周期
 
-## 13 个 `team_*` 工具（`index.js` `buildTools`）
+## 14 个 `team_*` 工具（`index.js` `buildTools`）
 
 | 工具 | 关键参数 | 语义 |
 |---|---|---|
 | `team_create` | `name`、`workspace`、`permissionPreset`、`agentPreset`、`maxMembers`、`maxConcurrency`、`failurePolicy`、`maxAttempts` | 建团队 + 团队级默认预设 |
 | `team_spawn` | `teamId`、`name`、`prompt`、`role`、`permissionPreset`、`agentPreset`、`agentProvider`、`model`、`reasoningEffort`、`contextMode`、`description` | 拉起真 sub-agent 成员；按成员覆盖预设 |
+| `team_member` | `action:"update"\\|"retire"\\|"remove"`、`memberId`、`model`、`agentProvider`、`contextMode`、`reasoningEffort`、`agentPreset`、`permissionPreset`、`role`、`confirm` | 改配置（模型/上下文会重建子会话）/retire/remove 成员 |
 | `team_preset` | `action:"list"\|"save"\|"show"`、`id`、`name`、`plugins[]`、`order` | Leader 自建 agentPreset：写固定目录并即时注册 |
 | `team_models` | 无 | 列出宿主已启用的 provider/model 路由 |
 | `team_status` | `teamId`、`detail:"summary"\|"dag"` | 成员快照（含两个预设）或任务 DAG |
@@ -15,7 +16,7 @@
 | `team_report_task` | `teamId`、`taskId`、`status:"done"\|"failed"\|"blocked"`、`summary` | 成员交卷：推进 DAG、释放成员、套用失败策略 |
 | `team_dispatch` | `teamId` | 手动泵一次派发器 |
 | `team_approve` | `teamId`、`requestId`、`decision:"allow"\|"deny"`、`reason` | Lead 裁决成员审批；返回宿主 `allowed-once` / `rejected` |
-| `team_control` | `action:"interrupt"\|"resume"\|"assign"`、`memberId`、`taskId`、`teamId` | 中断/恢复/指派 |
+| `team_control` | `action:"interrupt"\|"resume"\|"assign"\|"abort"`、`memberId`、`taskId`、`teamId` | 中断（任务转 paused）/恢复/指派/作废任务（aborted，不重试） |
 | `team_report` | `teamId` | 导出 Markdown 运行报告（成员/任务/DAG/审批/audit） |
 
 权限与审批不在工具里判定：`permissionPreset` 由插件 `ctx.permissionPresets.set(session, name)` 落到子会话，

@@ -76,6 +76,13 @@ try {
   const m2 = (await hit('POST member2', 'POST', `/api/teams/${team.id}/members`, { name: 'r2' })).json;
   await hit('GET members', 'GET', `/api/teams/${team.id}/members`);
   await hit('GET member', 'GET', `/api/members/${m1.id}`);
+  const patchedMember = (await hit('PATCH member', 'PATCH', `/api/members/${m1.id}`, {
+    role: 'reviewer', model: 'smoke-model', agentProvider: 'smoke-provider',
+    contextMode: 'fresh', reasoningEffort: 'low', permissionPreset: 'read-only',
+  })).json;
+  assert(patchedMember.model === 'smoke-model' && patchedMember.agentProvider === 'smoke-provider', 'PATCH member 更新模型/provider');
+  assert(patchedMember.permissionPreset === 'read-only', 'PATCH member 更新权限预设');
+  await hit('PATCH member contextMode(400)', 'PATCH', `/api/members/${m1.id}`, { contextMode: 'bogus' }, 400);
 
   // 依赖 + 任务（内联 deps）
   const a = (await hit('POST task A', 'POST', '/api/tasks', {
@@ -89,7 +96,7 @@ try {
   const dep = (await hit('POST /api/deps (cycle 应 400)', 'POST', '/api/deps', { from: b.id, to: a.id }, 400));
   assert(dep.json.error.code === 'E_CYCLE', '反向依赖必须报 E_CYCLE');
   await hit('GET /api/status', 'GET', `/api/status?team=${team.id}`);
-  // 停止团队：把 running/provisioning/blocked 成员中断，并把 running 任务退回 ready
+  // 停止团队：把 running/provisioning/blocked 成员中断，并把 running 任务转 paused
   const stopped = (await hit('POST /api/teams/{id}/stop', 'POST', `/api/teams/${team.id}/stop`, { reason: 'smoke' })).json;
   assert(Array.isArray(stopped.stopped), 'stop 返回被中断的成员列表');
   assert(stopped.id === team.id, 'stop 返回团队视图');

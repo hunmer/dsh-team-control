@@ -72,15 +72,21 @@ try {
   log('A 完成，B1/B2 同时 ready（join 语义）');
 
   // ---- 阶段 2：interrupt + resume ----
-  const b1Claim = await claim('lab-beta');
+  let b1Claim = await claim('lab-beta');
   await s.api.post(`/api/members/${b1Claim.member.id}/interrupt`, { reason: 'demo interrupt' });
   const st1 = (await s.api.get(`/api/status?member=${b1Claim.member.id}`)).members[0];
   assert(st1.status === 'interrupted', 'interrupt 后必须立即 interrupted');
   const back = await s.api.get(`/api/tasks/${b1Claim.task.id}`);
-  assert(back.status === 'ready', 'interrupt 后任务应退回 ready');
-  log('interrupt 同步落库，任务退回 ready');
+  assert(back.status === 'paused', 'interrupt 后任务应转 paused 等 Lead 处置');
+  assert(back.attempts === 1, 'interrupt 不计 attempts');
+  log('interrupt 同步落库，任务转 paused（不重试）');
   const rs = await s.api.post(`/api/members/${b1Claim.member.id}/resume`, {});
   log(`resume：member=${rs.member.status}`);
+  // paused 任务需显式 assign 后才会重新进入派发池
+  await s.api.post(`/api/members/${b1Claim.member.id}/assign`, { taskId: b1Claim.task.id });
+  b1Claim = await claim('lab-beta');
+  assert(b1Claim.task.id === B1.id, 'resume/assign 后应重新认领 B1');
+  log(`resume/assign 后重新认领 ${b1Claim.task.subject}（attempts=${b1Claim.task.attempts}）`);
   await sleep(300);
 
   // ---- 阶段 3：成员触发审批 → Lead 决定 ----

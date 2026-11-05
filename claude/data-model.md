@@ -10,7 +10,7 @@
 | `preset` | agentPreset 目录镜像（Host 插件同步：id/name/description/ord/source/file/broken/`doc_json`） |
 | `preset_delete` | 面板删除队列（插件 5s 轮询执行后 ack；`attempts`/`last_error` 记录失败，>=5 次停止重试） |
 | `team` | 团队：`workspace`、`max_members`/`max_concurrency`、失败策略、`permission_preset`、`agent_preset`、`lead_session_id`、归档时间 |
-| `member` | 成员定义：`role`、`model`、`context_mode`、`agent_session_id`、`reasoning_effort`、`permission_preset`、`agent_preset` |
+| `member` | 成员定义：`role`、`model`、`context_mode`、`agent_provider`、`agent_session_id`、`reasoning_effort`、`permission_preset`、`agent_preset` |
 | `member_state` | **状态真相源**（物化视图）：`status`、`seq`、`step`、`stale` |
 | `task` | 任务/DAG 节点：`status`、`priority`、`acceptance`、`plan`、`attempts` |
 | `dep` | 依赖边：`from`/`to`/`condition` |
@@ -46,7 +46,7 @@ rebuild()  ── 只读 event 重投影出 member_state
 ## 枚举
 
 - `member.status`：`queued | provisioning | idle | running | blocked | done | failed | interrupted | retired`
-- `task.status`：`pending | ready | running | done | failed | skipped | blocked`
+- `task.status`：`pending | ready | running | paused | done | failed | skipped | blocked | aborted`
 - `dep.condition`：`all_success | any_success | on_failure | artifact_exists`
 - `phase`：`init | read | write | exec | net | env | msg | wait | verify | interrupt | resume | done | fail | decision | recover`
 - `domain`：`fs | exec | net | env`
@@ -61,11 +61,13 @@ member: queued → provisioning → idle → running → (idle | done | failed |
         blocked --grant--> running      interrupted --resume--> idle
         * --retire--> retired
 task:   pending → ready → running → (done | failed | skipped | blocked)
+        running --lead interrupt--> paused --assign--> ready
+        paused --lead abort--> aborted        running --lead abort--> aborted
         failed --on_failure dep--> 下游 ready
 ```
 
 - 派发前必须**重求值** readiness（ADR-005；`settleMs = 200ms` 窗口允许先建任务后连边）。
-- `interrupt()` 在**同一事务**内置 `interrupted` + `event(phase=interrupt)` + `lease_until = NULL`，**提交后**才发信号/杀进程（C5）。
+- `interrupt()` 在**同一事务**内置 `interrupted` + `event(agent.interrupt)` + 在途任务 `paused`，**提交后**才调 `subagents.interrupt`（C5）；`paused` 不计 attempts、不触发重试。
 - `recoverAll()`：租约过期的 `running|provisioning` → `interrupted`，任务退回 `ready`，发送 `phase = recover` 事件。
 
 ## 权限求值（C3，`src/policy.mjs` 纯函数）

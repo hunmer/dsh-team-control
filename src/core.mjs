@@ -150,7 +150,7 @@ export class DshTeam {
     return this.teamView(this.getTeam(id));
   }
 
-  /** 停止团队：中断所有活跃成员、在途任务回 ready（保留团队与成员，可再次派发）。 */
+  /** 停止团队：中断所有活跃成员、在途任务转 paused（保留任务与成员，Lead 可再派发）。 */
   stopTeam(teamId, reason = 'panel stop') {
     this.getTeam(teamId);
     const ids = this.get(
@@ -162,7 +162,7 @@ export class DshTeam {
       // 竞态下成员可能已自行结束：interrupt 抛 invalidState 时跳过
       try { this.interruptMember(id, reason); stopped.push(id); } catch { /* ignore */ }
     }
-    this.get("UPDATE task SET status='ready', updated_at=? WHERE team_id=? AND status='running'").run(nowIso(), teamId);
+    this.get("UPDATE task SET status='paused', updated_at=? WHERE team_id=? AND status='running'").run(nowIso(), teamId);
     return { ...this.teamView(this.getTeam(teamId)), stopped };
   }
 
@@ -267,7 +267,7 @@ export class DshTeam {
     ).get(teamId).c);
   }
 
-  addMember(teamId, { name, role = 'teammate', model = null, contextMode = 'isolated', defaultPlan = null, agentSessionId = null, reasoningEffort = null, permissionPreset = null, agentPreset = null }) {
+  addMember(teamId, { name, role = 'teammate', model = null, contextMode = 'isolated', defaultPlan = null, agentSessionId = null, reasoningEffort = null, permissionPreset = null, agentPreset = null, agentProvider = null }) {
     const team = this.getTeam(teamId);
     if (!name) throw ERR.bad('name required');
     const dup = this.get('SELECT id FROM member WHERE team_id=? AND name=?').get(teamId, name);
@@ -278,9 +278,9 @@ export class DshTeam {
     const id = newId('m');
     const t = nowIso();
     this.get(
-      `INSERT INTO member (id, team_id, name, role, model, context_mode, default_plan_json, quota_json, agent_session_id, reasoning_effort, permission_preset, agent_preset, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,NULL,?,?,?,?,?,?)`
-    ).run(id, teamId, name, role, model, contextMode, defaultPlan ? json(defaultPlan) : null, agentSessionId ? String(agentSessionId) : null, reasoningEffort ? String(reasoningEffort) : null, permissionPreset ? normalizePreset(permissionPreset) : null, normalizeAgentPreset(agentPreset), t, t);
+      `INSERT INTO member (id, team_id, name, role, model, context_mode, default_plan_json, quota_json, agent_session_id, reasoning_effort, permission_preset, agent_preset, agent_provider, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,NULL,?,?,?,?,?,?,?)`
+    ).run(id, teamId, name, role, model, contextMode, defaultPlan ? json(defaultPlan) : null, agentSessionId ? String(agentSessionId) : null, reasoningEffort ? String(reasoningEffort) : null, permissionPreset ? normalizePreset(permissionPreset) : null, normalizeAgentPreset(agentPreset), agentProvider ? String(agentProvider) : null, t, t);
     this.events.append({
       teamId, memberId: id, taskId: null, phase: 'init', action: 'member.create',
       target: name, result: 'OK', next: status === 'queued' ? 'wait for capacity' : 'wait for task',
@@ -313,6 +313,7 @@ export class DshTeam {
       id: m.id, teamId: m.team_id, name: m.name, role: m.role, model: m.model, contextMode: m.context_mode,
       // 派发时确定、之后不可变的思考强度
       reasoningEffort: m.reasoning_effort ?? null,
+      agentProvider: m.agent_provider ?? null,
       createdAt: m.created_at,
       agentSessionId: m.agent_session_id ?? null,
       permissionPreset: m.permission_preset || team?.permission_preset || DEFAULT_PERMISSION_PRESET,
@@ -327,6 +328,56 @@ export class DshTeam {
 
   listMembers(teamId) {
     return this.get('SELECT id FROM member WHERE team_id=? ORDER BY created_at ASC').all(teamId).map((r) => this.memberView(r.id));
+  }
+
+  /**
+   * 更新成员配置（不重建会话；需要换模型/上下文的调用方随后用新 session 调 registerAgent）。
+   * 只改元数据，任务与事件状态保持原样。
+   */
+  updateMember(id, patch = {}) {
+    const m = this.memberRow(id);
+    const st = this.events.state(id);
+    if (st && st.status === 'retired') throw ERR.invalidState('member is retired');
+    if (st && ['running', 'provisioning', 'blocked'].includes(st.status)) {
+      throw ERR.invalidState(`member is ${st.status}; interrupt first`);
+    }
+    const sets = [];
+    const vals = [];
+    const changed = [];
+    const next = (key, column, value) => {
+      if (!Object.prototype.hasOwnProperty.call(patch, key)) return;
+      sets.push(`${column}=?`);
+      vals.push(value);
+      changed.push(key);
+    };
+    next('role', 'role', patch.role == null ? null : String(patch.role));
+    next('model', 'model', patch.model ? String(patch.model) : null);
+    if (Object.prototype.hasOwnProperty.call(patch, 'contextMode')) {
+      const cm = patch.contextMode === 'fork' ? 'fork' : 'fresh';
+      if (patch.contextMode != null && !['isolated', 'fresh', 'fork'].includes(patch.contextMode)) {
+        throw ERR.bad(`invalid contextMode: ${patch.contextMode}`);
+      }
+      sets.push('context_mode=?');
+      vals.push(cm);
+      changed.push('contextMode');
+    }
+    next('reasoningEffort', 'reasoning_effort', patch.reasoningEffort ? String(patch.reasoningEffort) : null);
+    next('permissionPreset', 'permission_preset', patch.permissionPreset ? normalizePreset(patch.permissionPreset) : null);
+    next('agentProvider', 'agent_provider', patch.agentProvider ? String(patch.agentProvider) : null);
+    if (Object.prototype.hasOwnProperty.call(patch, 'agentPreset')) {
+      sets.push('agent_preset=?');
+      vals.push(normalizeAgentPreset(patch.agentPreset));
+      changed.push('agentPreset');
+    }
+    if (!sets.length) throw ERR.bad('no updatable fields');
+    this.get(`UPDATE member SET ${sets.join(', ')}, updated_at=? WHERE id=?`).run(...vals, nowIso(), id);
+    this.events.append({
+      teamId: m.team_id, memberId: id, taskId: null, phase: 'init', action: 'member.update',
+      target: m.name, result: 'OK', next: 'config updated', blockers: [],
+      // 不带 status：保留成员当前投影状态（idle/interrupted/...）
+      meta: { stepIndex: -1, changed, sessionId: m.agent_session_id ?? null },
+    });
+    return this.memberView(id);
   }
 
   removeMember(id, { mode = 'retire', confirm = false } = {}) {
@@ -373,16 +424,17 @@ export class DshTeam {
     const m = this.memberRow(id);
     const task = this.get("SELECT * FROM task WHERE assignee=? AND status='running' ORDER BY updated_at DESC LIMIT 1").get(id);
     if (task) {
-      this.get("UPDATE task SET status='ready', updated_at=? WHERE id=?").run(nowIso(), task.id);
-      this.scheduler.emitTaskState(m.team_id, task.id, 'ready', id);
+      // 中断是 Lead 的管理动作，不是一次失败尝试：任务转 paused，不计 attempts、
+      // 不触发 failurePolicy 重试，也不会被 Host 的派发泵再次认领。
+      this.get("UPDATE task SET status='paused', updated_at=? WHERE id=?").run(nowIso(), task.id);
+      this.scheduler.emitTaskState(m.team_id, task.id, 'paused', id);
     }
     const ev = this.events.append({
       teamId: m.team_id, memberId: id, taskId: task?.id ?? null, phase: 'wait', action: 'agent.interrupt',
       target: m.name, result: 'OK', next: reason, status: 'interrupted',
       blockers: [{ kind: 'interrupt', detail: reason }], meta: { stepIndex: -1 },
     });
-    this.scheduler.evaluate(m.team_id);
-    return { member: this.memberView(id), event: ev };
+    return { member: this.memberView(id), event: ev, task: task ? rowToTask(this.get('SELECT * FROM task WHERE id=?').get(task.id)) : null };
   }
 
   resumeMember(id) {
@@ -403,10 +455,36 @@ export class DshTeam {
     const task = this.get('SELECT * FROM task WHERE id=?').get(taskId);
     if (!task) throw ERR.notFound('task');
     if (task.team_id !== m.team_id) throw ERR.bad('cross-team assign');
-    if (['done', 'failed', 'skipped'].includes(task.status)) throw ERR.invalidState(`task is ${task.status}`);
+    if (['done', 'failed', 'skipped', 'aborted'].includes(task.status)) throw ERR.invalidState(`task is ${task.status}`);
     this.get("UPDATE task SET assignee=?, status='ready', updated_at=? WHERE id=?").run(memberId, nowIso(), taskId);
     this.scheduler.evaluate(m.team_id);
     return { member: this.memberView(memberId), task: rowToTask(this.get('SELECT * FROM task WHERE id=?').get(taskId)) };
+  }
+
+  /** Lead 作废任务：终态 aborted，不计 attempts、不进入 failurePolicy。running 任务会顺带中断成员。 */
+  abortTask(taskId, reason = 'lead abort') {
+    const task = this.get('SELECT * FROM task WHERE id=?').get(taskId);
+    if (!task) throw ERR.notFound('task');
+    if (['done', 'failed', 'skipped', 'aborted'].includes(task.status)) throw ERR.invalidState(`task is ${task.status}`);
+    const m = task.assignee ? this.get('SELECT * FROM member WHERE id=?').get(task.assignee) : null;
+    const wasRunning = task.status === 'running';
+    const why = String(reason).slice(0, 2000);
+    const now = nowIso();
+    this.get("UPDATE task SET status='aborted', finished_at=?, updated_at=? WHERE id=?").run(now, now, taskId);
+    if (m) {
+      this.events.append({
+        teamId: m.team_id, memberId: m.id, taskId, phase: 'fail', action: 'task.abort', target: task.subject,
+        result: 'ABORTED', next: why, ...(wasRunning ? { status: 'interrupted' } : {}),
+        blockers: [{ kind: 'abort', detail: why }], meta: { stepIndex: -1, reason: why },
+      });
+    }
+    this.scheduler.emitTaskState(task.team_id, taskId, 'aborted', task.assignee);
+    this.scheduler.evaluate(task.team_id);
+    return {
+      wasRunning,
+      task: rowToTask(this.get('SELECT * FROM task WHERE id=?').get(taskId)),
+      member: m ? this.memberView(m.id) : null,
+    };
   }
 
   /** 成员被消息唤醒：agent 成员由 Host 插件通过 subagents.sendMessage 唤醒，sidecar 只推进 DAG。 */
@@ -431,7 +509,7 @@ export class DshTeam {
    * 幂等 upsert——同名成员已存在时只更新 session，不重复建行。
    */
   registerAgent(input = {}) {
-    const { teamId, name, sessionId = null, role = 'teammate', model = null, contextMode = 'fresh', reasoningEffort = null, permissionPreset = null, agentPreset = null } = input;
+    const { teamId, name, sessionId = null, role, model, contextMode, reasoningEffort, permissionPreset, agentPreset, agentProvider } = input;
     if (!teamId) throw ERR.bad('teamId required');
     if (!name) throw ERR.bad('name required');
     const team = this.getTeam(teamId);
@@ -439,10 +517,23 @@ export class DshTeam {
     let id;
     if (existing) {
       id = existing.id;
-      this.get('UPDATE member SET agent_session_id=?, role=COALESCE(?, role), model=COALESCE(?, model), reasoning_effort=COALESCE(?, reasoning_effort), permission_preset=?, agent_preset=?, updated_at=? WHERE id=?')
-        .run(sessionId != null ? String(sessionId) : existing.agent_session_id, role || null, model || null, reasoningEffort ? String(reasoningEffort) : null, permissionPreset ? normalizePreset(permissionPreset) : existing.permission_preset, normalizeAgentPreset(agentPreset) ?? existing.agent_preset, nowIso(), id);
+      // 用「字段是否提供」区分「保持原值」与「显式清空」：重启会话时 null 表示继承 Lead/团队。
+      const pick = (v, fallback) => (v !== undefined ? v : fallback);
+      this.get(`UPDATE member SET agent_session_id=?, role=?, model=?, context_mode=?, reasoning_effort=?,
+        permission_preset=?, agent_preset=?, agent_provider=?, updated_at=? WHERE id=?`)
+        .run(
+          sessionId != null ? String(sessionId) : existing.agent_session_id,
+          pick(role, existing.role),
+          pick(model, existing.model),
+          pick(contextMode === 'isolated' ? 'fresh' : contextMode, existing.context_mode),
+          pick(reasoningEffort, existing.reasoning_effort),
+          pick(permissionPreset ? normalizePreset(permissionPreset) : permissionPreset, existing.permission_preset),
+          pick(agentPreset === undefined ? undefined : normalizeAgentPreset(agentPreset), existing.agent_preset),
+          pick(agentProvider, existing.agent_provider),
+          nowIso(), id,
+        );
     } else {
-      id = this.addMember(teamId, { name, role, model, contextMode, agentSessionId: sessionId, reasoningEffort, permissionPreset, agentPreset }).id;
+      id = this.addMember(teamId, { name, role: role || 'teammate', model, contextMode: contextMode || 'fresh', agentSessionId: sessionId, reasoningEffort, permissionPreset, agentPreset, agentProvider }).id;
     }
     const st = this.events.state(id);
     // 重新报到（Host/DSH 重启后 sub-agent session 仍活着）：只要没有在途任务就回到 idle
@@ -563,8 +654,9 @@ export class DshTeam {
     }
     if (want === 'interrupted') {
       if (task) {
-        this.get("UPDATE task SET status='ready', updated_at=? WHERE id=?").run(nowIso(), task.id);
-        this.scheduler.emitTaskState(m.team_id, task.id, 'ready', memberId);
+        // Host 在 interrupt 后仍可能上报一次 interrupted/running；保持 paused，避免把任务退回调度池。
+        this.get("UPDATE task SET status='paused', updated_at=? WHERE id=?").run(nowIso(), task.id);
+        this.scheduler.emitTaskState(m.team_id, task.id, 'paused', memberId);
       }
       this.events.append({
         teamId: m.team_id, memberId, taskId: task?.id ?? null, phase: 'wait', action: 'agent.interrupt', target: m.name,
@@ -572,7 +664,6 @@ export class DshTeam {
         blockers: [{ kind: 'interrupt', detail: detail || 'interrupted by lead' }],
         meta: { stepIndex: -1, detail },
       });
-      this.scheduler.evaluate(m.team_id);
       return { member: this.memberView(memberId), task: task ? rowToTask(this.get('SELECT * FROM task WHERE id=?').get(task.id)) : null, completed: false };
     }
     this.events.append({

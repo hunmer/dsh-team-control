@@ -116,7 +116,7 @@ DSH agent × N ◀──subagents.startActivation / sendMessage── dsh-plugin
 | `src/server.mjs` | REST + SSE + 静态面板（仅回环监听） |
 | `src/web/` | 面板构建产物（`panel.html` + `assets/`） |
 | `src/web-ui/` | 面板源码（React + coss ui，含 Trace 瀑布） |
-| `dsh-plugin/` | DSH Host bundle：13 个 `team_*` + 2 个 `board_*` 工具 + sidecar 生命周期 + 子会话成员调度 + 审批转发 |
+| `dsh-plugin/` | DSH Host bundle：14 个 `team_*` + 2 个 `board_*` 工具 + sidecar 生命周期 + 子会话成员调度 + 审批转发 |
 | `dsh-plugin-ui/` | GUI 看板 bundle：better-sidebar 页签 / 侧栏入口 |
 | `skills/dsh-agent-team/` | 给模型看的调用配方 skill |
 | `tests/` | `ac-*.mjs` 验收脚本 + harness + `run-all.mjs` |

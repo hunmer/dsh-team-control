@@ -5,40 +5,26 @@
  *   root(团队) → member(子 Agent) → step(Worker 计划步骤) / span(Host 工具调用)
  * SSE 的 span.append 帧会触发去抖刷新，因此工具调用一进一出都会实时出现在时间轴上。
  */
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { usePanel } from '@/store';
-import type { Member } from '@/types';
 import { TraceWaterfall, type TraceSpan } from '@/components/trace-waterfall/trace-waterfall';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { EmptyState, MetaLine, SectionHead, StatusPill } from '@/components/Bits';
-import { MemberAvatarButton } from '@/components/member-info';
+import { EmptyState, MetaLine, SectionHead } from '@/components/Bits';
+import MemberGroupFilter from '@/components/member-filter';
 
-function MemberPill({ member }: { member: Member }) {
-  return (
-    <span className="flex items-center gap-1.5 rounded-full border bg-card py-0.5 pr-2 pl-2 text-xs">
-      <StatusPill status={member.status} />
-      <MemberAvatarButton member={member} size={13} />
-      <span className="font-medium">{member.name || member.id}</span>
-      {member.model ? <span className="text-muted-foreground">{member.model}</span> : null}
-      {member.reasoningEffort ? (
-        <span className="rounded-full border px-1 text-[10px] text-muted-foreground" title="该成员被派发时锁定的思考强度">
-          {member.reasoningEffort}
-        </span>
-      ) : null}
-      {member.permissionPreset ? (
-        <span className="rounded-full border px-1 text-[10px] text-muted-foreground" title="DSH 权限预设：决定沙箱与审批策略">
-          {member.permissionPreset}
-        </span>
-      ) : null}
-      {member.agentPreset ? (
-        <span className="rounded-full bg-muted px-1 text-[10px] text-muted-foreground" title="DSH 组合预设：决定工具 / skill / MCP">
-          {member.agentPreset}
-        </span>
-      ) : null}
-      {member.step ? <span className="text-muted-foreground">{member.step}</span> : null}
-    </span>
-  );
+/** trace 树里成员节点的 id 前缀（见 core.mjs：`member:${member.id}`）。 */
+const MEMBER_PREFIX = 'member:';
+
+/** 只保留选中成员的子树：未选中的成员节点整体剔除，非成员节点原样保留。 */
+function filterMemberSpans<T extends { id: string; children?: T[] }>(root: T, memberIds: Set<string>): T {
+  if (!memberIds.size) return root;
+  return {
+    ...root,
+    children: (root.children ?? []).filter(
+      (child) => !child.id.startsWith(MEMBER_PREFIX) || memberIds.has(child.id.slice(MEMBER_PREFIX.length)),
+    ),
+  };
 }
 
 const WINDOWS: Array<[number, string]> = [
@@ -57,6 +43,19 @@ export function BoardView() {
   const { state, refreshTrace, setTraceWindow, loadOlderTrace } = usePanel();
   const { teamId, members, trace, errors, traceWindow, traceHasOlder, traceLoadingOlder } = state;
   const [busy, setBusy] = useState(false);
+  /** null = 用户还没动过筛选器：默认勾选全部成员，并跟随成员列表（新成员自动勾上） */
+  const [selectedMemberIds, setSelectedMemberIds] = useState<string[] | null>(null);
+
+  const memberOptions = useMemo(
+    () => members.map((m) => ({ id: m.id, label: m.name || m.id })),
+    [members],
+  );
+  /** 生效的选中集：未手动改动时即全部成员；只保留仍存在的成员，避免移除成员后选中态悬空 */
+  const selectedOptions = useMemo(() => {
+    const ids = selectedMemberIds ?? memberOptions.map((o) => o.id);
+    return memberOptions.filter((o) => ids.includes(o.id));
+  }, [memberOptions, selectedMemberIds]);
+  const selectedIdSet = useMemo(() => new Set(selectedOptions.map((o) => o.id)), [selectedOptions]);
 
   const refresh = () => {
     if (!teamId || busy) return;
@@ -83,9 +82,10 @@ export function BoardView() {
       />
     );
   } else {
-    body = (
+    const root = filterMemberSpans(trace.root as TraceSpan, selectedIdSet);
+    body = root.children?.length ? (
       <TraceWaterfall
-        root={trace.root as TraceSpan}
+        root={root}
         startedAt={trace.originMs}
         title="Trace 瀑布"
         markSlowest
@@ -93,6 +93,8 @@ export function BoardView() {
         loadingOlder={traceLoadingOlder}
         onLoadOlder={loadOlderTrace}
       />
+    ) : (
+      <EmptyState title="选中成员暂无运行数据" detail="在上方筛选器换一个成员，或点 × 清除筛选查看全部" />
     );
   }
 
@@ -128,9 +130,11 @@ export function BoardView() {
         }
       />
       {members.length ? (
-        <div className="flex flex-wrap items-center gap-1.5">
-          {members.map((member) => <MemberPill key={member.id} member={member} />)}
-        </div>
+        <MemberGroupFilter
+          options={memberOptions}
+          value={selectedOptions}
+          onValueChange={(next) => setSelectedMemberIds(next.map((o) => o.id))}
+        />
       ) : null}
       {body}
       {trace && errors.trace ? (

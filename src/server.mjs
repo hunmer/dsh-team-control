@@ -78,6 +78,7 @@ export function createRoutes(core) {
     ['POST', /^\/api\/teams\/([^/]+)\/members$/, async (ctx) => C.addMember(ctx.p[0], ctx.body)],
     ['GET', /^\/api\/teams\/([^/]+)\/members$/, async (ctx) => ({ items: C.listMembers(ctx.p[0]) })],
     ['GET', /^\/api\/members\/([^/]+)$/, async (ctx) => C.memberView(ctx.p[0]) || (() => { throw ERR.notFound('member'); })()],
+    ['PATCH', /^\/api\/members\/([^/]+)$/, async (ctx) => C.updateMember(ctx.p[0], ctx.body)],
     ['DELETE', /^\/api\/members\/([^/]+)$/, async (ctx) => C.removeMember(ctx.p[0], { mode: qs(ctx.url).get('mode') || 'retire', confirm: qs(ctx.url).get('confirm') === '1' })],
     ['POST', /^\/api\/members\/([^/]+)\/interrupt$/, async (ctx) => C.interruptMember(ctx.p[0], ctx.body.reason)],
     ['POST', /^\/api\/members\/([^/]+)\/resume$/, async (ctx) => C.resumeMember(ctx.p[0])],
@@ -105,6 +106,7 @@ export function createRoutes(core) {
       if (!r) throw ERR.notFound('task');
       return rowToTask(r);
     }],
+    ['POST', /^\/api\/tasks\/([^/]+)\/abort$/, async (ctx) => C.abortTask(ctx.p[0], ctx.body?.reason || 'lead abort')],
     ['POST', /^\/api\/deps$/, async (ctx) => C.scheduler.addDep(ctx.body)],
     ['DELETE', /^\/api\/deps\/([^/]+)$/, async (ctx) => C.scheduler.removeDep(Number(ctx.p[0]))],
     ['GET', /^\/api\/dag$/, async (ctx) => C.scheduler.dag(need(qs(ctx.url).get('team'), 'team'))],

@@ -43,7 +43,7 @@ Host 插件 ctx.agents.create({sessionId, meta.cwd, agentOptions, setup})
 | planning 并发可配，默认 1 | 无 | 新增 board settings 与原子 claim |
 | 规划完成后自动进 inprogress，并发可配，默认 1 | 无 | 新增状态机与 claim |
 | 自动创建会话并把 prompt 交给 leader | 现状必须由用户先开一个会话、发消息、模型调 `team_create` 才有 Lead | 插件主动 `ctx.agents.create` + `followup` |
-| leader 调 agent team 干活 | 已有 `team_*` 13 个工具，Lead 上下文由 `exec.agent` 提供 | 创建出的根会话要能拿到 team 工具 |
+| leader 调 agent team 干活 | 已有 `team_*` 14 个工具，Lead 上下文由 `exec.agent` 提供 | 创建出的根会话要能拿到 team 工具 |
 | 完成后 leader 改 done；用户再发消息改回 inprogress | 无 | 新增 `board_task_status` 工具 + `session/event` 监听 |
 | task 可封存 | 团队已有 archive；任务没有 | 新增 `archived_at`、恢复、活动任务先停止 |
 

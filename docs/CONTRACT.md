@@ -13,7 +13,7 @@
 | **C2** | `event` 只增不改；`member_state` 能由 event 完全重建 | `append()` 是唯一写入口：同一事务内 `INSERT event`(seq 由 max+1 分配) + upsert `member_state`。`rebuild()` 只读 event 生成投影。`member_state.seq == max(event.seq)` 否则 `stale=1`。 | `tests/ac-*` 含 rebuild 对账：`progress 事件数 == member_state.seq`，逐字段深比较 |
 | **C3** | 审批只由宿主产生，sidecar 只镜像 | 成员命中 preset 的 `ask` 策略时，DSH 发 `approval/request`；插件把它转给 Lead 并阻塞等待 `team_approve`，返回宿主 `allowed-once` / `rejected`。sidecar 的 `approval` 表只记录镜像与决策审计，**不参与放行**。 | `tests/plugin-approval.mjs`：allow→`allowed-once`、deny→`rejected`、非成员放行原链路；`tests/ac-17-approval.mjs`：镜像/指标/报告 |
 | **C4** | 决策审计必须可回放 | `POST /api/approvals` 幂等登记 pending；`POST /api/approvals/{id}/decide` 写状态 + `approval.request`/`approval.decide` 事件。超时/中断在插件侧也会镜像 `expired`/`cancelled`。 | `tests/ac-17-approval.mjs`：pending→allowed/rejected、metrics、report；`tests/ac-13`：原因/工具名脱敏 |
-| **C5** | 中断必须**同步**写状态，禁止残留 `running` | `interruptMember()` 同步事务：`member.status=interrupted` + `agent.interrupt` 事件 + 在途任务退回 `ready`；提交后才通知 Host `subagents.interrupt`。API 返回即已落库。 | `tests/ac-08`：interrupt 返回后立即 GET 必须 `interrupted`（<100ms） |
+| **C5** | 中断必须**同步**写状态，禁止残留 `running` | `interruptMember()` 同步事务：`member.status=interrupted` + `agent.interrupt` 事件 + 在途任务转 `paused`（不计 attempts、不触发 failurePolicy、不自动重派）；提交后才通知 Host `subagents.interrupt`。API 返回即已落库。 | `tests/ac-08`：interrupt 返回后立即 GET 必须 `interrupted`（<100ms），任务为 `paused` 且 `attempts` 不变 |
 
 补充：sidecar **不判定**任何权限；它只保存预设名、镜像审批结果。成员是真的 DSH 子会话，进程生命周期归 Host/DSH。
 
@@ -55,7 +55,7 @@ CLI 通过 `<home>/run/sidecar.json` 发现端口，读 `<home>/token` 鉴权；
 ## 2. 枚举（唯一真相）
 
 - `member.status`：`queued | provisioning | idle | running | blocked | done | failed | interrupted | retired`
-- `task.status`：`pending | ready | running | done | failed | skipped | blocked`
+- `task.status`：`pending | ready | running | paused | done | failed | skipped | blocked | aborted`（`paused` 等待 Lead 处置；`aborted` 为不可重试终态）
 - `board.task.status`：`todo | planning | planned | inprogress | done | failed`（看板任务，独立于 team 内 DAG 的 `task.status`）
 - `approval.status`：`pending | allowed | rejected | cancelled | expired`
 - `dep.condition`：`all_success | any_success | on_failure | artifact_exists`
@@ -79,7 +79,7 @@ CLI 通过 `<home>/run/sidecar.json` 发现端口，读 `<home>/token` 鉴权；
 | `GET /api/teams` | `?archived=1` 只列已封存 | `{items:[team]}`；默认排除已封存，并触发一次自动封存扫描 |
 | `GET /api/teams/{id}` | — | `{team}` |
 | `PATCH /api/teams/{id}` | 任意可改字段 | `{team}` |
-| `POST /api/teams/{id}/stop` | `{reason?}` | `{team, stopped:[memberId]}`；中断所有 running/provisioning/blocked 成员、在途任务回 `ready`，团队与成员保留 |
+| `POST /api/teams/{id}/stop` | `{reason?}` | `{team, stopped:[memberId]}`；中断所有 running/provisioning/blocked 成员、在途任务转 `paused`，团队与成员保留 |
 | `POST /api/teams/{id}/archive` | `{}` | `{team}`；先停止活跃成员再写 `archivedAt`（团队从默认列表消失，可在设置中恢复） |
 | `POST /api/teams/{id}/restore` | `{}` | `{team}`；清空 `archivedAt`，团队回到默认列表 |
 | `DELETE /api/teams/{id}?confirm=1` | `confirm=1` 必填，否则 `400` | `{removed,id,name}`；物理删除团队及其 member/task/dep/event/approval/message/todo/audit/span/artifact/change/context（库无外键，手工级联） |
@@ -95,13 +95,15 @@ CLI 通过 `<home>/run/sidecar.json` 发现端口，读 `<home>/token` 鉴权；
 | `POST /api/teams/{id}/members` | `{name,role?,model?,contextMode?,permissionPreset?,agentPreset?}` | `{member}`；超 `maxMembers` → `status=queued`（**不是报错**） |
 | `GET /api/teams/{id}/members` | — | `{items:[member]}` |
 | `GET /api/members/{id}` | — | `{member}` |
+| `PATCH /api/members/{id}` | `{role?,model?,agentProvider?,contextMode?,reasoningEffort?,permissionPreset?,agentPreset?}` | `{member}`；只改元数据并写 `member.update`；`running/provisioning/blocked` → `400`（先 interrupt）。真正换模型/上下文由 Host 插件重建子会话 |
 | `DELETE /api/members/{id}?mode=retire\|remove` | `remove` 需 `?confirm=1`，否则 `400` | `{member}`；`retire` 保留历史，`remove` 物理删除 member 及其 state（event 保留） |
-| `POST /api/members/{id}/interrupt` | `{reason?}` | `{member}` ← **同步落库后返回**（C5） |
+| `POST /api/members/{id}/interrupt` | `{reason?}` | `{member,task?,event}` ← **同步落库后返回**（C5）；在途任务转 `paused` |
 | `POST /api/members/{id}/resume` | `{}` | `{member}`；从 `max(event.seq)` 的下一步继续 |
 | `POST /api/members/{id}/assign` | `{taskId}` | `{member,task}`；仅 `idle` 可接 |
 
-`member` = `{id,teamId,name,role,model,contextMode,status,permissionPreset,agentPreset,currentTaskId,step,seq,next,blockers,stale,asOf,pct,agentSessionId}`
+`member` = `{id,teamId,name,role,model,contextMode,agentProvider,reasoningEffort,status,permissionPreset,agentPreset,currentTaskId,step,seq,next,blockers,stale,asOf,pct,agentSessionId}`
 `agentSessionId`：成员对应的 DSH sub-agent SessionId（= `subagents.startActivation` 返回的子会话 id）。trace 用它把该 session 的工具 span 挂到成员节点下（§3.4.1）。
+`agentProvider`：成员创建会话时实际使用的 LLM provider；`null` 表示继承 Lead。它只用于重建会话，不改变 DSH 子会话的 subagent provider。
 `permissionPreset`：成员生效的 DSH permission preset 名；`null` 表示继承团队值。
 `agentPreset`：成员生效的 DSH agent 组合预设 id（决定工具/skill/MCP/系统提示词）；`null` 表示继承团队值，团队也为 `null` 时沿用宿主默认。
 `blockers` = `[{kind:"approval"|"dep"|"message"|"manual"|"agent", id?, detail?}]`
@@ -113,6 +115,7 @@ CLI 通过 `<home>/run/sidecar.json` 发现端口，读 `<home>/token` 鉴权；
 | `POST /api/tasks` | `{teamId, subject, assignee?, plan?, acceptance?, priority?, failurePolicy?, maxAttempts?, deps?}` | `{task}` |
 | `GET /api/tasks?team=` | — | `{items:[task]}` |
 | `GET /api/tasks/{id}` | — | `{task}` |
+| `POST /api/tasks/{id}/abort` | `{reason?}` | `{task,member?,wasRunning}`；置 `aborted` 终态，不计 attempts、不重试；running 任务顺带中断成员 |
 | `POST /api/deps` | `{from, to, condition?, artifactPath?}` | `{dep}`；建图时**环检测**，环 → `400 E_CYCLE` |
 | `DELETE /api/deps/{id}` | — | `{ok:true}` |
 | `GET /api/dag?team=` | — | 见下 |
@@ -234,7 +237,7 @@ root(run:team)                         ← 团队整体
 
 | 方法 路径 | 请求 | 响应 |
 |---|---|---|
-| `POST /api/agents/register` | `{teamId, name, sessionId?, role?, model?, contextMode?, permissionPreset?, agentPreset?}` | `{member}`；按 `(teamId,name)` **幂等 upsert**，无在途任务时写 `agent.spawn` 并置 `idle` |
+| `POST /api/agents/register` | `{teamId, name, sessionId?, role?, model?, contextMode?, agentProvider?, permissionPreset?, agentPreset?, reasoningEffort?}` | `{member}`；按 `(teamId,name)` **幂等 upsert**，无在途任务时写 `agent.spawn` 并置 `idle` |
 | `GET /api/agents/ready?team=` | — | `{teamId, idleMembers:[member], readyTasks:[{taskId,subject,assignee,planSize}]}`（调试/校对用） |
 | `POST /api/agents/dispatch` | `{teamId}` | `{dispatched:true, task, member}` 或 `{dispatched:false, reason:"concurrency"\|"no_idle_agent"\|"no_ready_task"}` |
 | `POST /api/agents/status` | `{sessionId, status, detail?}` | 按 session 路由到成员；未知 session → `{ok:false, reason:"unknown_session"}` |
@@ -244,10 +247,13 @@ root(run:team)                         ← 团队整体
 
 语义：
 
+- **成员配置更新**：`team_member({action:"update"})` 只改 `role/permissionPreset` 时 PATCH 元数据并直接把权限预设落到当前会话；若改 `model/agentProvider/contextMode/agentPreset/reasoningEffort`，插件用新配置 `startActivation` 重建子会话、以同名重新 register，再把调用方显式改的字段 PATCH 回元数据（记 `member.update`，不用解析后的继承值覆盖成员覆盖项），最后 `drainChildren` 旧会话（旧版 subagents 退回 `interrupt`）并清掉旧 session 绑定。
+- **成员移除**：`team_member({action:"retire"|"remove"})` 先调 `DELETE /api/members/{id}`（`remove` 必须 `confirm:true`），再释放子会话并清理绑定；运行中的成员必须先 interrupt。
+- **interrupt 冻结会话**：Host 插件把被 Lead interrupt 的 session 放进 `heldSessions`，在 `team_control resume` 前忽略它的 `idle`/`turn-error` 回报，避免 DSH 中断后的 idle 把成员改回 idle 并触发重派。
 - **宿主前提**：成员依赖宿主已挂载 `subagents` 服务（`dsh-subagent` bundle）。插件用 `ctx.get('subagents')` 探测；缺失时 `team_spawn` 返回可读错误（`subagents 服务不可用`），不会静默降级建成员。
 
 - **dispatch 是原子认领**：`evaluate()` 推 readiness → 校验 `maxConcurrency` → 按 `priority,created_at` 找 ready 任务（尊重 `assignee` 预绑与 `settleMs` 建图窗口，派发前重算依赖）→ 找 `idle` 且无在途任务的 agent 成员 → 同事务把任务置 `running` 并写 `task.dispatch` 事件。**不启动任何进程**；随后 Host 用 `subagents.sendMessage(lead, sessionId, content)` 把任务说明发进该成员的信箱。
-- `agentStatus` 的 `idle`/`failed` 带在途任务时**兜底收尾**（`onTaskDone`/`onTaskFailed`），保证 agent 忘了显式回报时 DAG 也能推进；`interrupted` 会把任务退回 `ready` 并重挂到成员。
+- `agentStatus` 的 `idle`/`failed` 带在途任务时**兜底收尾**（`onTaskDone`/`onTaskFailed`），保证 agent 忘了显式回报时 DAG 也能推进；`interrupted` 只把在途任务转 `paused`，不会退回派发池。
 - `agentReport` 的 `blocked` **不消耗重试**：任务置 `blocked`、成员置 `blocked` 并带 `blockers:[{kind:"agent",detail}]`，Lead 决策后 `dispatch`/`resume` 再发一次。
 - 归属校验：成员绑定了 `agentSessionId` 时，`status`/`report` 的 `sessionId` 必须一致，否则 `400`。
 - trace：`sessionToMember` 由 `member.agent_session_id` 建立，该 session 的 span 直接挂 `member:<id>` 节点下，不再单独建 `session:` 节点（§3.4.1）。
@@ -364,8 +370,9 @@ v2 删除了 `src/broker.mjs`、`src/policy.mjs`、`src/runner.mjs`、`src/worke
 
 | 场景 | 行为 |
 |---|---|
-| `interrupt` | 同步：成员 `status=interrupted` + `agent.interrupt` 事件；在途任务退回 `ready`。API 返回即已落库 |
-| `resume` | 成员置回 `idle` + `agent.resume` 事件；`resumeFrom=null`（没有 worker 步进锚点），`seq` 连续 |
+| `interrupt` | 同步：成员 `status=interrupted` + `agent.interrupt` 事件；在途任务转 `paused`（不计 attempts、不触发重试、不自动重派）。API 返回即已落库 |
+| `resume` | 成员置回 `idle` + `agent.resume` 事件；`resumeFrom=null`（没有 worker 步进锚点），`seq` 连续。`paused` 任务需 Lead 显式 `assign` 后才回 `ready` |
+| `abort` | 任务置 `aborted` 终态并写 `finished_at`；不计 attempts、不进入 failurePolicy；running 任务顺带中断成员 |
 | sidecar 重启 | 启动时 `recoverAll()`：`running` 任务退回 `ready`（保留 attempts），`pending` 审批置 `expired`；输出 `{recovered:n}` 日志。**不静默丢** |
 | 成员回合失败 | Host `agent/status=failed` / `team_report_task status=failed` → `onTaskFailed`，按 `maxAttempts` 重试 |
 | 重试 | 指数退避 `retryBaseMs * 2^(attempt-1)`，上限 `limits.maxRetries`；超过 → task `failed` |
@@ -391,7 +398,7 @@ v2 删除了 `src/broker.mjs`、`src/policy.mjs`、`src/runner.mjs`、`src/worke
 
 | 脚本 | 覆盖 |
 | --- | --- |
-| `tests/plugin-agent.mjs` | 插件这一半的 agent 闭环（含权限预设落会话）：`team_spawn` 真调 `subagents.startActivation` 并回注 session、任务简报含 `taskId`/`team_report_task` 指引、成员回报推进任务、未知 session 回报被拒（工具与 `POST /api/members/:id/agent-status` 两处）、`agent/status=idle` 兜底收尾并自动接着派发、`interrupt` 走 `subagents.interrupt` 且任务回 `ready`、`permissionPresets.set` 被调用 |
+| `tests/plugin-agent.mjs` | 插件这一半的 agent 闭环（含权限预设落会话）：`team_spawn` 真调 `subagents.startActivation` 并回注 session、任务简报含 `taskId`/`team_report_task` 指引、成员回报推进任务、未知 session 回报被拒（工具与 `POST /api/members/:id/agent-status` 两处）、`agent/status=idle` 兜底收尾并自动接着派发、`interrupt` 走 `subagents.interrupt` 且任务转 `paused`、`team_member` 的 update 重建/drain、retire/remove、`permissionPresets.set` 被调用 |
 | `tests/plugin-client.mjs` | 客户端入口注册与工具清单 |
 | `tests/plugin-trace.mjs` | Trace 上报链路（session span 挂成员节点） |
 | `tests/plugin-approval.mjs` | 审批转发：`approval/request` → 通知 Lead → `team_approve` allow=`allowed-once` / deny=`rejected`、非成员放行原链路、非 Lead 被拒 |
