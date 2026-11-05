@@ -249,11 +249,11 @@ export function ModelsView() {
               const key = keyOf(m);
               const disabled = busy.has(key);
               return (
-                <div key={key} className="flex flex-wrap items-start gap-3 border-t px-3 py-2 first:border-t-0">
+                <div key={key} className={'flex flex-wrap items-start gap-3 border-t px-3 py-2 first:border-t-0' + (m.enabled ? '' : ' bg-muted/40 opacity-60')}>
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <ModelAvatar model={m.model} name={m.name} provider={m.provider} size={14} />
-                      <span className="text-sm font-medium">{m.name || m.model}</span>
+                      <span className={'text-sm font-medium' + (m.enabled ? '' : ' text-muted-foreground')}>{m.name || m.model}</span>
                       <code className="text-[11px] text-muted-foreground">{m.model}</code>
                       {m.modalities?.includes('image') ? <Badge variant="outline" size="sm">vision</Badge> : null}
                     </div>
