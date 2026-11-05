@@ -11,10 +11,11 @@ import { fmtClock, storeGet, storeSet } from './lib/format';
 import { workspaceMatches } from './lib/workspace';
 import type { ContextSnapshot, ContextUsage, DagData, Member, MemberChange, PresetRow, Task, TaskArtifact, Team, TeamMessage, TimelineEntry, Todo, TraceData, TraceNode, Workspace } from './types';
 
-export const TAB_NAMES = ['board', 'review', 'context', 'dag', 'timeline', 'models', 'messages', 'presets'] as const;
+export const TAB_NAMES = ['board', 'review', 'context', 'dag', 'models', 'messages', 'presets'] as const;
 /**
- * 面板视图。`home` 是 affectui 风格的默认主页（FR-2/FR-4）：
- * 它不在 TAB_NAMES 里，因此不会被持久化；旧版本存下的 7 个业务 tab 仍按白名单恢复。
+ * 面板视图。`home` 是默认主页，直接渲染时间线（原 timeline 视图已并入 home）：
+ * 它不在 TAB_NAMES 里，因此不会被持久化；旧版本存下的业务 tab 仍按白名单恢复
+ * （存了已移除的 `timeline` 会回落到 home）。
  */
 export type TabName = (typeof TAB_NAMES)[number] | 'home';
 

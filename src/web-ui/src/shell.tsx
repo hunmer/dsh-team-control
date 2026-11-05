@@ -1,13 +1,12 @@
 /**
  * 全局侧栏导航（PRD FR-3 / FR-5）。
  *
- * 8 个视图（home + 7 个业务视图）按 TAB_ORDER 顺序排列，
+ * 7 个视图（home + 6 个业务视图；home 即时间线）按 TAB_ORDER 顺序排列，
  * 徽标数字直接取自 store 里已算好的 useMemo，不新增数据源。
  * 图标来自 lucide-react，外壳由 components/app-shell（coss ui）渲染。
  */
 import type { ReactNode } from 'react';
 import {
-  Clock,
   Database,
   FileDiff,
   House,
@@ -27,7 +26,6 @@ export const TAB_LABELS: Record<TabName, string> = {
   review: '审阅',
   context: '上下文分析',
   dag: '依赖 DAG',
-  timeline: '时间线',
   models: '模型路由',
   messages: '消息',
   presets: '组合预设',
@@ -39,14 +37,13 @@ const TAB_ICONS: Record<TabName, LucideIcon> = {
   review: FileDiff,
   context: Layers,
   dag: Network,
-  timeline: Clock,
   models: Database,
   messages: Mail,
   presets: Boxes,
 };
 
-/** FR-3.2：主页在前，其余沿用 TAB_NAMES 的顺序。 */
-export const TAB_ORDER: TabName[] = ['home', 'board', 'review', 'context', 'dag', 'timeline', 'models', 'messages', 'presets'];
+/** FR-3.2：主页在前（即时间线），其余沿用 TAB_NAMES 的顺序。 */
+export const TAB_ORDER: TabName[] = ['home', 'board', 'review', 'context', 'dag', 'models', 'messages', 'presets'];
 
 export type TabBadges = Partial<Record<TabName, number | null>>;
 
@@ -77,7 +74,7 @@ export function tabFromLabel(label: string): TabName | null {
     Review: 'review',
     Changes: 'review',
     Context: 'context',
-    Timeline: 'timeline',
+    Timeline: 'home',
   };
   return aliases[label] ?? null;
 }
