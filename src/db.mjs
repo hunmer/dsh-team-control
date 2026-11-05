@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -230,6 +230,7 @@ CREATE TABLE IF NOT EXISTS board_settings (
   workspace_path TEXT NOT NULL DEFAULT '',
   planning_concurrency INTEGER NOT NULL DEFAULT 1,
   inprogress_concurrency INTEGER NOT NULL DEFAULT 1,
+  show_task_sessions INTEGER NOT NULL DEFAULT 1,
   plan_provider TEXT, plan_model TEXT, plan_reasoning_effort TEXT,
   lead_provider TEXT, lead_model TEXT, lead_reasoning_effort TEXT,
   plan_permission_preset TEXT NOT NULL DEFAULT 'read-only',
@@ -320,6 +321,7 @@ export function openDb(file) {
   ensureColumn(db, 'artifact', 'deleted', 'INTEGER');
   ensureColumn(db, 'preset', 'doc_json', 'TEXT');
   ensureColumn(db, 'board_task', 'resumed', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'board_settings', 'show_task_sessions', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumn(db, 'preset_delete', 'attempts', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'preset_delete', 'last_error', 'TEXT');
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_todo_task ON todo(task_id, order_no)'); } catch { /* ignore */ }

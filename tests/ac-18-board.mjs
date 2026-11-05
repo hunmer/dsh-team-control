@@ -91,6 +91,15 @@ const main = async () => {
 
     const view = await api.get('/api/board?workspaceId=ws-board');
     assertEqual(view.settings.planningConcurrency, 2, '设置已持久化');
+    assertEqual(view.settings.showTaskSessions, true, '默认把任务会话挂进工作区会话列表');
+    const hidden = await api.put('/api/board/settings', { workspaceId: 'ws-board', showTaskSessions: false });
+    assertEqual(hidden.showTaskSessions, false, '可关闭工作区会话显示');
+    const shown = await api.put('/api/board/settings', { workspaceId: 'ws-board', showTaskSessions: true });
+    assertEqual(shown.showTaskSessions, true, '可重新开启工作区会话显示');
+    assertEqual(view.settings.dshWebUrl, null, 'DSH Web 地址默认未上报');
+    await api.post('/api/host/web', { url: 'http://127.0.0.1:3080/' });
+    const withWeb = await api.get('/api/board?workspaceId=ws-board');
+    assertEqual(withWeb.settings.dshWebUrl, 'http://127.0.0.1:3080', 'Host 上报的 DSH Web 地址透出到设置');
     assert(view.tasks.length >= 2, '看板返回任务');
 
     console.log('ac-18 board: ok');

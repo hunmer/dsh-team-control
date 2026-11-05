@@ -390,7 +390,20 @@ window.__ModuleLoader__.load({
           const frame = frameRef.current;
           if (!frame || !event || event.source !== frame.contentWindow) return;
           const data = event.data;
-          if (!data || data.type !== 'dsh-team:open-team') return;
+          if (!data) return;
+          if (data.type === 'dsh-team:open-session') {
+            // 看板任务详情 → 打开该任务 Lead 所在的 DSH 会话
+            const sessionId = typeof data.sessionId === 'string' ? data.sessionId : '';
+            if (!sessionId) return;
+            const workspace = getService('uiWorkspace');
+            if (workspace && typeof workspace.openSession === 'function') {
+              workspace.openSession(sessionId);
+              return;
+            }
+            console.warn('[dsh-team] 无法打开看板会话：缺少 uiWorkspace');
+            return;
+          }
+          if (data.type !== 'dsh-team:open-team') return;
           const teamId = typeof data.teamId === 'string' ? data.teamId : '';
           if (!teamId) return;
           openTeamForTeam(getService, teamId, typeof data.sessionId === 'string' ? data.sessionId : '');
@@ -1475,6 +1488,35 @@ window.__ModuleLoader__.load({
             return ctx[name];
           } catch { return undefined; }
         };
+
+        // 深链：独立面板 window.open `${dshWebUrl}/#dsh-session=<id>`，这里接管并打开该会话。
+        // uiWorkspace 由宿主插件按加载顺序晚到，所以在浏览器里短暂重试，不额外声明注入依赖。
+        const readDeepLink = () => {
+          try {
+            const m = /(?:^#|&)dsh-session=([^&]+)/.exec((window.location && window.location.hash) || '');
+            return m ? decodeURIComponent(m[1]) : null;
+          } catch { return null; }
+        };
+        const deepLinkSession = typeof window === 'undefined' ? null : readDeepLink();
+        const openDeepLinkedSession = (workspace) => {
+          try {
+            if (!deepLinkSession || !workspace || typeof workspace.openSession !== 'function') return false;
+            const base = window.location.pathname + window.location.search;
+            window.history.replaceState(null, '', base);
+            workspace.openSession(deepLinkSession);
+            return true;
+          } catch (e) {
+            console.warn('[dsh-team] deep link open-session failed', e);
+            return false;
+          }
+        };
+        const waitForWorkspace = (attempt) => {
+          if (openDeepLinkedSession(getService('uiWorkspace'))) return;
+          if (attempt >= 40 || typeof setTimeout !== 'function') return;
+          const timer = setTimeout(() => waitForWorkspace(attempt + 1), 250);
+          timer?.unref?.();
+        };
+        if (deepLinkSession) waitForWorkspace(0);
 
         // 注册全部挂在 effect 作用域内：插件卸载/热替换时自动撤销（含 ctx.inject 派生的等待 fiber）
         ctx.effect(() => {

@@ -311,7 +311,8 @@ root(run:team)                         ← 团队整体
 | `GET /api/board/live` | — | `{tasks}`，含 planning/planned/inprogress，以及仍有 `lead_session_id` 的 done/failed（供插件重启后继续监听追问） |
 | `GET /api/board/by-session/:sessionId` | — | board task 或 `{ok:false,reason}` |
 | `GET /api/board/by-team/:teamId` | — | board task 或 `{ok:false,reason}` |
-| `GET/PUT /api/board/settings` | `{workspaceId, planningConcurrency?, inprogressConcurrency?, planProvider?, planModel?, planReasoningEffort?, leadProvider?, leadModel?, leadReasoningEffort?, planPermissionPreset?, leadPermissionPreset?, planAgentPreset?, leadAgentPreset?}` | settings |
+| `GET/PUT /api/board/settings` | `{workspaceId, planningConcurrency?, inprogressConcurrency?, showTaskSessions?, planProvider?, planModel?, planReasoningEffort?, leadProvider?, leadModel?, leadReasoningEffort?, planPermissionPreset?, leadPermissionPreset?, planAgentPreset?, leadAgentPreset?}` | settings（含 Host 上报的只读 `dshWebUrl`） |
+| `GET/POST /api/host/web` | POST `{url}`：Host 插件把 DSH Web 的浏览器地址上报给 sidecar | `{url}` |
 | `POST /api/board/tasks` | `{workspaceId, title, description?, auto?, executionMode?, priority?, planRoute?, leadRoute?, teamModels?}` | board task |
 | `PATCH /api/board/tasks/:id` | 同上字段 | board task |
 | `POST /api/board/tasks/:id/start|stop|retry|archive|restore` | `{executionMode?}` / `{reason?}` | board task |
@@ -326,7 +327,11 @@ root(run:team)                         ← 团队整体
 
 Host 插件默认 `boardEnabled=true`（显式 `false` 可关闭），每 `boardDispatchMs` 跑一次泵：`claim planning` → `ctx.agents.create`（cwd=workspace path）→ `attach` → `followup` 投规划 prompt；规划会话调 `board_plan_submit` 后进入 `planned`，泵再 `claim inprogress`。规划会话权限默认 `read-only`，执行默认 `danger-full-access`；规划阶段的审批请求由插件直接拒绝，避免无人值守卡住。规划超时（`boardPlanningTimeoutMs`，默认 30 分钟）自动置 failed。
 
-GUI 入口：`dsh-plugin-ui` 把「编排」与「任务看板」注册成两个独立页签（原生右侧栏对应 `dsh-team` / `dsh-team-board`）。看板页路由为 `#/board[/<workspaceId>]`，不渲染编排侧栏、不依赖当前 team；切换工作区只改 `workspaceId` 与 URL。编排页不再包含任务看板页签。看板任务详情里的「关联团队」按钮通过 `postMessage`（`dsh-team:open-team`）让 Host 切到「编排」页签并锁定该 team；独立浏览器页面（非 DSH 环境）没有 Host，改用 `window.open` 在新窗口打开同一面板的 `#/t/<teamId>` 路由。
+`showTaskSessions`（默认 `true`）控制插件是否把 `board_task.planning_session_id` / `lead_session_id` 指向的会话通过 `ctx.workspaceRegistry.get(workspaceId).attachSession(sessionId)` 挂进 DSH 工作区会话账本；挂上后看板创建的规划/执行会话会出现在「工作区会话」列表里，关闭则只在看板内可见。attach 失败只告警，不影响任务推进。
+
+重试（`retry`）复用已有团队：任务的 `board_task_team` 绑定、计划与 DAG 成员数据都保留，插件在 `boardLeadPrompt` 里把 `task.teams` 告诉新的 Lead，要求先用 `team_status` 查看既有团队、用 `team_task` 追加剩余工作，不再无条件 `team_create`（仅当原团队被删除或不可用时才新建）。提示词是软约束，因此插件另加硬约束：对「spawn 时任务已有关联团队」的续跑会话，`team_create` 若发现原团队仍存在会直接报错并给出继续步骤，只有显式传 `force:true` 或原团队全部被删除/归档时才允许新建。因此失败重试不会再凭空多出一个团队。
+
+GUI 入口：`dsh-plugin-ui` 把「编排」与「任务看板」注册成两个独立页签（原生右侧栏对应 `dsh-team` / `dsh-team-board`）。看板页路由为 `#/board[/<workspaceId>]`，不渲染编排侧栏、不依赖当前 team；切换工作区只改 `workspaceId` 与 URL。编排页不再包含任务看板页签。看板任务详情里的「关联团队」按钮通过 `postMessage`（`dsh-team:open-team`）让 Host 切到「编排」页签并锁定该 team；独立浏览器页面（非 DSH 环境）没有 Host，改用 `window.open` 在新窗口打开同一面板的 `#/t/<teamId>` 路由。任务有 `lead_session_id` 时，详情里还会显示「执行会话」按钮：`postMessage`（`dsh-team:open-session`）→ Host `uiWorkspace.openSession(sessionId)`，直接打开 Lead 所在的 DSH 会话；独立页面若已拿到 Host 上报的 `dshWebUrl`，改为 `window.open(\`${dshWebUrl}/#dsh-session=<id>\`)`：DSH 内的 `dsh-plugin-ui` 客户端启动时读取 `location.hash` 里的 `dsh-session`，调 `uiWorkspace.openSession(sessionId)` 打开会话，再用 `history.replaceState` 清掉 hash；没有 `dshWebUrl`（Host 未上报）时仍提示改在 DSH 面板里打开。DSH Web 本身没有会话级 URL 路由，这个 hash 约定完全由本插件两端实现。
 
 新增工具：`board_plan_submit({plan,summary?})`、`board_task_status({status,summary?})`。`team_create` 在 Lead 会话里创建团队后会自动把 team 绑到该会话对应的 board task；`team_spawn` 在该 task 配了 `teamModels` 时把成员 route 限制在白名单内（未指定 model 取第一条）。
 
