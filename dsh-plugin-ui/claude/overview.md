@@ -60,7 +60,7 @@ window.__ModuleLoader__.load({
 ```json
 {
   "name": "dsh-team-control-ui",
-  "version": "0.1.7",
+  "version": "0.2.2",
   "dsh": {
     "bundle": { "patch": "cordis.patch.yml" },
     "client": {
