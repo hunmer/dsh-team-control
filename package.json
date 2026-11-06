@@ -1,6 +1,6 @@
 {
   "name": "dsh-team-control-cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "Agent 编排协同开发：可配置上限、DAG 自动派发、DSH 权限预设按成员分配、审批转发 Lead、SSE 实时可观测",
   "bin": {

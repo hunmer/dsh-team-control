@@ -161,6 +161,8 @@ export class Board {
       status: row.status,
       auto: !!row.auto,
       executionMode: row.execution_mode,
+      needPlan: row.need_plan === undefined || row.need_plan === null ? true : !!row.need_plan,
+      useTeam: row.use_team === undefined || row.use_team === null ? true : !!row.use_team,
       priority: row.priority,
       position: row.position,
       planRoute: routeOf(row, 'plan'),
@@ -253,15 +255,20 @@ export class Board {
     const title = text(body.title, 500).trim();
     if (!title) throw ERR.bad('title required');
     const mode = MODES.has(body.executionMode) ? body.executionMode : 'same';
+    // needPlan/useTeam 是新建任务的行为开关：不传时按老行为（需要规划、开启团队）。
+    const needPlan = body.needPlan !== undefined ? asBool(body.needPlan) : 1;
+    const useTeam = body.useTeam !== undefined ? asBool(body.useTeam) : 1;
     const id = newId('bt');
     const t = nowIso();
     const teamModels = Array.isArray(body.teamModels) ? body.teamModels.slice(0, 100) : null;
     this.get(`INSERT INTO board_task
-      (id, workspace_id, workspace_path, title, description, status, auto, execution_mode, priority, position,
+      (id, workspace_id, workspace_path, title, description, status, auto, execution_mode, need_plan, use_team,
+       priority, position,
        plan_provider, plan_model, plan_reasoning_effort, lead_provider, lead_model, lead_reasoning_effort,
        team_models_json, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(id, workspaceId, workspacePath, title, text(body.description, 100000), 'todo', asBool(body.auto), mode,
+        needPlan, useTeam,
         asInt(body.priority, -1000, 1000, 0), asInt(body.position, 0, 1e9, 0),
         body.planRoute?.provider || body.planProvider || null,
         body.planRoute?.model || body.planModel || null,
@@ -288,6 +295,8 @@ export class Board {
     }
     if (body.description !== undefined) set('description', text(body.description, 100000));
     if (body.auto !== undefined) set('auto', asBool(body.auto));
+    if (body.needPlan !== undefined) set('need_plan', asBool(body.needPlan));
+    if (body.useTeam !== undefined) set('use_team', asBool(body.useTeam));
     if (body.executionMode !== undefined) {
       if (!MODES.has(body.executionMode)) throw ERR.bad('executionMode must be same|new');
       set('execution_mode', body.executionMode);
@@ -337,7 +346,7 @@ export class Board {
   retryTask(id) {
     const cur = this.getTask(id);
     if (!['failed', 'done'].includes(cur.status)) throw ERR.invalidState(`cannot retry from ${cur.status}`);
-    const next = cur.planMd ? 'planned' : 'todo';
+    const next = cur.needPlan && cur.planMd ? 'planned' : 'todo';
     this.get(`UPDATE board_task SET status=?, auto=1, stop_requested=0, claim_token=NULL, claimed_at=NULL,
       planning_session_id=NULL, lead_session_id=NULL, resumed=0, last_error=NULL, done_at=NULL, updated_at=? WHERE id=?`)
       .run(next, nowIso(), cur.id);
@@ -391,10 +400,13 @@ export class Board {
   // ---------- claim / attach / plan ----------
   claim(kind) {
     if (!['planning', 'inprogress'].includes(kind)) throw ERR.bad('kind must be planning|inprogress');
-    const from = kind === 'planning' ? 'todo' : 'planned';
+    // 不需要规划的任务（need_plan=0）直接跳进执行槽位；需要规划的仍走 todo → planning → planned。
+    const where = kind === 'planning'
+      ? "status='todo' AND auto=1 AND need_plan=1"
+      : "(status='planned' OR (status='todo' AND need_plan=0 AND auto=1))";
     const stamp = nowIso();
-    const rows = this.get(`SELECT * FROM board_task WHERE status=? AND archived_at IS NULL AND stop_requested=0
-      ${kind === 'planning' ? 'AND auto=1' : ''} ORDER BY priority DESC, position ASC, created_at ASC`).all(from);
+    const rows = this.get(`SELECT * FROM board_task WHERE ${where} AND archived_at IS NULL AND stop_requested=0
+      ORDER BY priority DESC, position ASC, created_at ASC`).all();
     for (const row of rows) {
       const settings = this.settings(row.workspace_id, row.workspace_path);
       const limit = kind === 'planning' ? settings.planningConcurrency : settings.inprogressConcurrency;
@@ -405,7 +417,7 @@ export class Board {
         const used = this.count(row.workspace_id, kind === 'planning' ? 'planning' : 'inprogress');
         if (used >= limit) return null;
         const r = this.get(`UPDATE board_task SET status=?, claim_token=?, claimed_at=?, updated_at=?
-          WHERE id=? AND status=?`).run(kind, token, stamp, stamp, row.id, from);
+          WHERE id=? AND status=?`).run(kind, token, stamp, stamp, row.id, row.status);
         return r.changes ? this.getTask(row.id) : null;
       });
       if (!out) continue;

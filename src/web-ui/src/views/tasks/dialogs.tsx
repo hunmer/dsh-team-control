@@ -1,7 +1,7 @@
 /**
  * 看板对话框：新建任务、编辑任务、看板设置。
  * 模型选择统一用 Combobox：候选按 provider 分组、带头像、单选，选定后可在右侧单独指定思考强度；
- * 团队模型限制用多选 Combobox，已选列表逐项可移除并单独指定强度。
+ * 团队模型白名单用多选 Combobox，已选列表逐项可移除并单独指定强度；不选 = 不限制。
  */
 import { useEffect, useMemo, useState } from 'react';
 import { Loader2, SearchIcon, XIcon } from 'lucide-react';
@@ -43,12 +43,13 @@ type ModelGroup = { group: string; items: ModelOption[] };
 /** 新建任务表单需要跨会话记住的选项（标题/描述除外）。 */
 type CreateDraft = {
   auto: boolean;
+  needPlan: boolean;
+  useTeam: boolean;
   mode: BoardMode;
   planKey: string;
   leadKey: string;
   planEffort: string | null;
   leadEffort: string | null;
-  limitTeams: boolean;
   teamModels: TeamModelChoice[];
 };
 
@@ -129,12 +130,13 @@ function loadCreateDraft(): Partial<CreateDraft> {
     if (!parsed || typeof parsed !== 'object') return {};
     return {
       auto: typeof parsed.auto === 'boolean' ? parsed.auto : undefined,
+      needPlan: typeof parsed.needPlan === 'boolean' ? parsed.needPlan : undefined,
+      useTeam: typeof parsed.useTeam === 'boolean' ? parsed.useTeam : undefined,
       mode: parsed.mode === 'same' || parsed.mode === 'new' ? parsed.mode : undefined,
       planKey: typeof parsed.planKey === 'string' ? parsed.planKey : undefined,
       leadKey: typeof parsed.leadKey === 'string' ? parsed.leadKey : undefined,
       planEffort: typeof parsed.planEffort === 'string' ? parsed.planEffort : parsed.planEffort === null ? null : undefined,
       leadEffort: typeof parsed.leadEffort === 'string' ? parsed.leadEffort : parsed.leadEffort === null ? null : undefined,
-      limitTeams: typeof parsed.limitTeams === 'boolean' ? parsed.limitTeams : undefined,
       teamModels: parseTeamChoices(parsed.teamModels),
     };
   } catch {
@@ -150,7 +152,7 @@ function saveCreateDraft(draft: CreateDraft) {
   }
 }
 
-/** 团队模型限制：按分组搜索添加、已选行可单独选思考强度或移除。 */
+/** 团队模型白名单：按分组搜索添加、已选行可单独选思考强度或移除；空 = 不限制。 */
 function TeamModelPicker({
   models,
   choices,
@@ -282,12 +284,13 @@ export function CreateTaskDialog({
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [auto, setAuto] = useState(lastDraft.auto ?? false);
+  const [needPlan, setNeedPlan] = useState(lastDraft.needPlan ?? false);
+  const [useTeam, setUseTeam] = useState(lastDraft.useTeam ?? true);
   const [mode, setMode] = useState<BoardMode>(lastDraft.mode ?? 'same');
   const [planKey, setPlanKey] = useState(lastDraft.planKey ?? '');
   const [leadKey, setLeadKey] = useState(lastDraft.leadKey ?? '');
   const [planEffort, setPlanEffort] = useState<string | null>(lastDraft.planEffort ?? null);
   const [leadEffort, setLeadEffort] = useState<string | null>(lastDraft.leadEffort ?? null);
-  const [limitTeams, setLimitTeams] = useState(lastDraft.limitTeams ?? false);
   const [teamModels, setTeamModels] = useState<TeamModelChoice[]>(lastDraft.teamModels ?? []);
   const [saving, setSaving] = useState(false);
 
@@ -296,18 +299,18 @@ export function CreateTaskDialog({
     setTitle('');
     setDescription('');
     setAuto(lastDraft.auto ?? false);
+    setNeedPlan(lastDraft.needPlan ?? false);
+    setUseTeam(lastDraft.useTeam ?? true);
     setMode(lastDraft.mode ?? 'same');
     setPlanKey(lastDraft.planKey ?? '');
     setLeadKey(lastDraft.leadKey ?? '');
     setPlanEffort(lastDraft.planEffort ?? null);
     setLeadEffort(lastDraft.leadEffort ?? null);
-    setLimitTeams(lastDraft.limitTeams ?? false);
     setTeamModels(lastDraft.teamModels ?? []);
   }, [open, lastDraft]);
 
   const submit = async () => {
     if (!title.trim()) { toast('请填写任务标题', 'warn'); return; }
-    if (limitTeams && teamModels.length === 0) { toast('开启团队模型限制后至少选择一项', 'warn'); return; }
     setSaving(true);
     try {
       const task = await boardApi.create({
@@ -316,12 +319,14 @@ export function CreateTaskDialog({
         title: title.trim(),
         description: description.trim(),
         auto,
+        needPlan,
+        useTeam,
         executionMode: mode,
-        planRoute: routeWithEffort(planKey, planEffort, models),
+        planRoute: needPlan ? routeWithEffort(planKey, planEffort, models) : null,
         leadRoute: routeWithEffort(leadKey, leadEffort, models),
-        teamModels: limitTeams ? teamChoicesToRoutes(teamModels, models) : null,
+        teamModels: useTeam && teamModels.length ? teamChoicesToRoutes(teamModels, models) : null,
       });
-      saveCreateDraft({ auto, mode, planKey, leadKey, planEffort, leadEffort, limitTeams, teamModels });
+      saveCreateDraft({ auto, needPlan, useTeam, mode, planKey, leadKey, planEffort, leadEffort, teamModels });
       await onCreated(task);
     } catch (err) {
       toast(errText(err), 'error');
@@ -343,31 +348,42 @@ export function CreateTaskDialog({
           <Field label="描述">
             <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={5} placeholder="目标、范围、验收标准…" />
           </Field>
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-muted-foreground">规划</span>
+            <label className="ui-tb__check">
+              <Switch checked={needPlan} onCheckedChange={setNeedPlan} />
+              <span>需要规划</span>
+            </label>
+          </div>
+          {needPlan && (
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="执行方式">
+                <ModePicker value={mode} onChange={setMode} />
+              </Field>
+              <Field label="规划模型">
+                <RouteSelect
+                  value={planKey}
+                  options={models}
+                  effort={planEffort}
+                  onEffortChange={setPlanEffort}
+                  onChange={(key) => {
+                    setPlanKey(key);
+                    setPlanEffort(null);
+                  }}
+                  ariaLabel="规划模型"
+                  placeholder={defaultSettings?.planModel ? `默认：${defaultSettings.planModel}` : '跟随默认'}
+                />
+              </Field>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
-            <Field label="执行方式">
-              <ModePicker value={mode} onChange={setMode} />
-            </Field>
             <Field label="自动入队">
               <div className="flex h-9 items-center gap-2">
                 <Switch checked={auto} onCheckedChange={setAuto} />
-                <span className="text-xs text-muted-foreground">{auto ? '创建后自动规划' : '手动点开始执行'}</span>
+                <span className="text-xs text-muted-foreground">
+                  {auto ? (needPlan ? '创建后自动规划' : '创建后自动执行') : '手动点开始执行'}
+                </span>
               </div>
-            </Field>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="规划模型">
-              <RouteSelect
-                value={planKey}
-                options={models}
-                effort={planEffort}
-                onEffortChange={setPlanEffort}
-                onChange={(key) => {
-                  setPlanKey(key);
-                  setPlanEffort(null);
-                }}
-                ariaLabel="规划模型"
-                placeholder={defaultSettings?.planModel ? `默认：${defaultSettings.planModel}` : '跟随默认'}
-              />
             </Field>
             <Field label="执行模型">
               <RouteSelect
@@ -385,11 +401,14 @@ export function CreateTaskDialog({
             </Field>
           </div>
           <label className="ui-tb__check">
-            <Switch checked={limitTeams} onCheckedChange={setLimitTeams} />
-            <span>限制团队模型（不开启 = 不限制）</span>
+            <Switch checked={useTeam} onCheckedChange={setUseTeam} />
+            <span>开启团队（关闭 = 单个 Agent 独立完成）</span>
           </label>
-          {limitTeams && (
-            <TeamModelPicker models={models} choices={teamModels} onChange={setTeamModels} />
+          {useTeam && (
+            <div className="space-y-1.5">
+              <p className="text-xs font-medium text-muted-foreground">团队模型（不选 = 不限制）</p>
+              <TeamModelPicker models={models} choices={teamModels} onChange={setTeamModels} />
+            </div>
           )}
         </DialogPanel>
         <DialogFooter>
@@ -423,12 +442,13 @@ export function EditTaskDialog({
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description || '');
   const [auto, setAuto] = useState(task.auto);
+  const [needPlan, setNeedPlan] = useState(task.needPlan !== false);
+  const [useTeam, setUseTeam] = useState(task.useTeam !== false);
   const [mode, setMode] = useState<BoardMode>(task.executionMode);
   const [planKey, setPlanKey] = useState(routeKey(task.planRoute));
   const [leadKey, setLeadKey] = useState(routeKey(task.leadRoute));
   const [planEffort, setPlanEffort] = useState<string | null>(task.planRoute?.reasoningEffort ?? null);
   const [leadEffort, setLeadEffort] = useState<string | null>(task.leadRoute?.reasoningEffort ?? null);
-  const [limitTeams, setLimitTeams] = useState(Boolean(task.teamModels?.length));
   const [teamModels, setTeamModels] = useState<TeamModelChoice[]>(() => taskTeamChoices(task));
   const [saving, setSaving] = useState(false);
 
@@ -437,29 +457,31 @@ export function EditTaskDialog({
     setTitle(task.title);
     setDescription(task.description || '');
     setAuto(task.auto);
+    setNeedPlan(task.needPlan !== false);
+    setUseTeam(task.useTeam !== false);
     setMode(task.executionMode);
     setPlanKey(routeKey(task.planRoute));
     setLeadKey(routeKey(task.leadRoute));
     setPlanEffort(task.planRoute?.reasoningEffort ?? null);
     setLeadEffort(task.leadRoute?.reasoningEffort ?? null);
-    setLimitTeams(Boolean(task.teamModels?.length));
     setTeamModels(taskTeamChoices(task));
   }, [open, task.id]);
 
   const submit = async () => {
     if (!editable) { toast('任务已开始执行或已封存，不能修改', 'warn'); return; }
     if (!title.trim()) { toast('请填写任务标题', 'warn'); return; }
-    if (limitTeams && teamModels.length === 0) { toast('开启团队模型限制后至少选择一项', 'warn'); return; }
     setSaving(true);
     try {
       await boardApi.update(task.id, {
         title: title.trim(),
         description: description.trim(),
         auto,
+        needPlan,
+        useTeam,
         executionMode: mode,
-        planRoute: routeWithEffort(planKey, planEffort, models),
+        planRoute: needPlan ? routeWithEffort(planKey, planEffort, models) : null,
         leadRoute: routeWithEffort(leadKey, leadEffort, models),
-        teamModels: limitTeams ? teamChoicesToRoutes(teamModels, models) : null,
+        teamModels: useTeam && teamModels.length ? teamChoicesToRoutes(teamModels, models) : null,
       });
       toast('任务已更新', 'ok');
       onSaved();
@@ -489,30 +511,41 @@ export function EditTaskDialog({
           <Field label="描述">
             <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={5} disabled={!editable} />
           </Field>
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-muted-foreground">规划</span>
+            <label className="ui-tb__check">
+              <Switch checked={needPlan} onCheckedChange={setNeedPlan} disabled={!editable} />
+              <span>需要规划</span>
+            </label>
+          </div>
+          {needPlan && (
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="执行方式">
+                <ModePicker value={mode} onChange={setMode} />
+              </Field>
+              <Field label="规划模型">
+                <RouteSelect
+                  value={planKey}
+                  options={models}
+                  effort={planEffort}
+                  onEffortChange={setPlanEffort}
+                  onChange={(key) => {
+                    setPlanKey(key);
+                    setPlanEffort(null);
+                  }}
+                  ariaLabel="规划模型"
+                />
+              </Field>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
-            <Field label="执行方式">
-              <ModePicker value={mode} onChange={setMode} />
-            </Field>
             <Field label="自动入队">
               <div className="flex h-9 items-center gap-2">
                 <Switch checked={auto} onCheckedChange={setAuto} disabled={!editable} />
-                <span className="text-xs text-muted-foreground">{auto ? '创建后自动规划' : '手动点开始执行'}</span>
+                <span className="text-xs text-muted-foreground">
+                  {auto ? (needPlan ? '创建后自动规划' : '创建后自动执行') : '手动点开始执行'}
+                </span>
               </div>
-            </Field>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="规划模型">
-              <RouteSelect
-                value={planKey}
-                options={models}
-                effort={planEffort}
-                onEffortChange={setPlanEffort}
-                onChange={(key) => {
-                  setPlanKey(key);
-                  setPlanEffort(null);
-                }}
-                ariaLabel="规划模型"
-              />
             </Field>
             <Field label="执行模型">
               <RouteSelect
@@ -529,11 +562,14 @@ export function EditTaskDialog({
             </Field>
           </div>
           <label className="ui-tb__check">
-            <Switch checked={limitTeams} onCheckedChange={setLimitTeams} disabled={!editable} />
-            <span>限制团队模型（不开启 = 不限制）</span>
+            <Switch checked={useTeam} onCheckedChange={setUseTeam} disabled={!editable} />
+            <span>开启团队（关闭 = 单个 Agent 独立完成）</span>
           </label>
-          {limitTeams && (
-            <TeamModelPicker models={models} choices={teamModels} onChange={setTeamModels} />
+          {useTeam && (
+            <div className="space-y-1.5">
+              <p className="text-xs font-medium text-muted-foreground">团队模型（不选 = 不限制）</p>
+              <TeamModelPicker models={models} choices={teamModels} onChange={setTeamModels} />
+            </div>
           )}
         </DialogPanel>
         <DialogFooter>

@@ -19,6 +19,10 @@ export interface BoardTask {
   status: BoardStatus;
   auto: boolean;
   executionMode: BoardMode;
+  /** 是否需要规划阶段（默认 true，兼容旧数据） */
+  needPlan: boolean;
+  /** 是否开启团队（默认 true，兼容旧数据） */
+  useTeam: boolean;
   priority: number;
   position: number;
   planRoute: BoardRoute;
@@ -79,6 +83,8 @@ export interface CreateBoardTask {
   description?: string;
   auto?: boolean;
   executionMode?: BoardMode;
+  needPlan?: boolean;
+  useTeam?: boolean;
   planRoute?: BoardRoute | null;
   leadRoute?: BoardRoute | null;
   teamModels?: BoardRoute[] | null;
