@@ -254,32 +254,38 @@ export function TaskPanel({
 
         <div className="ui-tb__fields">
           <div className="grid grid-cols-2 gap-3">
-            <div>
-              <span className="ui-tb__label">执行方式</span>
-              <span className="text-xs text-muted-foreground">
-                {task.executionMode === 'new' ? '新会话' : '同一会话'}
-              </span>
-            </div>
+            {task.needPlan !== false && (
+              <div>
+                <span className="ui-tb__label">执行方式</span>
+                <span className="text-xs text-muted-foreground">
+                  {task.executionMode === 'new' ? '新会话' : '同一会话'}
+                </span>
+              </div>
+            )}
             <div>
               <span className="ui-tb__label">自动入队</span>
               <span className="text-xs text-muted-foreground">{task.auto ? '已开启' : '已关闭'}</span>
             </div>
           </div>
 
-          <div>
-            <span className="ui-tb__label">规划模型</span>
-            <RouteValue route={task.planRoute} />
-          </div>
+          {task.needPlan !== false && (
+            <div>
+              <span className="ui-tb__label">规划模型</span>
+              <RouteValue route={task.planRoute} />
+            </div>
+          )}
 
           <div>
             <span className="ui-tb__label">执行模型</span>
             <RouteValue route={task.leadRoute} />
           </div>
 
-          <div>
-            <span className="ui-tb__label">团队模型</span>
-            <TeamModelList task={task} models={models} />
-          </div>
+          {task.useTeam !== false && (
+            <div>
+              <span className="ui-tb__label">团队模型</span>
+              <TeamModelList task={task} models={models} />
+            </div>
+          )}
 
           <div>
             <span className="ui-tb__label">关联团队</span>

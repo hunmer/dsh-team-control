@@ -1614,11 +1614,16 @@ function boardSetPermission(ctx, agent, preset) {
   }
 }
 
-function boardPlanningPrompt(task, settings) {
-  const models = Array.isArray(task.teamModels) && task.teamModels.length
+function boardPromptModels(task) {
+  return Array.isArray(task.teamModels) && task.teamModels.length
     ? task.teamModels.map((m) => (typeof m === 'string' ? m : `${m.provider ? m.provider + '/' : ''}${m.model}`)).join('\n')
     : '不限制';
-  return [
+}
+
+function boardPlanningPrompt(task, settings) {
+  const useTeam = task.useTeam !== false;
+  const models = boardPromptModels(task);
+  const head = [
     `你是「${task.title}」的规划 Agent。只做规划，不写代码、不修改文件、不创建团队。`,
     '规划完成后不要开始执行；调度器会在执行槽位空出后，在同一会话里让你继续。',
     '',
@@ -1626,16 +1631,31 @@ function boardPlanningPrompt(task, settings) {
     '任务描述：',
     task.description || '(无)',
     '',
-    '可用模型（成员分配只能从这里选）：',
-    models,
-    '',
-    '开始规划前，先加载 `dsh-agent-team` 技能（调用 skill 工具，参数 {"name":"dsh-agent-team"}），按技能里的团队编排流程与工具字段规划。',
-    '',
-    '请先阅读必要文件，然后输出一份可执行计划，必须包含：',
-    '1. 目标与验收标准',
-    '2. 实施步骤（到文件/模块级）',
-    '3. 团队与成员建议（每个成员的角色、模型、依赖关系）',
-    '4. 风险与回滚',
+  ];
+  const body = useTeam
+    ? [
+      '可用模型（成员分配只能从这里选）：',
+      models,
+      '',
+      '开始规划前，先加载 `dsh-agent-team` 技能（调用 skill 工具，参数 {"name":"dsh-agent-team"}），按技能里的团队编排流程与工具字段规划。',
+      '',
+      '请先阅读必要文件，然后输出一份可执行计划，必须包含：',
+      '1. 目标与验收标准',
+      '2. 实施步骤（到文件/模块级）',
+      '3. 团队与成员建议（每个成员的角色、模型、依赖关系）',
+      '4. 风险与回滚',
+    ]
+    : [
+      '本任务不开启团队：执行阶段由单个 Agent 独立完成，不需要规划成员或 DAG。',
+      '',
+      '请先阅读必要文件，然后输出一份可执行计划，必须包含：',
+      '1. 目标与验收标准',
+      '2. 实施步骤（到文件/模块级）',
+      '3. 风险与回滚',
+    ];
+  return [
+    ...head,
+    ...body,
     '',
     '最后必须调用 board_plan_submit({ plan: "<完整 markdown>", summary: "<一句话>" })。',
     '不要只把计划写在回复里。提交后停下，等待执行指令。',
@@ -1643,9 +1663,9 @@ function boardPlanningPrompt(task, settings) {
 }
 
 function boardLeadPrompt(task, sameSession) {
-  const models = Array.isArray(task.teamModels) && task.teamModels.length
-    ? task.teamModels.map((m) => (typeof m === 'string' ? m : `${m.provider ? m.provider + '/' : ''}${m.model}`)).join('\n')
-    : '不限制';
+  const useTeam = task.useTeam !== false;
+  const needPlan = task.needPlan !== false;
+  const models = boardPromptModels(task);
   // 任务已有关联团队（重试、失败后继续、或完成后再次执行）时，在原团队上接着干，
   // 不要每轮都 team_create 出一个新团队。
   const teams = Array.isArray(task.teams) ? task.teams.filter(Boolean).map(String) : [];
@@ -1654,16 +1674,7 @@ function boardLeadPrompt(task, sameSession) {
       + '在原团队里用 team_task 追加剩余工作继续推进；已经完成的成员任务不要重复创建。'
       + '只有原团队已被删除或全部不可用时，才允许 team_create 新团队（若既有团队需要继续保留、只是要并行新建，必须显式传 force: true）。'
     : '1. 先调用 team_create 创建团队；name 用任务标题，workspace 用上面的路径。需要多个团队就多次创建，所有团队都会自动绑定到本任务。';
-  return [
-    `你是任务「${task.title}」的 Lead。工作区：${task.workspacePath}`,
-    sameSession ? '你刚刚在同一会话完成了规划，现在开始执行。' : '以下是规划会话产出的计划，现在开始执行。',
-    '',
-    '任务描述：',
-    task.description || '(无)',
-    '',
-    '已确认的计划：',
-    task.planMd || '(无)',
-    '',
+  const teamRules = [
     '开始执行前，先加载 `dsh-agent-team` 技能（调用 skill 工具，参数 {"name":"dsh-agent-team"}），按技能里的团队编排流程、工具字段与常见错法执行，不要凭记忆猜参数。',
     '',
     '规则：',
@@ -1674,7 +1685,35 @@ function boardLeadPrompt(task, sameSession) {
     '4. 全部任务成功后，必须调用 board_task_status({ status: "done", summary: "<完成摘要>" })。',
     '5. 无法完成时调用 board_task_status({ status: "failed", summary: "<原因>" })。',
     '6. 之后如果用户再次发消息，先调用 board_task_status({ status: "inprogress" })，再继续处理。',
-  ].join('\n');
+  ];
+  const soloRules = [
+    '本任务不开启团队：由你自己直接完成所有工作，不要调用 team_create / team_spawn / team_task。',
+    '',
+    '规则：',
+    '1. 按任务描述直接修改文件、运行命令并验证结果。',
+    '2. 全部工作完成后，必须调用 board_task_status({ status: "done", summary: "<完成摘要>" })。',
+    '3. 无法完成时调用 board_task_status({ status: "failed", summary: "<原因>" })。',
+    '4. 之后如果用户再次发消息，先调用 board_task_status({ status: "inprogress" })，再继续处理。',
+  ];
+  const rules = useTeam ? teamRules : soloRules;
+  // 同会话执行：计划已经在同一会话的上文里，不再重复注入任务描述与 plan 全文。
+  if (sameSession) {
+    return [
+      `现在开始执行「${task.title}」。计划就在同一会话的上文里，不要重复输出计划。`,
+      '',
+      ...rules,
+    ].join('\n');
+  }
+  const lines = [
+    `你是任务「${task.title}」的${useTeam ? ' Lead' : '执行 Agent'}。工作区：${task.workspacePath}`,
+    needPlan ? '以下是规划会话产出的计划，现在开始执行。' : '本任务不需要规划，直接开始执行。',
+    '',
+    '任务描述：',
+    task.description || '(无)',
+  ];
+  if (needPlan) lines.push('', '已确认的计划：', task.planMd || '(无)');
+  lines.push('', ...rules);
+  return lines.join('\n');
 }
 
 async function boardTaskOf(s, sessionId) {
@@ -2069,7 +2108,9 @@ function buildTools(s, ctx) {
       const registered = await request(s, '/api/agents/register', {
         method: 'POST',
         body: {
-          teamId: args.teamId,
+          // 用解析后的 team.id，而不是原始 args.teamId：teamId 可省略并回退到会话绑定的团队，
+          // 原始值此时是 undefined，直接透传会让 sidecar 报 `teamId required`。
+          teamId: team.id,
           name: memberName,
           sessionId,
           parentSessionId: caller.id != null ? String(caller.id) : null,
@@ -2083,8 +2124,8 @@ function buildTools(s, ctx) {
           reasoningEffort: route.reasoningEffort || null,
         },
       });
-      rememberMember(sessionId, args.teamId, registered.member.id, team?.workspace, registered.member.permissionPreset || permissionPreset, memberName);
-      leadByTeam.set(args.teamId, caller);
+      rememberMember(sessionId, team.id, registered.member.id, team.workspace, registered.member.permissionPreset || permissionPreset, memberName);
+      leadByTeam.set(team.id, caller);
       return {
         member: registered.member,
         agent: {

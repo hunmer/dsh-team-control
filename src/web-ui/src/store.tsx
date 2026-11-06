@@ -689,6 +689,9 @@ export function PanelProvider({ children }: { children: ReactNode }) {
             const patch: Partial<Member> = {};
             if (payload.seq !== undefined) patch.seq = payload.seq as number;
             if (payload.action || payload.target) patch.last = [payload.action, payload.target].filter(Boolean).join(' ');
+            // 每条步骤事件都带成员的最新投影状态：一起补丁到卡片，避免「已经在跑但还显示空闲/
+            // 已收工但仍显示 Running」要等到下一条 member.status 帧才纠正。
+            if (payload.status) patch.status = payload.status as Member['status'];
             patchMember(memberId, patch);
           }
           // Worker 步骤也是瀑布里的条：步骤事件到达时同样去抖刷新 trace

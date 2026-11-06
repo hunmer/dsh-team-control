@@ -158,8 +158,8 @@ export function TaskCard({
 
         {task.description && (
           <Alert className="mt-2 rounded-lg px-2.5 py-2">
-            <AlertDescription className="text-[11.5px] leading-4">
-              <p className="line-clamp-2">{task.description}</p>
+            <AlertDescription className="min-w-0 text-[11.5px] leading-4">
+              <p className="line-clamp-2 break-words">{task.description}</p>
             </AlertDescription>
           </Alert>
         )}
@@ -167,7 +167,7 @@ export function TaskCard({
         {task.lastError && (
           <Alert variant="error" className="mt-2 rounded-lg px-2.5 py-2 text-[11.5px] [&>svg]:size-3.5">
             <CircleAlert />
-            <AlertDescription className="line-clamp-2 leading-4">{task.lastError}</AlertDescription>
+            <AlertDescription className="line-clamp-2 min-w-0 break-words leading-4">{task.lastError}</AlertDescription>
           </Alert>
         )}
       </div>
@@ -189,12 +189,14 @@ export function TaskCard({
                 </TooltipTrigger>
                 <TooltipPopup>开始执行</TooltipPopup>
               </Tooltip>
-              <Tooltip>
-                <TooltipTrigger type="button" className="ui-tb__act" aria-label="新会话执行" disabled={isBusy} onClick={() => onStart('new')}>
-                  <ExternalLink size={12} />
-                </TooltipTrigger>
-                <TooltipPopup>新会话执行</TooltipPopup>
-              </Tooltip>
+              {task.needPlan !== false && (
+                <Tooltip>
+                  <TooltipTrigger type="button" className="ui-tb__act" aria-label="新会话执行" disabled={isBusy} onClick={() => onStart('new')}>
+                    <ExternalLink size={12} />
+                  </TooltipTrigger>
+                  <TooltipPopup>新会话执行</TooltipPopup>
+                </Tooltip>
+              )}
             </>
           ) : active ? (
             <Tooltip>

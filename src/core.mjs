@@ -629,7 +629,7 @@ export class DshTeam {
         meta: { stepIndex: -1, step: 'S0', stepTotal: 0, taskId: task.id, attempt: task.attempts + 1, sessionId: member.agentSessionId },
       });
       this.scheduler.emitTaskState(teamId, task.id, 'running', member.id);
-      try { this.sse.broadcastSynthetic('member.state', { teamId, memberId: member.id, status: 'running' }, { teamId, memberId: member.id }); } catch { /* ignore */ }
+      try { this.sse.broadcastSynthetic('member.status', { teamId, memberId: member.id, status: 'running' }, { teamId, memberId: member.id }); } catch { /* ignore */ }
       return { dispatched: true, task: rowToTask(this.get('SELECT * FROM task WHERE id=?').get(task.id)), member: this.memberView(member.id) };
     }
     // 自动泵（Host 侧 dispatchLoop）可能已经先认领了一波：running>0 时别说成「没有 ready 任务」，

@@ -6,13 +6,28 @@ import assert from 'node:assert/strict';
 import { mkTmp, startSidecar } from './lib/harness.mjs';
 import { apply } from '../dsh-plugin/index.js';
 
-const mkFakeCtx = () => {
+const mkFakeCtx = (opts = {}) => {
   const tools = new Map();
+  // 有 subagents 时 team_spawn 才能走完 startActivation → /api/agents/register；用于验证
+  // 省略 teamId 时 register 用的是解析后的 team.id，而不是原始 undefined。
+  const agents = opts.subagents ? {
+    spawned: [],
+    async startActivation(spec) {
+      agents.spawned.push(spec);
+      return { childId: spec.childId, messageId: 'msg-1', result: Promise.resolve({ output: [], stopReason: 'completed' }), dispose: async () => {} };
+    },
+    async sendMessage() { return 'msg-1'; },
+    interrupt() { /* noop */ },
+    list: () => ['spawn', 'fork'],
+  } : null;
   return {
     tools,
     ctx: {
-      tools: { register: (tool) => { tools.set(tool.name, tool); return () => { /* noop */ }; } },
-      get() { return undefined; },
+      tools: {
+        register: (tool) => { tools.set(tool.name, tool); return () => { /* noop */ }; },
+        get: (name) => tools.get(name),
+      },
+      get(name) { return name === 'subagents' ? agents : undefined; },
       getService() { return undefined; },
       effect(fn) { const cleanup = fn(); return () => { try { cleanup?.(); } catch { /* ignore */ } }; },
       on() { return () => { /* noop */ }; },
@@ -66,6 +81,27 @@ const main = async () => {
       /subagents 服务不可用/,
       '漏传 teamId 时回落到会话绑定的团队',
     );
+
+    // ③c 同会话 team_create 后漏传 teamId，且宿主有 subagents：
+    //     注册必须落到解析出的团队，不能把 undefined 发给 /api/agents/register 变成 400。
+    const bound = mkFakeCtx({ subagents: true });
+    apply(bound.ctx, {
+      baseUrl: sidecar.url, autoStart: false, requestTimeoutMs: 5000,
+      reportToolCalls: false, reportChanges: false, reportLlmCalls: false, reportContext: false,
+      reportWorkspaces: false, reportLlmCatalog: false, agentAutoDispatch: false,
+    });
+    const boundLead = { agent: { id: 'sess-teamid-bound-agent' } };
+    const boundTeam = (await bound.ctx.tools.get('team_create').execute(
+      { name: 'plugin-teamid-bound-agent', workspace: tmp.ws },
+      boundLead,
+    )).team;
+    const auto = await bound.ctx.tools.get('team_spawn').execute(
+      { name: 'auto-agent', prompt: '你是 auto-agent。' },
+      boundLead,
+    );
+    assert.equal(auto.member.teamId, boundTeam.id, '漏传 teamId 时成员注册到会话绑定的团队');
+    const boundMembers = (await sidecar.api.get(`/api/teams/${boundTeam.id}/members`)).items;
+    assert.equal(boundMembers.filter((m) => m.name === 'auto-agent').length, 1, '成员已在目标团队里登记');
 
     // ④ 合法 teamId 但宿主没有 subagents 服务：明确报错，不静默建 worker 成员
     await rejects(spawn.execute({ teamId: team.id, name: 'probe', prompt: '你是 probe。' }, {}),
