@@ -10,6 +10,7 @@
 
 - Client half 零外部 import，只允许 `require('react')`；必须走 `window.__ModuleLoader__.load({id:'dsh-team-control-ui', factory})`。
 - 注册必须对宿主能力做降级并用 `ctx.slots.inject` / `ctx.inject` 等待服务就绪（不能假设宿主一定有 better-sidebar / sidebarRight）；但左侧栏「编排」「看板」两个入口**必须始终注册**。
+- 「看板」行右端的固定开关（`boardDockStore` + `boardDockToggle`）与右侧停靠层（`boardDockView`）都注册在 `shell.overlay`：开关按行矩形 `position:fixed` 贴到行右端，停靠层是 frame 级常驻 aside（开关/宽度落 localStorage，`dsh-team:board-dock` / `dsh-team:board-dock-width`）；停靠时给宿主 frame 加 `padding-right` 让主区让宽。宿主 panellist 的图标位于行 `<button>` 内，另注册可点行会被 `layout.selectPanel` 拒绝。
 - **自动开面板只限一次**：团队创建时自动把右侧栏「编排」页推开一次（`AUTO_OPEN_KEY` 记在 sessionStorage，每会话一次，用户收起后不再打扰）；输入框团队卡片始终默认收起，点胶囊才展开。
 - 面板 URL 固定带 `?api=/dsh-team-api&embed=1`；改参数要同时改 `src/web-ui/src/lib/api.ts`。
 - 代理路径前缀 `/dsh-team-api` 与面板里的 `api` 参数是**一对**，改一个必须改另一个。

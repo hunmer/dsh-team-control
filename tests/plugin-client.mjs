@@ -201,6 +201,26 @@ check('左侧栏常驻入口：编排 / 看板始终注册（与 better-sidebar 
   return 'panellist=dsh-team,dsh-team-board';
 });
 
+check('看板固定开关：开关按钮与固定看板都注册在 shell.overlay（不是右侧栏）', () => {
+  const app = makeCtx({ betterSidebar: makeBetter() });
+  plugin.apply(app.ctx);
+  const overlays = app.entries.filter((e) => e.spec.name === 'shell.overlay');
+  assert.deepEqual(
+    overlays.map((e) => e.spec.id).sort(),
+    ['dsh-team:board-dock', 'dsh-team:board-dock-toggle', 'dsh-team:findings'],
+    '浮层条目：团队卡片 + 看板开关 + 固定看板',
+  );
+  const toggle = overlays.find((e) => e.spec.id === 'dsh-team:board-dock-toggle');
+  assert.equal(toggle.spec.order, 25, '开关按行矩形定位，排在卡片之前');
+  assert.ok(String(toggle.spec.label() || ''), '开关有可读标题');
+  const dock = overlays.find((e) => e.spec.id === 'dsh-team:board-dock');
+  assert.equal(dock.spec.order, 40);
+  assert.ok(String(dock.spec.label() || ''), '固定看板有可读标题');
+  assert.equal(render(dock.component({})), null, '默认收起，不占位置');
+  app.effects.forEach((dispose) => dispose());
+  return 'overlay=findings,board-dock-toggle,board-dock';
+});
+
 // ---------- ② 没装 better-sidebar（有 sidebarRight） ----------
 check('未装 better-sidebar：右侧栏 Tab + 「开始」页 guide 入口', () => {
   const opened = [];
