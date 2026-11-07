@@ -19,6 +19,9 @@ window.__ModuleLoader__.load({
         board_title: '任务看板',
         board_desc: '按工作区管理任务队列与自动执行',
         board_guide_desc: '工作区任务队列、并发与自动执行',
+        board_dock_open: '在网页右侧固定显示看板',
+        board_dock_close: '收起右侧固定看板',
+        board_dock_resize: '拖动调整看板宽度',
         panel_loading: '正在查找该会话的团队…',
         guide_desc: '团队成员、任务 DAG 与实时进度',
         members_title: '团队成员',
@@ -65,6 +68,9 @@ window.__ModuleLoader__.load({
         board_title: 'Task board',
         board_desc: 'Workspace task queue and automatic execution',
         board_guide_desc: 'Workspace task queue, concurrency and automatic execution',
+        board_dock_open: 'Pin the board on the right side of the page',
+        board_dock_close: 'Close the pinned board',
+        board_dock_resize: 'Drag to resize the board',
         panel_loading: 'Looking up this session’s team…',
         guide_desc: 'Team members, task DAG and live progress',
         members_title: 'Team members',
@@ -217,6 +223,22 @@ window.__ModuleLoader__.load({
 .dsht-afc-dock .ui-afc__agent[data-status="running"] .ui-afc__fill::before {
   background:linear-gradient(90deg, transparent, color-mix(in srgb, var(--dsw-alias-label-primary) 14%, transparent), transparent);
 }
+
+/* 「看板」行右端的固定开关：shell.overlay 里的真实按钮，按左侧栏行矩形定位 */
+.dsht-dock-toggle { position:fixed; z-index:60; display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; padding:0; border:1px solid transparent; border-radius:6px; background:transparent; color:var(--dsw-alias-label-tertiary); cursor:pointer; pointer-events:auto; }
+.dsht-dock-toggle:hover { background:var(--dsw-alias-bg-layer-2); border-color:var(--dsw-alias-border-l1); color:var(--dsw-alias-label-primary); }
+.dsht-dock-toggle[aria-pressed="true"] { color:var(--dsw-alias-brand-primary); background:color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); }
+/* 固定看板：网页最右侧的整高停靠层，跨会话常驻（不随手风琴/对话切换卸载） */
+.dsht-dock { position:fixed; top:46px; right:0; bottom:0; width:min(var(--dsht-dock-w, 680px), 92vw); z-index:70; display:flex; flex-direction:column; min-height:0; pointer-events:auto; background:var(--dsw-alias-bg-base); border-left:1px solid var(--dsw-alias-border-l1); box-shadow:-18px 0 44px -30px color-mix(in srgb, #000 55%, transparent); }
+.dsht-dock-resize { position:absolute; top:0; bottom:0; left:-6px; width:14px; cursor:col-resize; touch-action:none; pointer-events:auto; background:transparent; }
+.dsht-dock-resize::after { content:''; position:absolute; top:0; bottom:0; left:6px; width:2px; background:transparent; }
+.dsht-dock-resize:hover::after, .dsht-dock-resize:focus-visible::after { background:color-mix(in srgb, var(--dsw-alias-brand-primary) 55%, transparent); }
+.dsht-dock-resize:focus-visible { outline:none; }
+.dsht-dock-head { display:flex; align-items:center; gap:8px; flex:none; height:38px; padding:0 10px; border-bottom:1px solid var(--dsw-alias-border-l1); font-size:12px; font-weight:600; color:var(--dsw-alias-label-primary); }
+.dsht-dock-close { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; padding:0; border:1px solid var(--dsw-alias-border-l1); border-radius:6px; background:transparent; color:var(--dsw-alias-label-secondary); cursor:pointer; }
+.dsht-dock-close:hover { border-color:var(--dsw-alias-brand-primary); color:var(--dsw-alias-label-primary); }
+.dsht-dock-body { flex:1; min-height:0; display:flex; }
+.dsht-dock-body > .dsht-page { flex:1; min-width:0; }
 `;
 
     // ---------- 右侧栏 Tab（sidebar.right.pane.tab）+ 侧边栏入口 ----------
@@ -246,6 +268,7 @@ window.__ModuleLoader__.load({
           title: t(board ? 'board_nav' : 'title'),
           'aria-label': t(board ? 'board_nav' : 'side_nav'),
           role: 'img',
+          'data-dsht-board-entry': board ? '1' : undefined,
         }, h(Glyph, { size, active }));
       };
     }
@@ -333,6 +356,58 @@ window.__ModuleLoader__.load({
          * 第一个工作区。
          */
         snapshot() { return { sessionId: active, info: (active && byId.get(active)) || null, lastTeamId, forcedTeamId }; },
+      };
+    })();
+
+    /**
+     * 「看板」固定停靠开关：把看板放在网页最右侧（shell.overlay，跨会话常驻），
+     * 而不是放进会随对话变更的右侧栏。状态落 localStorage，刷新/切会话都保持。
+     */
+    const boardDockStore = (() => {
+      const KEY = 'dsh-team:board-dock';
+      const WIDTH_KEY = 'dsh-team:board-dock-width';
+      const MIN_WIDTH = 360;
+      const MAX_WIDTH = 1000;
+      const DEFAULT_WIDTH = 680;
+      const clampWidth = (value) => {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return DEFAULT_WIDTH;
+        return Math.round(Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, n)));
+      };
+      const listeners = new Set();
+      let open = false;
+      let width = DEFAULT_WIDTH;
+      try {
+        open = window.localStorage.getItem(KEY) === '1';
+        const saved = window.localStorage.getItem(WIDTH_KEY);
+        if (saved != null && saved !== '') width = clampWidth(saved);
+      } catch { /* ignore */ }
+      const emit = () => {
+        for (const fn of listeners) { try { fn(); } catch { /* 单个订阅出错不影响其他 */ } }
+      };
+      const set = (next) => {
+        const value = !!next;
+        if (open === value) return;
+        open = value;
+        try { window.localStorage.setItem(KEY, value ? '1' : '0'); } catch { /* ignore */ }
+        emit();
+      };
+      const setWidth = (next) => {
+        const value = clampWidth(next);
+        if (width === value) return;
+        width = value;
+        try { window.localStorage.setItem(WIDTH_KEY, String(value)); } catch { /* ignore */ }
+        emit();
+      };
+      return {
+        isOpen: () => open,
+        set,
+        toggle() { set(!open); },
+        width: () => width,
+        setWidth,
+        minWidth: MIN_WIDTH,
+        maxWidth: MAX_WIDTH,
+        subscribe(fn) { listeners.add(fn); return () => { listeners.delete(fn); }; },
       };
     })();
 
@@ -437,6 +512,183 @@ window.__ModuleLoader__.load({
         h('rect', { x: 2, y: 2.5, width: 3.4, height: 11, rx: 1 }),
         h('rect', { x: 6.3, y: 2.5, width: 3.4, height: 7, rx: 1 }),
         h('rect', { x: 10.6, y: 2.5, width: 3.4, height: 9, rx: 1 }));
+    }
+
+    /** 「固定到右侧」图标：外框 + 右列（打开时右列填充）。 */
+    function DockIcon({ size = 14, open = false }) {
+      const s = size;
+      return h('svg', {
+        width: s, height: s, viewBox: '0 0 16 16', fill: 'none',
+        stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round',
+        'aria-hidden': true, focusable: 'false', style: { display: 'block' },
+      },
+        h('rect', { x: 2, y: 3, width: 12, height: 10, rx: 1.8 }),
+        h('rect', { x: 9.4, y: 4.4, width: 3.4, height: 7.2, rx: 0.9, fill: open ? 'currentColor' : 'none' }));
+    }
+
+    /**
+     * 左侧栏「看板」行右端的固定开关。宿主把 panellist 的图标放在行 <button> 里，
+     * 自己再注册一个可点行会被 layout.selectPanel 拒绝；所以按钮放在 shell.overlay，
+     * 按行矩形 position:fixed 贴到行右端（折叠态隐藏）。
+     */
+    function boardDockToggle(T) {
+      return function BoardDockToggle() {
+        const [open, setOpen] = React.useState(() => boardDockStore.isOpen());
+        const [pos, setPos] = React.useState(null);
+        React.useEffect(() => boardDockStore.subscribe(() => setOpen(boardDockStore.isOpen())), []);
+        React.useLayoutEffect(() => {
+          let alive = true;
+          let raf = 0;
+          const measure = () => {
+            if (!alive || typeof document === 'undefined') return;
+            const marker = document.querySelector('[data-dsht-board-entry]');
+            const row = marker && typeof marker.closest === 'function' ? marker.closest('button') : null;
+            let next = null;
+            if (row) {
+              const rect = row.getBoundingClientRect();
+              // 折叠态只剩图标列，没有放开关的空间；行滚出视口时也不显示
+              if (rect.width >= 120 && rect.top >= 0 && rect.bottom <= (window.innerHeight || 0)) {
+                next = {
+                  left: Math.round(rect.right - 30),
+                  top: Math.round(rect.top + (rect.height - 24) / 2),
+                };
+              }
+            }
+            setPos((prev) => {
+              if (!prev && !next) return prev;
+              if (prev && next && prev.left === next.left && prev.top === next.top) return prev;
+              return next;
+            });
+          };
+          const schedule = () => {
+            if (raf) return;
+            const run = () => { raf = 0; measure(); };
+            if (typeof window.requestAnimationFrame === 'function') raf = window.requestAnimationFrame(run);
+            else run();
+          };
+          for (const delay of [0, 80, 240, 600, 1200]) {
+            const kick = setTimeout(schedule, delay);
+            kick?.unref?.();
+          }
+          const timer = setInterval(measure, 1000);
+          timer?.unref?.();
+          window.addEventListener('resize', schedule);
+          return () => {
+            alive = false;
+            if (raf && typeof window.cancelAnimationFrame === 'function') window.cancelAnimationFrame(raf);
+            clearInterval(timer);
+            window.removeEventListener('resize', schedule);
+          };
+        }, []);
+        if (!pos) return null;
+        return h('button', {
+          type: 'button',
+          className: 'dsht-dock-toggle',
+          style: { left: pos.left + 'px', top: pos.top + 'px' },
+          title: T(open ? 'board_dock_close' : 'board_dock_open'),
+          'aria-label': T(open ? 'board_dock_close' : 'board_dock_open'),
+          'aria-pressed': open ? 'true' : 'false',
+          onClick: (event) => {
+            if (event) { event.preventDefault(); event.stopPropagation(); }
+            boardDockStore.toggle();
+          },
+        }, h(DockIcon, { size: 14, open }));
+      };
+    }
+
+    /** 网页最右侧的固定看板：跨会话常驻的整高停靠层（不是右侧栏页签），宽度可拖拽并落盘。 */
+    function boardDockView(T, getService) {
+      return function BoardDock() {
+        const [state, setState] = React.useState(() => ({ open: boardDockStore.isOpen(), width: boardDockStore.width() }));
+        const dockRef = React.useRef(null);
+        React.useEffect(() => boardDockStore.subscribe(
+          () => setState({ open: boardDockStore.isOpen(), width: boardDockStore.width() })), []);
+        // 停靠时让主区让出同样的宽度：宿主 frame 是 CSS grid，padding 只压缩内容盒（overlayLayer 与 fixed 停靠层不受影响）
+        React.useEffect(() => {
+          if (!state.open) return undefined;
+          const node = dockRef.current;
+          let layer = node && node.parentElement;
+          for (let i = 0; layer && i < 4; i += 1) {
+            if (/overlayLayer/.test(String(layer.className || ''))) break;
+            layer = layer.parentElement;
+          }
+          const frame = layer && /overlayLayer/.test(String(layer.className || '')) ? layer.parentElement : null;
+          if (!frame) return undefined;
+          const previous = frame.style.paddingRight;
+          const apply = () => {
+            const cap = Math.max(0, Math.round((window.innerWidth || 0) * 0.92));
+            frame.style.paddingRight = Math.min(state.width, cap) + 'px';
+            frame.setAttribute('data-dsht-dock', '1');
+          };
+          apply();
+          window.addEventListener('resize', apply);
+          return () => {
+            window.removeEventListener('resize', apply);
+            frame.style.paddingRight = previous;
+            frame.removeAttribute('data-dsht-dock');
+          };
+        }, [state.open, state.width]);
+        if (!state.open) return null;
+        const startResize = (event) => {
+          if (!event || (typeof event.button === 'number' && event.button !== 0)) return;
+          event.preventDefault();
+          const handle = event.currentTarget;
+          try { handle?.setPointerCapture?.(event.pointerId); } catch { /* 老浏览器无指针捕获 */ }
+          const startX = event.clientX;
+          const startWidth = boardDockStore.width();
+          const cap = () => Math.max(boardDockStore.minWidth, Math.min(boardDockStore.maxWidth, (window.innerWidth || 0) - 160));
+          const move = (ev) => {
+            const next = startWidth + (startX - ev.clientX);
+            boardDockStore.setWidth(Math.max(boardDockStore.minWidth, Math.min(cap(), next)));
+          };
+          const stop = () => {
+            window.removeEventListener('pointermove', move);
+            window.removeEventListener('pointerup', stop);
+            window.removeEventListener('pointercancel', stop);
+            document.body.style.userSelect = '';
+            document.body.style.cursor = '';
+          };
+          document.body.style.userSelect = 'none';
+          document.body.style.cursor = 'col-resize';
+          window.addEventListener('pointermove', move);
+          window.addEventListener('pointerup', stop);
+          window.addEventListener('pointercancel', stop);
+        };
+        const nudge = (event) => {
+          if (!event || (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight')) return;
+          event.preventDefault();
+          const delta = event.key === 'ArrowLeft' ? 40 : -40;
+          boardDockStore.setWidth(boardDockStore.width() + delta);
+        };
+        return h('aside', {
+          ref: dockRef,
+          className: 'dsht-dock',
+          style: { '--dsht-dock-w': state.width + 'px' },
+          'aria-label': T('board_title'),
+        },
+          h('div', {
+            className: 'dsht-dock-resize',
+            role: 'separator',
+            'aria-orientation': 'vertical',
+            'aria-label': T('board_dock_resize'),
+            title: T('board_dock_resize'),
+            tabIndex: 0,
+            onPointerDown: startResize,
+            onKeyDown: nudge,
+          }),
+          h('div', { className: 'dsht-dock-head' },
+            h('span', { className: 'dsht-page-mark' }, h(BoardIcon, { size: 14 })),
+            h('span', null, T('board_title')),
+            h('span', { className: 'dsht-spacer' }),
+            h('button', {
+              type: 'button',
+              className: 'dsht-dock-close',
+              title: T('board_dock_close'),
+              'aria-label': T('board_dock_close'),
+              onClick: () => boardDockStore.set(false),
+            }, '×')),
+          h('div', { className: 'dsht-dock-body' }, h(BoardView, { t: T, getService })));
+      };
     }
 
     // ---------- 会话右上角：当前会话的运行中成员（点击在右侧栏内嵌该成员对话） ----------
@@ -1671,6 +1923,19 @@ window.__ModuleLoader__.load({
             order: 30,
             label: () => T('card_title'),
           }, teamCardDock(T, getService))));
+          // 「看板」行右端的固定开关 + 网页最右侧的固定看板（跨会话常驻，不进右侧栏）
+          disposers.push(slots.inject('shell.overlay', () => slots.register({
+            name: 'shell.overlay',
+            id: 'dsh-team:board-dock-toggle',
+            order: 25,
+            label: () => T('board_dock_open'),
+          }, boardDockToggle(T))));
+          disposers.push(slots.inject('shell.overlay', () => slots.register({
+            name: 'shell.overlay',
+            id: 'dsh-team:board-dock',
+            order: 40,
+            label: () => T('board_title'),
+          }, boardDockView(T, getService))));
           return () => {
             for (const dispose of disposers.splice(0).reverse()) {
               try { dispose(); } catch { /* ignore */ }
