@@ -28,10 +28,12 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
+import { Tabs, TabsList, TabsPanel, TabsTab } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { BOARD_STATUS_LABEL, boardApi, type BoardMode, type BoardSettings, type BoardTask } from '@/lib/board';
 import { usePanel } from '@/store';
 import { EffortSelect, Field, ModePicker, RouteSelect } from './fields';
+import { PromptEnhancerForm } from './PromptForm';
 import { errText, routeFromKey, routeKey, type ModelOption } from './shared';
 
 /** 已选团队模型 + 该项单独指定的思考强度（null = 跟随该模型默认）。 */
@@ -292,6 +294,7 @@ export function CreateTaskDialog({
   const [planEffort, setPlanEffort] = useState<string | null>(lastDraft.planEffort ?? null);
   const [leadEffort, setLeadEffort] = useState<string | null>(lastDraft.leadEffort ?? null);
   const [teamModels, setTeamModels] = useState<TeamModelChoice[]>(lastDraft.teamModels ?? []);
+  const [tab, setTab] = useState<'basic' | 'prompt'>('basic');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -307,6 +310,7 @@ export function CreateTaskDialog({
     setPlanEffort(lastDraft.planEffort ?? null);
     setLeadEffort(lastDraft.leadEffort ?? null);
     setTeamModels(lastDraft.teamModels ?? []);
+    setTab('basic');
   }, [open, lastDraft]);
 
   const submit = async () => {
@@ -337,79 +341,98 @@ export function CreateTaskDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[88vh] max-w-xl overflow-y-auto">
+      <DialogContent className="max-h-[88vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>新建任务</DialogTitle>
         </DialogHeader>
         <DialogPanel className="space-y-3">
-          <Field label="标题">
-            <Input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="例如：给登录页加验证码" />
-          </Field>
-          <Field label="描述">
-            <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={5} placeholder="目标、范围、验收标准…" />
-          </Field>
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-muted-foreground">规划</span>
-            <label className="ui-tb__check">
-              <Switch checked={needPlan} onCheckedChange={setNeedPlan} />
-              <span>需要规划</span>
-            </label>
-          </div>
-          {needPlan && (
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="执行方式">
-                <ModePicker value={mode} onChange={setMode} />
+          <Tabs
+            className="gap-3"
+            onValueChange={(next) => setTab(next === 'prompt' ? 'prompt' : 'basic')}
+            value={tab}
+          >
+            <TabsList className="w-full">
+              <TabsTab className="flex-1" value="basic">
+                基础表单
+              </TabsTab>
+              <TabsTab className="flex-1" value="prompt">
+                提示词增强
+              </TabsTab>
+            </TabsList>
+            <TabsPanel className="space-y-3" value="basic">
+              <Field label="标题">
+                <Input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="例如：给登录页加验证码" />
               </Field>
-              <Field label="规划模型">
-                <RouteSelect
-                  value={planKey}
-                  options={models}
-                  effort={planEffort}
-                  onEffortChange={setPlanEffort}
-                  onChange={(key) => {
-                    setPlanKey(key);
-                    setPlanEffort(null);
-                  }}
-                  ariaLabel="规划模型"
-                  placeholder={defaultSettings?.planModel ? `默认：${defaultSettings.planModel}` : '跟随默认'}
-                />
+              <Field label="描述">
+                <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={5} placeholder="目标、范围、验收标准…" />
               </Field>
-            </div>
-          )}
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="自动入队">
-              <div className="flex h-9 items-center gap-2">
-                <Switch checked={auto} onCheckedChange={setAuto} />
-                <span className="text-xs text-muted-foreground">
-                  {auto ? (needPlan ? '创建后自动规划' : '创建后自动执行') : '手动点开始执行'}
-                </span>
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-muted-foreground">规划</span>
+                <label className="ui-tb__check">
+                  <Switch checked={needPlan} onCheckedChange={setNeedPlan} />
+                  <span>需要规划</span>
+                </label>
               </div>
-            </Field>
-            <Field label="执行模型">
-              <RouteSelect
-                value={leadKey}
-                options={models}
-                effort={leadEffort}
-                onEffortChange={setLeadEffort}
-                onChange={(key) => {
-                  setLeadKey(key);
-                  setLeadEffort(null);
-                }}
-                ariaLabel="执行模型"
-                placeholder={defaultSettings?.leadModel ? `默认：${defaultSettings.leadModel}` : '跟随默认'}
-              />
-            </Field>
-          </div>
-          <label className="ui-tb__check">
-            <Switch checked={useTeam} onCheckedChange={setUseTeam} />
-            <span>开启团队（关闭 = 单个 Agent 独立完成）</span>
-          </label>
-          {useTeam && (
-            <div className="space-y-1.5">
-              <p className="text-xs font-medium text-muted-foreground">团队模型（不选 = 不限制）</p>
-              <TeamModelPicker models={models} choices={teamModels} onChange={setTeamModels} />
-            </div>
-          )}
+              {needPlan && (
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="执行方式">
+                    <ModePicker value={mode} onChange={setMode} />
+                  </Field>
+                  <Field label="规划模型">
+                    <RouteSelect
+                      value={planKey}
+                      options={models}
+                      effort={planEffort}
+                      onEffortChange={setPlanEffort}
+                      onChange={(key) => {
+                        setPlanKey(key);
+                        setPlanEffort(null);
+                      }}
+                      ariaLabel="规划模型"
+                      placeholder={defaultSettings?.planModel ? `默认：${defaultSettings.planModel}` : '跟随默认'}
+                    />
+                  </Field>
+                </div>
+              )}
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="自动入队">
+                  <div className="flex h-9 items-center gap-2">
+                    <Switch checked={auto} onCheckedChange={setAuto} />
+                    <span className="text-xs text-muted-foreground">
+                      {auto ? (needPlan ? '创建后自动规划' : '创建后自动执行') : '手动点开始执行'}
+                    </span>
+                  </div>
+                </Field>
+                <Field label="执行模型">
+                  <RouteSelect
+                    value={leadKey}
+                    options={models}
+                    effort={leadEffort}
+                    onEffortChange={setLeadEffort}
+                    onChange={(key) => {
+                      setLeadKey(key);
+                      setLeadEffort(null);
+                    }}
+                    ariaLabel="执行模型"
+                    placeholder={defaultSettings?.leadModel ? `默认：${defaultSettings.leadModel}` : '跟随默认'}
+                  />
+                </Field>
+              </div>
+              <label className="ui-tb__check">
+                <Switch checked={useTeam} onCheckedChange={setUseTeam} />
+                <span>开启团队（关闭 = 单个 Agent 独立完成）</span>
+              </label>
+              {useTeam && (
+                <div className="space-y-1.5">
+                  <p className="text-xs font-medium text-muted-foreground">团队模型（不选 = 不限制）</p>
+                  <TeamModelPicker models={models} choices={teamModels} onChange={setTeamModels} />
+                </div>
+              )}
+            </TabsPanel>
+            <TabsPanel className="pt-1" value="prompt">
+              <PromptEnhancerForm value={description} onChange={setDescription} />
+            </TabsPanel>
+          </Tabs>
         </DialogPanel>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>取消</Button>
@@ -450,6 +473,7 @@ export function EditTaskDialog({
   const [planEffort, setPlanEffort] = useState<string | null>(task.planRoute?.reasoningEffort ?? null);
   const [leadEffort, setLeadEffort] = useState<string | null>(task.leadRoute?.reasoningEffort ?? null);
   const [teamModels, setTeamModels] = useState<TeamModelChoice[]>(() => taskTeamChoices(task));
+  const [tab, setTab] = useState<'basic' | 'prompt'>('basic');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -465,6 +489,7 @@ export function EditTaskDialog({
     setPlanEffort(task.planRoute?.reasoningEffort ?? null);
     setLeadEffort(task.leadRoute?.reasoningEffort ?? null);
     setTeamModels(taskTeamChoices(task));
+    setTab('basic');
   }, [open, task.id]);
 
   const submit = async () => {
@@ -495,7 +520,7 @@ export function EditTaskDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[88vh] max-w-xl overflow-y-auto">
+      <DialogContent className="max-h-[88vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>编辑任务</DialogTitle>
         </DialogHeader>
@@ -505,72 +530,91 @@ export function EditTaskDialog({
               该任务当前为「{BOARD_STATUS_LABEL[task.status]}」{task.archivedAt ? '（已封存）' : ''}，字段已锁定，不能修改。
             </p>
           )}
-          <Field label="标题">
-            <Input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} disabled={!editable} />
-          </Field>
-          <Field label="描述">
-            <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={5} disabled={!editable} />
-          </Field>
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-muted-foreground">规划</span>
-            <label className="ui-tb__check">
-              <Switch checked={needPlan} onCheckedChange={setNeedPlan} disabled={!editable} />
-              <span>需要规划</span>
-            </label>
-          </div>
-          {needPlan && (
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="执行方式">
-                <ModePicker value={mode} onChange={setMode} />
+          <Tabs
+            className="gap-3"
+            onValueChange={(next) => setTab(next === 'prompt' ? 'prompt' : 'basic')}
+            value={tab}
+          >
+            <TabsList className="w-full">
+              <TabsTab className="flex-1" value="basic">
+                基础表单
+              </TabsTab>
+              <TabsTab className="flex-1" value="prompt">
+                提示词增强
+              </TabsTab>
+            </TabsList>
+            <TabsPanel className="space-y-3" value="basic">
+              <Field label="标题">
+                <Input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} disabled={!editable} />
               </Field>
-              <Field label="规划模型">
-                <RouteSelect
-                  value={planKey}
-                  options={models}
-                  effort={planEffort}
-                  onEffortChange={setPlanEffort}
-                  onChange={(key) => {
-                    setPlanKey(key);
-                    setPlanEffort(null);
-                  }}
-                  ariaLabel="规划模型"
-                />
+              <Field label="描述">
+                <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={5} disabled={!editable} />
               </Field>
-            </div>
-          )}
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="自动入队">
-              <div className="flex h-9 items-center gap-2">
-                <Switch checked={auto} onCheckedChange={setAuto} disabled={!editable} />
-                <span className="text-xs text-muted-foreground">
-                  {auto ? (needPlan ? '创建后自动规划' : '创建后自动执行') : '手动点开始执行'}
-                </span>
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-muted-foreground">规划</span>
+                <label className="ui-tb__check">
+                  <Switch checked={needPlan} onCheckedChange={setNeedPlan} disabled={!editable} />
+                  <span>需要规划</span>
+                </label>
               </div>
-            </Field>
-            <Field label="执行模型">
-              <RouteSelect
-                value={leadKey}
-                options={models}
-                effort={leadEffort}
-                onEffortChange={setLeadEffort}
-                onChange={(key) => {
-                  setLeadKey(key);
-                  setLeadEffort(null);
-                }}
-                ariaLabel="执行模型"
-              />
-            </Field>
-          </div>
-          <label className="ui-tb__check">
-            <Switch checked={useTeam} onCheckedChange={setUseTeam} disabled={!editable} />
-            <span>开启团队（关闭 = 单个 Agent 独立完成）</span>
-          </label>
-          {useTeam && (
-            <div className="space-y-1.5">
-              <p className="text-xs font-medium text-muted-foreground">团队模型（不选 = 不限制）</p>
-              <TeamModelPicker models={models} choices={teamModels} onChange={setTeamModels} />
-            </div>
-          )}
+              {needPlan && (
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="执行方式">
+                    <ModePicker value={mode} onChange={setMode} />
+                  </Field>
+                  <Field label="规划模型">
+                    <RouteSelect
+                      value={planKey}
+                      options={models}
+                      effort={planEffort}
+                      onEffortChange={setPlanEffort}
+                      onChange={(key) => {
+                        setPlanKey(key);
+                        setPlanEffort(null);
+                      }}
+                      ariaLabel="规划模型"
+                    />
+                  </Field>
+                </div>
+              )}
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="自动入队">
+                  <div className="flex h-9 items-center gap-2">
+                    <Switch checked={auto} onCheckedChange={setAuto} disabled={!editable} />
+                    <span className="text-xs text-muted-foreground">
+                      {auto ? (needPlan ? '创建后自动规划' : '创建后自动执行') : '手动点开始执行'}
+                    </span>
+                  </div>
+                </Field>
+                <Field label="执行模型">
+                  <RouteSelect
+                    value={leadKey}
+                    options={models}
+                    effort={leadEffort}
+                    onEffortChange={setLeadEffort}
+                    onChange={(key) => {
+                      setLeadKey(key);
+                      setLeadEffort(null);
+                    }}
+                    ariaLabel="执行模型"
+                  />
+                </Field>
+              </div>
+              <label className="ui-tb__check">
+                <Switch checked={useTeam} onCheckedChange={setUseTeam} disabled={!editable} />
+                <span>开启团队（关闭 = 单个 Agent 独立完成）</span>
+              </label>
+              {useTeam && (
+                <div className="space-y-1.5">
+                  <p className="text-xs font-medium text-muted-foreground">团队模型（不选 = 不限制）</p>
+                  <TeamModelPicker models={models} choices={teamModels} onChange={setTeamModels} />
+                </div>
+              )}
+            </TabsPanel>
+            <TabsPanel className="pt-1" value="prompt">
+              <PromptEnhancerForm disabled={!editable} value={description} onChange={setDescription} />
+            </TabsPanel>
+          </Tabs>
         </DialogPanel>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>取消</Button>
