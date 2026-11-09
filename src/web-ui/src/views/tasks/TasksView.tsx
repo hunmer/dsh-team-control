@@ -204,6 +204,11 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
     void run(`${task.id}:retry`, () => boardApi.retry(task.id), '已重试');
   };
 
+  /** 手动兜底：Lead 忘记调用 board_task_status 时，由用户把任务直接标记完成。 */
+  const complete = (task: BoardTask) => {
+    void run(`${task.id}:complete`, () => boardApi.complete(task.id), '已标记完成');
+  };
+
   const archive = (task: BoardTask) => {
     void run(`${task.id}:archive`, () => boardApi.archive(task.id), '已封存');
   };
@@ -234,7 +239,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
       return;
     }
     if (columnId === 'done' && (task.status === 'planned' || task.status === 'inprogress')) {
-      void run(`${task.id}:done`, () => boardApi.status(task.id, 'done', '由看板手动标记完成'), '已标记完成');
+      complete(task);
     }
     if (columnId === 'waiting' && (task.status === 'planning' || task.status === 'inprogress')) stop(task);
   };
@@ -324,6 +329,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
                 onStart={(mode) => start(task, mode)}
                 onStop={() => stop(task)}
                 onRetry={() => retry(task)}
+                onComplete={() => complete(task)}
                 onArchive={() => archive(task)}
                 onRestore={() => restore(task)}
                 onToggleAuto={() => toggleAuto(task)}
@@ -369,6 +375,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
                         onStart={(mode) => start(task, mode)}
                         onStop={() => stop(task)}
                         onRetry={() => retry(task)}
+                        onComplete={() => complete(task)}
                         onArchive={() => archive(task)}
                         onRestore={() => restore(task)}
                         onToggleAuto={() => toggleAuto(task)}

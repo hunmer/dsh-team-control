@@ -360,7 +360,7 @@ export function TaskPanel({
                 className="ui-tb__act"
                 disabled={isBusy}
                 onClick={() => {
-                  void boardApi.status(task.id, 'done', '由看板手动标记完成')
+                  void boardApi.complete(task.id, '由看板手动标记完成')
                     .then(() => { onSaved(); onOk('已标记完成'); })
                     .catch((err) => onError(errText(err)));
                 }}

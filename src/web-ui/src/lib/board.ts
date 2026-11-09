@@ -103,8 +103,8 @@ export const boardApi = {
   archive: (id: string) => api<BoardTask>(`/api/board/tasks/${enc(id)}/archive`, { method: 'POST', body: {} }),
   restore: (id: string) => api<BoardTask>(`/api/board/tasks/${enc(id)}/restore`, { method: 'POST', body: {} }),
   remove: (id: string) => api<{ ok: true; id: string }>(`/api/board/tasks/${enc(id)}`, { method: 'DELETE' }),
-  status: (id: string, status: 'done' | 'failed' | 'inprogress', summary?: string) =>
-    api<BoardTask>(`/api/board/tasks/${enc(id)}/status`, { method: 'POST', body: { status, summary } }),
+  complete: (id: string, summary?: string) =>
+    api<BoardTask>(`/api/board/tasks/${enc(id)}/complete`, { method: 'POST', body: { summary } }),
   settings: (workspaceId: string) => api<{ settings: BoardSettings }>(`/api/board/settings?workspaceId=${enc(workspaceId)}`),
   saveSettings: (body: Partial<BoardSettings> & { workspaceId: string }) =>
     api<{ settings: BoardSettings }>('/api/board/settings', { method: 'PUT', body }),

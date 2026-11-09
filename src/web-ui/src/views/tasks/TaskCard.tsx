@@ -8,7 +8,7 @@ import { Switch } from '@/components/ui/switch';
 import { Tooltip, TooltipPopup, TooltipTrigger } from '@/components/ui/tooltip';
 import { ModelAvatar } from '@/components/ModelAvatar';
 import { brandOfModel } from '@/lib/model-brand';
-import { ArchiveRestore, CircleAlert, CircleStop, ExternalLink, Play, RotateCcw } from 'lucide-react';
+import { ArchiveRestore, Check, CircleAlert, CircleStop, ExternalLink, Play, RotateCcw } from 'lucide-react';
 import { BOARD_STATUS_LABEL, type BoardMode, type BoardRoute, type BoardTask } from '@/lib/board';
 
 import { StatusIcon } from '../board-status-icon';
@@ -59,6 +59,7 @@ export function TaskCard({
   onStart,
   onStop,
   onRetry,
+  onComplete,
   onArchive,
   onRestore,
   onToggleAuto,
@@ -74,6 +75,7 @@ export function TaskCard({
   onStart: (mode: BoardMode) => void;
   onStop: () => void;
   onRetry: () => void;
+  onComplete: () => void;
   onArchive: () => void;
   onRestore: () => void;
   onToggleAuto: () => void;
@@ -197,14 +199,32 @@ export function TaskCard({
                   <TooltipPopup>新会话执行</TooltipPopup>
                 </Tooltip>
               )}
+              {task.status === 'planned' && (
+                <Tooltip>
+                  <TooltipTrigger type="button" className="ui-tb__act" aria-label="标记完成" disabled={isBusy} onClick={onComplete}>
+                    <Check size={12} />
+                  </TooltipTrigger>
+                  <TooltipPopup>标记完成</TooltipPopup>
+                </Tooltip>
+              )}
             </>
           ) : active ? (
-            <Tooltip>
-              <TooltipTrigger type="button" className="ui-tb__act" aria-label="停止" disabled={isBusy} onClick={onStop}>
-                <CircleStop size={12} />
-              </TooltipTrigger>
-              <TooltipPopup>停止</TooltipPopup>
-            </Tooltip>
+            <>
+              {task.status === 'inprogress' && (
+                <Tooltip>
+                  <TooltipTrigger type="button" className="ui-tb__act" aria-label="标记完成" disabled={isBusy} onClick={onComplete}>
+                    <Check size={12} />
+                  </TooltipTrigger>
+                  <TooltipPopup>标记完成</TooltipPopup>
+                </Tooltip>
+              )}
+              <Tooltip>
+                <TooltipTrigger type="button" className="ui-tb__act" aria-label="停止" disabled={isBusy} onClick={onStop}>
+                  <CircleStop size={12} />
+                </TooltipTrigger>
+                <TooltipPopup>停止</TooltipPopup>
+              </Tooltip>
+            </>
           ) : task.status === 'failed' ? (
             <Tooltip>
               <TooltipTrigger type="button" className="ui-tb__act" aria-label="重试" disabled={isBusy} onClick={onRetry}>
