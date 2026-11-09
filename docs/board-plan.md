@@ -640,9 +640,8 @@ ctx.on('approval/request', async (req, next) => {
 1. 先调用 team_create 创建团队；name 用任务标题，workspace 用上面的路径。需要多个团队就多次创建，所有团队都会自动绑定到本任务。
 2. 调用 team_models 查看可用路由；只能使用以下模型：{teamModels}。为空表示不限制。
 3. 用 team_task 拆解并派发；用 team_status / team_report 跟踪。不要自己写代码，不要重复成员的工作。
-4. 全部任务成功后，必须调用 board_task_status({ status: "done", summary: "<完成摘要>" })。
-5. 无法完成时调用 board_task_status({ status: "failed", summary: "<原因>" })。
-6. 之后如果用户再次发消息，先调用 board_task_status({ status: "inprogress" })，再继续处理。
+4. 每轮结束前必须先调用 board_task_status 对齐状态：全部任务成功→done（附完成摘要），失败→failed（附原因），仍需继续或等待用户→inprogress。不能只在开始时调用一次。
+5. 用户再次发消息时，先调用 board_task_status({ status: "inprogress" })，再继续处理。
 ```
 
 Prompt 里不塞完整历史，只塞任务与计划；文件内容让模型自己读。

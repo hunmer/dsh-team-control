@@ -95,6 +95,9 @@ function resolveConfig(config) {
     boardDispatchMs: Number(c.boardDispatchMs) || 2000,
     boardIdleGraceMs: c.boardIdleGraceMs == null ? 6000 : Math.max(0, Number(c.boardIdleGraceMs) || 0),
     boardPlanningTimeoutMs: Number(c.boardPlanningTimeoutMs) || 30 * 60 * 1000,
+    // Lead 回合结束（idle）后任务仍非终态：自动追一条提醒，要求调用 board_task_status。
+    // 模型无法被真正强制，这里用有限次数的提醒兜底；0 关闭。
+    boardStatusNudgeMax: c.boardStatusNudgeMax == null ? 2 : Math.max(0, Number(c.boardStatusNudgeMax) || 0),
   };
 }
 
@@ -1560,6 +1563,8 @@ const textOutput = () => ({
 // ---------------------------------------------------------------------------
 const boardSessions = new Map(); // sessionId -> { taskId, phase, handle, sawRunning }
 const boardSessionIds = new Set();
+/** `${taskId}:${sessionId}` -> 已自动提醒次数：Lead 忘记调用 board_task_status 时有限次追问。 */
+const boardNudgeCount = new Map();
 
 function boardUserMessage(text) {
   return {
@@ -1682,18 +1687,16 @@ function boardLeadPrompt(task, sameSession) {
     '2. 调用 team_models 查看可用路由；只能使用以下模型：',
     models,
     '3. 用 team_task 拆解并派发；用 team_status / team_report 跟踪。不要自己写代码，不要重复成员的工作。',
-    '4. 全部任务成功后，必须调用 board_task_status({ status: "done", summary: "<完成摘要>" })。',
-    '5. 无法完成时调用 board_task_status({ status: "failed", summary: "<原因>" })。',
-    '6. 之后如果用户再次发消息，先调用 board_task_status({ status: "inprogress" })，再继续处理。',
+    '4. 每轮结束前必须先调用 board_task_status 对齐状态：全部任务成功→done（附完成摘要），失败→failed（附原因），仍需继续或等待用户→inprogress。不能只在开始时调用一次。',
+    '5. 用户再次发消息时，先调用 board_task_status({ status: "inprogress" })，再继续处理。',
   ];
   const soloRules = [
     '本任务不开启团队：由你自己直接完成所有工作，不要调用 team_create / team_spawn / team_task。',
     '',
     '规则：',
     '1. 按任务描述直接修改文件、运行命令并验证结果。',
-    '2. 全部工作完成后，必须调用 board_task_status({ status: "done", summary: "<完成摘要>" })。',
-    '3. 无法完成时调用 board_task_status({ status: "failed", summary: "<原因>" })。',
-    '4. 之后如果用户再次发消息，先调用 board_task_status({ status: "inprogress" })，再继续处理。',
+    '2. 每轮结束前必须先调用 board_task_status 对齐状态：全部完成→done（附完成摘要），失败→failed（附原因），仍需继续或等待用户→inprogress。不能只在开始时调用一次。',
+    '3. 用户再次发消息时，先调用 board_task_status({ status: "inprogress" })，再继续处理。',
   ];
   const rules = useTeam ? teamRules : soloRules;
   // 同会话执行：计划已经在同一会话的上文里，不再重复注入任务描述与 plan 全文。
@@ -3003,7 +3006,7 @@ function buildTools(s, ctx) {
 
   tools.push({
     name: 'board_task_status',
-    description: 'Report the current workspace-board task status from the Lead session. Call status "done" after all team tasks succeed, "failed" when the task cannot be completed, and "inprogress" when the user sends a new message after a finished task.',
+    description: 'Report the current workspace-board task status from the Lead session. Call it at the end of EVERY turn: "done" after all team tasks succeed, "failed" when the task cannot be completed, and "inprogress" while work remains or when waiting for the user (also call it when the user sends a new message after a finished task).',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -3599,22 +3602,51 @@ export function apply(ctx, config) {
     }).catch(() => { /* 非终态时 sidecar 会拒绝，忽略 */ });
   });
 
-  // 规划会话 idle 却没有提交计划：给工具收尾留一个宽限窗口，仍停在 planning 就判失败。
+  // 看板会话 idle：
+  // - 规划阶段宽限后仍停在 planning → 判失败，避免永久占着槽位；
+  // - 执行阶段任务仍非终态 → 有限次提醒 Lead 调用 board_task_status（模型无法被真正强制，靠提醒兜底）。
   ctx.on('agent/status', ({ agent, status } = {}) => {
     const sessionId = agent?.id != null ? String(agent.id) : null;
     const rec = sessionId ? boardSessions.get(sessionId) : null;
     if (!rec) return;
     if (status === 'running') { rec.sawRunning = true; return; }
-    if (status !== 'idle' || rec.phase !== 'planning' || !rec.sawRunning) return;
+    if (status !== 'idle' || !rec.sawRunning) return;
+
+    if (rec.phase === 'planning') {
+      const timer = setTimeout(() => {
+        void (async () => {
+          if (rec.phase !== 'planning') return;
+          try {
+            const task = await request(s, `/api/board/tasks/${encodeURIComponent(rec.taskId)}`);
+            if (task?.status !== 'planning') return;
+            await request(s, '/api/board/agents/status', {
+              method: 'POST', body: { sessionId, status: 'failed', summary: '规划会话空闲但未提交计划' },
+            });
+          } catch { /* ignore */ }
+        })();
+      }, Math.max(0, s.boardIdleGraceMs));
+      timer.unref?.();
+      return;
+    }
+
+    if (rec.phase !== 'execution' || !s.boardStatusNudgeMax) return;
+    const key = `${rec.taskId}:${sessionId}`;
     const timer = setTimeout(() => {
       void (async () => {
-        if (rec.phase !== 'planning') return;
         try {
           const task = await request(s, `/api/board/tasks/${encodeURIComponent(rec.taskId)}`);
-          if (task?.status !== 'planning') return;
-          await request(s, '/api/board/agents/status', {
-            method: 'POST', body: { sessionId, status: 'failed', summary: '规划会话空闲但未提交计划' },
-          });
+          if (!task || !['planning', 'planned', 'inprogress'].includes(task.status)) {
+            boardNudgeCount.delete(key);
+            return;
+          }
+          const used = boardNudgeCount.get(key) || 0;
+          if (used >= s.boardStatusNudgeMax) return;
+          boardNudgeCount.set(key, used + 1);
+          rec.handle?.agent?.followup?.(boardUserMessage(
+            `系统自动提醒：本轮已结束，但看板任务「${task.title}」仍未标记完成。`
+            + '请立刻调用 board_task_status 对齐状态：已完成用 {"status":"done","summary":"<完成摘要>"}；'
+            + '未完成或仍在等待用户用 {"status":"inprogress"}。',
+          ));
         } catch { /* ignore */ }
       })();
     }, Math.max(0, s.boardIdleGraceMs));
