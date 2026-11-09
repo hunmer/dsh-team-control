@@ -356,6 +356,25 @@ export class Board {
     return task;
   }
 
+  /**
+   * 手动标记完成：Lead 忘记调用 board_task_status 时的兜底。
+   * 只允许从「已规划 / 执行中 / 失败」进入 done，并关掉自动入队，避免又被调度器拉起。
+   */
+  completeTask(id, body = {}) {
+    const cur = this.getTask(id);
+    if (cur.archivedAt) throw ERR.invalidState('task archived');
+    if (!['planned', 'inprogress', 'failed'].includes(cur.status)) {
+      throw ERR.invalidState(`cannot complete from ${cur.status}`);
+    }
+    const stamp = nowIso();
+    const summary = text(body.summary, 2000) || '由看板手动标记完成';
+    this.get(`UPDATE board_task SET status='done', auto=0, force_start=0, resumed=0, claim_token=NULL, claimed_at=NULL,
+      last_error=NULL, done_at=?, updated_at=? WHERE id=?`).run(stamp, stamp, cur.id);
+    const task = this.getTask(cur.id);
+    this.addEvent(task, 'done', { summary, manual: true });
+    return task;
+  }
+
   archiveTask(id, body = {}) {
     const cur = this.getTask(id);
     if (ACTIVE.has(cur.status)) throw ERR.invalidState('stop the task before archiving');

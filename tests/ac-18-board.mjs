@@ -103,6 +103,27 @@ const main = async () => {
     assertEqual(withWeb.settings.dshWebUrl, 'http://127.0.0.1:3080', 'Host 上报的 DSH Web 地址透出到设置');
     assert(view.tasks.length >= 2, '看板返回任务');
 
+    // 手动标记完成：不依赖会话，从 planned 直接终结；完成后停止自动调度
+    await api.put('/api/board/settings', { workspaceId: 'ws-board', planningConcurrency: 5, inprogressConcurrency: 5 });
+    const manual = await api.post('/api/board/tasks', {
+      workspaceId: 'ws-board', title: '手动完成', auto: true, executionMode: 'same', priority: 3000,
+    });
+    const manualClaim = await api.post('/api/board/claim', { kind: 'planning' });
+    assertEqual(manualClaim.item.task.id, manual.id, '手动完成用例拿到规划槽位');
+    await api.post(`/api/board/tasks/${manual.id}/attach`, {
+      kind: 'planning', sessionId: 'sess-manual-plan', fence: manualClaim.item.fence,
+    });
+    await api.post('/api/board/agents/plan', {
+      sessionId: 'sess-manual-plan', plan: '# 手动完成', summary: '手动',
+    });
+    const completed = await api.post(`/api/board/tasks/${manual.id}/complete`, { summary: '用户手动标记完成' });
+    assertEqual(completed.status, 'done', '可手动标记完成');
+    assertEqual(completed.auto, false, '手动完成后不再自动调度');
+    assert(completed.doneAt != null, '手动完成写入完成时间');
+    let reComplete = false;
+    try { await api.post(`/api/board/tasks/${manual.id}/complete`, {}); } catch (e) { reComplete = e.status === 409; }
+    assert(reComplete, '已完成任务不可重复标记');
+
     // 看板 stop 联动绑定团队：在途任务转 paused，成员转 interrupted
     const stopTeam = await api.post('/api/teams', {
       name: 'board-stop-team', workspace: tmp.ws, maxConcurrency: 1,

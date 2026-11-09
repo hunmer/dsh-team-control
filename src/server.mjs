@@ -165,6 +165,7 @@ export function createRoutes(core) {
       return task;
     }],
     ['POST', /^\/api\/board\/tasks\/([^/]+)\/retry$/, async (ctx) => C.board.retryTask(ctx.p[0])],
+    ['POST', /^\/api\/board\/tasks\/([^/]+)\/complete$/, async (ctx) => C.board.completeTask(ctx.p[0], ctx.body)],
     ['POST', /^\/api\/board\/tasks\/([^/]+)\/archive$/, async (ctx) => C.board.archiveTask(ctx.p[0], ctx.body)],
     ['POST', /^\/api\/board\/tasks\/([^/]+)\/restore$/, async (ctx) => C.board.restoreTask(ctx.p[0])],
     ['DELETE', /^\/api\/board\/tasks\/([^/]+)$/, async (ctx) => C.board.deleteTask(ctx.p[0])],
