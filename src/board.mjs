@@ -326,7 +326,8 @@ export class Board {
     if (!['todo', 'planned'].includes(cur.status)) throw ERR.invalidState(`cannot start from ${cur.status}`);
     if (cur.archivedAt) throw ERR.invalidState('task archived');
     const mode = MODES.has(body.executionMode) ? body.executionMode : cur.executionMode;
-    this.get('UPDATE board_task SET auto=1, execution_mode=?, stop_requested=0, last_error=NULL, updated_at=? WHERE id=?')
+    // 手动启动：跳过看板并发上限，直到该任务真正进入执行槽位（claim inprogress 时清零）。
+    this.get('UPDATE board_task SET auto=1, force_start=1, execution_mode=?, stop_requested=0, last_error=NULL, updated_at=? WHERE id=?')
       .run(mode, nowIso(), cur.id);
     const task = this.getTask(cur.id);
     this.addEvent(task, 'start', { executionMode: mode });
@@ -347,7 +348,7 @@ export class Board {
     const cur = this.getTask(id);
     if (!['failed', 'done'].includes(cur.status)) throw ERR.invalidState(`cannot retry from ${cur.status}`);
     const next = cur.needPlan && cur.planMd ? 'planned' : 'todo';
-    this.get(`UPDATE board_task SET status=?, auto=1, stop_requested=0, claim_token=NULL, claimed_at=NULL,
+    this.get(`UPDATE board_task SET status=?, auto=1, force_start=0, stop_requested=0, claim_token=NULL, claimed_at=NULL,
       planning_session_id=NULL, lead_session_id=NULL, resumed=0, last_error=NULL, done_at=NULL, updated_at=? WHERE id=?`)
       .run(next, nowIso(), cur.id);
     const task = this.getTask(cur.id);
@@ -410,14 +411,21 @@ export class Board {
     for (const row of rows) {
       const settings = this.settings(row.workspace_id, row.workspace_path);
       const limit = kind === 'planning' ? settings.planningConcurrency : settings.inprogressConcurrency;
-      if (limit <= 0) continue;
-      if (this.count(row.workspace_id, kind === 'planning' ? 'planning' : 'inprogress') >= limit) continue;
+      // 手动启动的任务（force_start=1）不受并发上限约束；进入执行槽位后清零。
+      const force = row.force_start === 1;
+      if (!force) {
+        if (limit <= 0) continue;
+        if (this.count(row.workspace_id, kind === 'planning' ? 'planning' : 'inprogress') >= limit) continue;
+      }
       const token = newId('claim');
       const out = tx(this.db, () => {
-        const used = this.count(row.workspace_id, kind === 'planning' ? 'planning' : 'inprogress');
-        if (used >= limit) return null;
-        const r = this.get(`UPDATE board_task SET status=?, claim_token=?, claimed_at=?, updated_at=?
-          WHERE id=? AND status=?`).run(kind, token, stamp, stamp, row.id, row.status);
+        if (!force) {
+          const used = this.count(row.workspace_id, kind === 'planning' ? 'planning' : 'inprogress');
+          if (used >= limit) return null;
+        }
+        const nextForce = kind === 'inprogress' ? 0 : row.force_start;
+        const r = this.get(`UPDATE board_task SET status=?, claim_token=?, claimed_at=?, force_start=?, updated_at=?
+          WHERE id=? AND status=?`).run(kind, token, stamp, nextForce, stamp, row.id, row.status);
         return r.changes ? this.getTask(row.id) : null;
       });
       if (!out) continue;

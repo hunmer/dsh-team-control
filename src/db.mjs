@@ -253,6 +253,7 @@ CREATE TABLE IF NOT EXISTS board_task (
   description TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'todo',
   auto INTEGER NOT NULL DEFAULT 0,
+  force_start INTEGER NOT NULL DEFAULT 0,
   execution_mode TEXT NOT NULL DEFAULT 'same',
   need_plan INTEGER NOT NULL DEFAULT 1,
   use_team INTEGER NOT NULL DEFAULT 1,
@@ -347,6 +348,7 @@ export function openDb(file) {
   ensureColumn(db, 'board_task', 'resumed', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'board_task', 'need_plan', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumn(db, 'board_task', 'use_team', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn(db, 'board_task', 'force_start', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'board_settings', 'show_task_sessions', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumn(db, 'preset_delete', 'attempts', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'preset_delete', 'last_error', 'TEXT');
