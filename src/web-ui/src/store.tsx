@@ -24,6 +24,17 @@ const SSE_TYPES = ['member.status', 'step.append', 'task.state', 'message.delive
 const TIMELINE_CAP = 2000;
 const STORE_UI = 'dsh-team.panel.ui.v1';
 const STORE_LAST = 'dsh-team.panel.lastEventId.v1';
+/** 任务看板上次打开/选中的工作区（localStorage：跨浏览器会话保留）。 */
+const STORE_BOARD_WS = 'dsh-team.panel.boardWorkspaceId.v1';
+const boardWorkspaceGet = (): string | null => {
+  try { return window.localStorage.getItem(STORE_BOARD_WS); } catch { return null; }
+};
+const boardWorkspaceSet = (id: string | null): void => {
+  try {
+    if (id) window.localStorage.setItem(STORE_BOARD_WS, id);
+    else window.localStorage.removeItem(STORE_BOARD_WS);
+  } catch { /* 隐私模式忽略 */ }
+};
 /** 虚拟工作区：注册表里没有归属的团队（旧团队 / 路径已变），保证它们不会从下拉里消失。 */
 export const OTHER_WORKSPACE_ID = '__other';
 
@@ -788,6 +799,7 @@ export function PanelProvider({ children }: { children: ReactNode }) {
   /** 独立看板页：只改 workspaceId，保持 #/board/<ws>，不触发团队选择。 */
   const selectBoardWorkspace = useCallback((workspaceId: string) => {
     const wsId = workspaceId || null;
+    boardWorkspaceSet(wsId);
     patchUi({ page: 'board', workspaceId: wsId });
     stateRef.current = { ...stateRef.current, page: 'board', workspaceId: wsId };
     writeRoute({ page: 'board', ws: wsId, team: null, tab: null }, false);
@@ -880,9 +892,17 @@ export function PanelProvider({ children }: { children: ReactNode }) {
       // 独立看板页：只解析工作区，不选团队、不连 SSE，也不把 URL 改写成编排路由。
       if (route.page === 'board') {
         const workspaces = await refreshWorkspaces().catch(() => [] as Workspace[]);
-        const wsId = route.ws && (route.ws === OTHER_WORKSPACE_ID || workspaces.some((w) => w.id === route.ws))
+        // 默认选中「当前会话的工作区」：Host 用 iframe 的 &cwd= 传入会话 cwd；
+        // 匹配不到再回退到看板上次打开的工作区，最后才退到第一个工作区。
+        const cwd = new URLSearchParams(location.search).get('cwd') || '';
+        const cwdWs = cwd ? workspaces.find((w) => workspaceMatches(cwd, w.path)) ?? null : null;
+        const saved = boardWorkspaceGet();
+        const savedWs = saved ? workspaces.find((w) => w.id === saved) ?? null : null;
+        const routeWs = route.ws && (route.ws === OTHER_WORKSPACE_ID || workspaces.some((w) => w.id === route.ws))
           ? route.ws
-          : workspaces[0]?.id ?? null;
+          : null;
+        const wsId = routeWs ?? cwdWs?.id ?? savedWs?.id ?? workspaces[0]?.id ?? null;
+        if (wsId) boardWorkspaceSet(wsId);
         patchUi({ page: 'board', workspaceId: wsId, conn: 'live' });
         stateRef.current = { ...stateRef.current, page: 'board', workspaceId: wsId, conn: 'live' };
         return;

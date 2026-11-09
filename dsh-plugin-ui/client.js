@@ -308,10 +308,13 @@ window.__ModuleLoader__.load({
       const listeners = new Set();
       // 最近一次看到的团队也落 sessionStorage：整页刷新后编排页不会先空一屏跳到第一个工作区
       const LAST_TEAM_KEY = 'dsh-team:last-team';
+      const LAST_CWD_KEY = 'dsh-team:last-cwd';
       let active = null;
       let lastTeamId = null;
       let forcedTeamId = null;
+      let lastCwd = null;
       try { lastTeamId = window.sessionStorage.getItem(LAST_TEAM_KEY) || null; } catch { /* ignore */ }
+      try { lastCwd = window.sessionStorage.getItem(LAST_CWD_KEY) || null; } catch { /* ignore */ }
       const emit = () => {
         for (const fn of listeners) { try { fn(); } catch { /* 单个订阅出错不影响其他 */ } }
       };
@@ -349,13 +352,25 @@ window.__ModuleLoader__.load({
           emit();
         },
         get(sessionId) { return (sessionId && byId.get(sessionId)) || null; },
+        /** 当前会话的工作目录：看板据此默认选中对应工作区。 */
+        setCwd(sessionId, cwd) {
+          if (!sessionId || sessionId !== active) return;
+          const next = cwd ? String(cwd) : null;
+          if (next === lastCwd) return;
+          lastCwd = next;
+          try {
+            if (next) window.sessionStorage.setItem(LAST_CWD_KEY, next);
+            else window.sessionStorage.removeItem(LAST_CWD_KEY);
+          } catch { /* ignore */ }
+          emit();
+        },
         subscribe(fn) { listeners.add(fn); return () => { listeners.delete(fn); }; },
         /**
          * lastTeamId：最近一次解析到的团队。侧栏还能开「子 agent 聊天」这类没有自己团队的
          * 页签，它会把 active 切成子会话；这时编排页沿用上一次的团队，而不是空等或跳回
          * 第一个工作区。
          */
-        snapshot() { return { sessionId: active, info: (active && byId.get(active)) || null, lastTeamId, forcedTeamId }; },
+        snapshot() { return { sessionId: active, info: (active && byId.get(active)) || null, lastTeamId, forcedTeamId, cwd: lastCwd }; },
       };
     })();
 
@@ -466,6 +481,16 @@ window.__ModuleLoader__.load({
     /** 独立任务看板：整页 iframe 指向 #/board，不继承任何 team。 */
     function BoardView({ t, getService }) {
       const frameRef = React.useRef(null);
+      // 当前会话的 cwd：看板据此默认选中对应工作区（取不到再由面板回退到上次工作区）。
+      const [sessionTeam, setSessionTeam] = React.useState(() => sessionTeamStore.snapshot());
+      React.useEffect(() => {
+        const sync = () => setSessionTeam(sessionTeamStore.snapshot());
+        sync();
+        return sessionTeamStore.subscribe(sync);
+      }, []);
+      const frameSrc = '/dsh-team-api/panel?api=/dsh-team-api&embed=1'
+        + (sessionTeam.cwd ? '&cwd=' + encodeURIComponent(sessionTeam.cwd) : '')
+        + '#/board';
       // 看板详情里点「打开编排」→ 在 Host 侧切到编排页，并把 iframe 指到对应团队。
       React.useEffect(() => {
         const onMessage = (event) => {
@@ -498,7 +523,7 @@ window.__ModuleLoader__.load({
           ref: frameRef,
           className: 'dsht-frame',
           title: t('board_title'),
-          src: '/dsh-team-api/panel?api=/dsh-team-api&embed=1#/board',
+          src: frameSrc,
         }));
     }
 
@@ -1336,6 +1361,8 @@ window.__ModuleLoader__.load({
         }
         kids.sort((a, b) => String(a.id).localeCompare(String(b.id)));
         const kidsKey = kids.map((kid) => kid.id).join(',');
+        const selfRow = sessionId && byId ? byId[sessionId] : null;
+        const selfCwd = (selfRow && typeof selfRow.cwd === 'string' && selfRow.cwd) || '';
         const card = useCard(sessionId);
 
         // 当前是哪个会话：侧栏「编排」页据此决定 iframe 带哪个 team
@@ -1344,6 +1371,13 @@ window.__ModuleLoader__.load({
           sessionTeamStore.setActive(sessionId);
           return undefined;
         }, [sessionId]);
+
+        // 当前会话的工作目录：看板据此默认选中对应工作区
+        React.useEffect(() => {
+          if (!sessionId) return undefined;
+          sessionTeamStore.setCwd(sessionId, selfCwd);
+          return undefined;
+        }, [sessionId, selfCwd]);
 
         // 解析本会话的团队并记住；首次解析到团队时把「编排」页自动推到右侧栏（每会话一次）。
         // 只查团队每次挂载都做（很便宜），「自动打开」只有一次 —— 切回已经打开过的会话时
