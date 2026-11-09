@@ -653,6 +653,12 @@ export function SettingsDialog({
 
   if (!draft) return null;
 
+  // 规划与执行共用同一个「并行上限」；历史数据两者不一致时取较大值，避免静默降低容量。
+  const parallelLimit = Math.max(
+    Number(draft.planningConcurrency) || 1,
+    Number(draft.inprogressConcurrency) || 1,
+  );
+
   const save = async () => {
     setSaving(true);
     try {
@@ -684,22 +690,16 @@ export function SettingsDialog({
         </DialogHeader>
         <DialogPanel className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <Field label="规划并发">
+            <Field label="并行上限">
               <Input
                 type="number"
                 min={1}
                 max={10}
-                value={draft.planningConcurrency}
-                onChange={(e) => setDraft({ ...draft, planningConcurrency: Number(e.target.value) })}
-              />
-            </Field>
-            <Field label="执行并发">
-              <Input
-                type="number"
-                min={1}
-                max={10}
-                value={draft.inprogressConcurrency}
-                onChange={(e) => setDraft({ ...draft, inprogressConcurrency: Number(e.target.value) })}
+                value={parallelLimit}
+                onChange={(e) => {
+                  const next = Number(e.target.value);
+                  setDraft({ ...draft, planningConcurrency: next, inprogressConcurrency: next });
+                }}
               />
             </Field>
           </div>
