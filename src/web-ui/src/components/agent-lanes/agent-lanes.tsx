@@ -26,7 +26,7 @@ import { AGENT_LANES_CSS } from "./agent-lanes-css";
 
 /* ------------------------------------------------------------------ types */
 
-export type LaneTaskStatus = "done" | "running" | "waiting" | "failed";
+export type LaneTaskStatus = "done" | "running" | "waiting" | "failed" | "stale";
 
 export interface LaneAgent {
   id: string;
@@ -59,7 +59,10 @@ export interface LaneTask {
 export interface AgentLanesProps {
   agents: LaneAgent[];
   tasks: LaneTask[];
-  /** how much time the lanes show, in ms */
+  /**
+   * 时间窗口的最小跨度（ms）。窗口会自动覆盖全部事件：最早开始 → 最晚结束，
+   * 只有仍在跑的任务才把右边界拉到当前时刻；不需要额外留白时可以不传。
+   */
   span?: number;
   /** a clock you control; without it the lanes follow real time */
   now?: number;
@@ -85,6 +88,7 @@ const STATUS_LABEL: Record<LaneTaskStatus, string> = {
   running: "Running",
   waiting: "Needs you",
   failed: "Failed",
+  stale: "Stopped",
 };
 
 /** candidate tick steps (minutes) — the first that gives ≤ 6 ticks wins */
@@ -168,7 +172,7 @@ const FlagIcon = () =>
 export function AgentLanes({
   agents,
   tasks: tasksProp,
-  span = 30 * MIN_MS,
+  span: minSpan = 0,
   now,
   onApprove,
   onReject,
@@ -193,13 +197,43 @@ export function AgentLanes({
   }, [now]);
 
   const nowMs = now ?? nowTick;
-  const spanStart = nowMs - span;
 
   // local overrides apply when no approve/reject handlers are given
   const tasks = tasksProp.map((t) =>
     overrides[t.id] ? { ...t, ...overrides[t.id] } : t,
   );
 
+  // 自动缩放：窗口覆盖全部事件的 [最早开始, 最晚结束]，右侧不延到「现在」，
+  // 只有仍在跑的任务（end 为空）才跟着当前时刻走。
+  // 左边界钉在最早事件之前一点，只会随历史变长而缓慢外扩，不会抖动。
+  const fit = useMemo(() => {
+    if (!tasks.length) return { span: MIN_MS, end: nowMs };
+    let first = Infinity;
+    let last = -Infinity;
+    for (const t of tasks) {
+      const start = toTs(t.start);
+      const end = t.end === undefined ? nowMs : toTs(t.end);
+      if (start < first) first = start;
+      if (end > last) last = end;
+    }
+    const history = Math.max(0, last - first);
+    // 留白：窄窗口按比例，长历史封顶（左 6 分钟 / 右 1 分钟）；
+    // 左边留白顺带避开通往左缘的 40px 淡出
+    const padLeft = Math.min(6 * MIN_MS, history * 0.12 + 20_000);
+    const padRight = Math.min(MIN_MS, history * 0.04 + 10_000);
+    return {
+      span: Math.max(MIN_MS, history + padLeft + padRight),
+      end: last + padRight,
+    };
+  }, [tasks, nowMs]);
+
+  // 调用方可给一个更大的下限，但数据需要更大窗口时以数据为准
+  const span = Math.max(minSpan, fit.span);
+  /** 右边界 = 最晚结束时间；仍在跑的任务把它拉到当前时刻 */
+  const spanEnd = fit.end;
+  const spanStart = spanEnd - span;
+
+  // approve/reject 交给外部处理；没有 handler 时只在本地改状态
   const decide = (task: LaneTask, approve: boolean) => {
     setOpenId(null);
     const handler = approve ? onApprove : onReject;
@@ -215,10 +249,13 @@ export function AgentLanes({
   /** screen position of a timestamp inside the window (0–100%) */
   const pctOf = (ts: number) => Math.min(100, ((ts - spanStart) / span) * 100);
 
-  // the layer spans [mount − span, mount + span] and slides with the clock
-  const mountNow = useRef(nowMs).current;
-  const layerPct = (ts: number) => ((ts - mountNow) / span) * 100 + 100;
-  const shiftPct = ((nowMs - mountNow) / span) * 100;
+  // the layer is anchored at the window's right edge and slides with it
+  const mountEnd = useRef(spanEnd).current;
+  const layerPct = (ts: number) => ((ts - mountEnd) / span) * 100 + 100;
+  const shiftPct = ((spanEnd - mountEnd) / span) * 100;
+
+  // 只有确实有任务在跑时，窗口右边缘才是「现在」
+  const hasRunning = tasks.some((t) => t.end === undefined);
 
   // tasks that touch the window
   const visible = tasks.filter(
@@ -454,7 +491,7 @@ export function AgentLanes({
                           className: "ui-alc__tick",
                           style: { left: `${100 - (ago / span) * 100}%` },
                           children: jsx("span", {
-                            children: fmtClock(nowMs - ago, span),
+                            children: fmtClock(spanEnd - ago, span),
                           }),
                         },
                         ago,
@@ -498,8 +535,10 @@ export function AgentLanes({
                                     task.end === undefined
                                       ? nowMs
                                       : toTs(task.end);
-                                  const width =
-                                    ((end - toTs(task.start)) / span) * 100;
+                                  const width = Math.max(
+                                    0,
+                                    ((end - toTs(task.start)) / span) * 100,
+                                  );
                                   const durLabel = fmtSpan(
                                     end - toTs(task.start),
                                   );
@@ -704,11 +743,12 @@ export function AgentLanes({
                         ],
                       });
                     })(),
-                  jsx("span", {
-                    className: "ui-alc__now",
-                    "aria-hidden": "true",
-                    children: jsx("span", { children: `now` }),
-                  }),
+                  hasRunning &&
+                    jsx("span", {
+                      className: "ui-alc__now",
+                      "aria-hidden": "true",
+                      children: jsx("span", { children: `now` }),
+                    }),
                 ],
               }),
             ],

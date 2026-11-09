@@ -38,7 +38,7 @@ export const todosApi = {
   teams: () => api<TeamsResponse>('/api/teams'),
 };
 
-export type TodoBatchStatus = 'done' | 'running' | 'failed';
+export type TodoBatchStatus = 'done' | 'running' | 'failed' | 'stale';
 
 /** 一个进度批次：同一成员、同一次提交里一起完成的 todo 合成一块。 */
 export interface TodoBatch {
@@ -92,8 +92,21 @@ export function fmtDuration(ms: number | null | undefined): string {
  * - done：按 done_at 分组（todo_write 一次勾多个 → 同一个 done_at → 同一块）；
  * - active / blocked：按 started_at 分组（一次提交里同时启动多个 → 同一块），结束到 now / updated_at。
  * open 不占时间轴，只在明细列表里展示。
+ *
+ * active 的 todo 只有在「该成员此刻真的在跑」时才画到 now；成员已 idle 却仍留着
+ * active（成员结束时没再 todo_write 收尾）时，块停在最后一次更新时间并标记 stale。
  */
-export function buildTodoBatches(todos: TodoItem[], now: number): TodoBatch[] {
+export interface TodoBatchOptions {
+  /** 该成员此刻是否在运行；不传 = 旧行为（active 一律画到 now） */
+  isLive?: (memberId: string | null) => boolean;
+}
+
+export function buildTodoBatches(
+  todos: TodoItem[],
+  now: number,
+  options: TodoBatchOptions = {},
+): TodoBatch[] {
+  const isLive = options.isLive ?? (() => true);
   const groups = new Map<string, TodoBatch>();
   for (const todo of todos) {
     if (todo.status === 'done') {
@@ -113,7 +126,12 @@ export function buildTodoBatches(todos: TodoItem[], now: number): TodoBatch[] {
       const start = todoStartMs(todo);
       // 同一次 todo_write 里多个 todo 一起进入 active/blocked 时共享 started_at → 同一块
       const key = `run:${todo.memberId || '-'}:${todo.startedAt || start}`;
-      const end = Math.max(start, todoEndMs(todo, now) ?? now);
+      const live = isLive(todo.memberId);
+      // 成员已不在跑时，块停在最后一次更新时间，不再拖到 now；blocked 一直停在 updated_at
+      const touch = parseTs(todo.updatedAt || todo.startedAt || todo.createdAt);
+      const end = Math.max(start, todo.status === 'active' && live ? now : touch);
+      const status: TodoBatchStatus =
+        todo.status === 'blocked' ? 'failed' : live ? 'running' : 'stale';
       const batch = groups.get(key);
       if (batch) {
         batch.end = Math.max(batch.end, end);
@@ -123,7 +141,7 @@ export function buildTodoBatches(todos: TodoItem[], now: number): TodoBatch[] {
         groups.set(key, {
           id: key,
           memberId: todo.memberId,
-          status: todo.status === 'blocked' ? 'failed' : 'running',
+          status,
           start,
           end,
           todos: [todo],

@@ -10,13 +10,11 @@ import { AgentLanes, type LaneAgent, type LaneTask } from '@/components/agent-la
 import { modelAvatar } from '@/components/ModelAvatar';
 import { PlanCard, toPlanStep } from '@/components/plan-card';
 import { Tabs, TabsList, TabsPanel, TabsTab } from '@/components/ui/tabs';
-import { buildTodoBatches, fmtDuration, todoDuration, todosApi, type TodoItem } from '@/lib/todos';
+import { buildTodoBatches, fmtDuration, todoDuration, todoStartMs, todosApi, type TodoItem } from '@/lib/todos';
 import type { Member } from '@/types';
 import { errText } from './shared';
 
 const POLL_MS = 2500;
-const MIN_SPAN_MS = 30 * 60_000;
-const MAX_SPAN_MS = 7 * 24 * 60 * 60_000;
 
 export function TaskProgress({ teamId }: { teamId: string }) {
   const [teamName, setTeamName] = useState('');
@@ -96,7 +94,26 @@ export function TaskProgress({ teamId }: { teamId: string }) {
     });
   }, [todos, memberById]);
 
-  const batches = useMemo(() => buildTodoBatches(todos, tick), [todos, tick]);
+  /** 此刻真的在跑的成员；成员状态接口没数据时退回旧行为（active 一律算在跑）。 */
+  const liveMemberIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const member of members) {
+      if (['running', 'provisioning', 'spawning', 'blocked'].includes(member.status)) ids.add(member.id);
+    }
+    return ids;
+  }, [members]);
+
+  const batches = useMemo(
+    () => buildTodoBatches(todos, tick, {
+      isLive: (memberId) =>
+        members.length === 0
+          ? true
+          : memberId
+            ? liveMemberIds.has(memberId)
+            : liveMemberIds.size > 0,
+    }),
+    [todos, tick, members, liveMemberIds],
+  );
   const agentIds = useMemo(() => [...new Set(batches.map((batch) => batch.memberId || 'unassigned'))], [batches]);
 
   const agents = useMemo<LaneAgent[]>(() => agentIds.map((id) => {
@@ -116,7 +133,9 @@ export function TaskProgress({ teamId }: { teamId: string }) {
     const first = batch.todos[0]?.title || '';
     const label = batch.status === 'done'
       ? `完成 ${count} 项`
-      : `${batch.status === 'failed' ? '阻塞' : '进行中'}${count > 1 ? ` ${count} 项` : ''} · ${first}`;
+      : batch.status === 'stale'
+        ? `已结束 ${count} 项 · ${first}`
+        : `${batch.status === 'failed' ? '阻塞' : '进行中'}${count > 1 ? ` ${count} 项` : ''} · ${first}`;
     return {
       id: batch.id,
       agentId: batch.memberId || 'unassigned',
@@ -124,15 +143,12 @@ export function TaskProgress({ teamId }: { teamId: string }) {
       status: batch.status,
       start: batch.start,
       end: batch.end,
-      summary: batch.todos.map((todo) => `${todo.title} · ${fmtDuration(todoDuration(todo, tick))}`),
+      // 收尾失败（stale）的块不再走到 now，明细里也按块结束时间算耗时
+      summary: batch.todos.map((todo) => `${todo.title} · ${fmtDuration(
+        batch.status === 'stale' ? batch.end - todoStartMs(todo) : todoDuration(todo, tick),
+      )}`),
     };
   }), [batches, tick]);
-
-  const span = useMemo(() => {
-    if (!batches.length) return MIN_SPAN_MS;
-    const earliest = Math.min(...batches.map((batch) => batch.start));
-    return Math.min(MAX_SPAN_MS, Math.max(MIN_SPAN_MS, tick - earliest + 5 * 60_000));
-  }, [batches, tick]);
 
   return (
     <section className="ui-tb__progress" aria-label="团队执行进度">
@@ -150,7 +166,6 @@ export function TaskProgress({ teamId }: { teamId: string }) {
             <AgentLanes
               agents={agents}
               tasks={laneTasks}
-              span={span}
               now={tick}
               title={`执行进度 · ${teamName || teamId.slice(0, 8)}`}
               onAgentClick={(agent) => {
