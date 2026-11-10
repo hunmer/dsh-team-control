@@ -2,9 +2,10 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { apply, discoverTeamSkills, parseSkillFrontmatter } from '../dsh-plugin/index.js';
 
-const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..');
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 // 1) 发现：仓库 skills/ 里的 dsh-agent-team 能被列出来
 const candidates = discoverTeamSkills();

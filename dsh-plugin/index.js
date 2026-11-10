@@ -95,9 +95,6 @@ function resolveConfig(config) {
     boardDispatchMs: Number(c.boardDispatchMs) || 2000,
     boardIdleGraceMs: c.boardIdleGraceMs == null ? 6000 : Math.max(0, Number(c.boardIdleGraceMs) || 0),
     boardPlanningTimeoutMs: Number(c.boardPlanningTimeoutMs) || 30 * 60 * 1000,
-    // Lead 回合结束（idle）后任务仍非终态：自动追一条提醒，要求调用 board_task_status。
-    // 模型无法被真正强制，这里用有限次数的提醒兜底；0 关闭。
-    boardStatusNudgeMax: c.boardStatusNudgeMax == null ? 2 : Math.max(0, Number(c.boardStatusNudgeMax) || 0),
   };
 }
 
@@ -1563,8 +1560,6 @@ const textOutput = () => ({
 // ---------------------------------------------------------------------------
 const boardSessions = new Map(); // sessionId -> { taskId, phase, handle, sawRunning }
 const boardSessionIds = new Set();
-/** `${taskId}:${sessionId}` -> 已自动提醒次数：Lead 忘记调用 board_task_status 时有限次追问。 */
-const boardNudgeCount = new Map();
 
 function boardUserMessage(text) {
   return {
@@ -1687,8 +1682,9 @@ function boardLeadPrompt(task, sameSession) {
     '2. 调用 team_models 查看可用路由；只能使用以下模型：',
     models,
     '3. 用 team_task 拆解并派发；用 team_status / team_report 跟踪。不要自己写代码，不要重复成员的工作。',
-    '4. 每轮结束前必须先调用 board_task_status 对齐状态：全部任务成功→done（附完成摘要），失败→failed（附原因），仍需继续或等待用户→inprogress。不能只在开始时调用一次。',
-    '5. 用户再次发消息时，先调用 board_task_status({ status: "inprogress" })，再继续处理。',
+    '4. 用户反馈 Bug 时，不要自己去读代码排查：先判断归属成员，用 team_send 把复现步骤与怀疑点派给对应成员定位、修复；你只做分派、汇总与状态汇报。',
+    '5. 每轮结束前必须先调用 board_task_status 对齐状态：全部任务成功→done（附完成摘要），失败→failed（附原因），仍需继续或等待用户→inprogress。不能只在开始时调用一次。',
+    '6. 用户再次发消息时，先调用 board_task_status({ status: "inprogress" })，再继续处理。',
   ];
   const soloRules = [
     '本任务不开启团队：由你自己直接完成所有工作，不要调用 team_create / team_spawn / team_task。',
@@ -3602,9 +3598,7 @@ export function apply(ctx, config) {
     }).catch(() => { /* 非终态时 sidecar 会拒绝，忽略 */ });
   });
 
-  // 看板会话 idle：
-  // - 规划阶段宽限后仍停在 planning → 判失败，避免永久占着槽位；
-  // - 执行阶段任务仍非终态 → 有限次提醒 Lead 调用 board_task_status（模型无法被真正强制，靠提醒兜底）。
+  // 看板会话 idle：规划阶段宽限后仍停在 planning → 判失败，避免永久占着槽位。
   ctx.on('agent/status', ({ agent, status } = {}) => {
     const sessionId = agent?.id != null ? String(agent.id) : null;
     const rec = sessionId ? boardSessions.get(sessionId) : null;
@@ -3612,41 +3606,16 @@ export function apply(ctx, config) {
     if (status === 'running') { rec.sawRunning = true; return; }
     if (status !== 'idle' || !rec.sawRunning) return;
 
-    if (rec.phase === 'planning') {
-      const timer = setTimeout(() => {
-        void (async () => {
-          if (rec.phase !== 'planning') return;
-          try {
-            const task = await request(s, `/api/board/tasks/${encodeURIComponent(rec.taskId)}`);
-            if (task?.status !== 'planning') return;
-            await request(s, '/api/board/agents/status', {
-              method: 'POST', body: { sessionId, status: 'failed', summary: '规划会话空闲但未提交计划' },
-            });
-          } catch { /* ignore */ }
-        })();
-      }, Math.max(0, s.boardIdleGraceMs));
-      timer.unref?.();
-      return;
-    }
-
-    if (rec.phase !== 'execution' || !s.boardStatusNudgeMax) return;
-    const key = `${rec.taskId}:${sessionId}`;
+    if (rec.phase !== 'planning') return;
     const timer = setTimeout(() => {
       void (async () => {
+        if (rec.phase !== 'planning') return;
         try {
           const task = await request(s, `/api/board/tasks/${encodeURIComponent(rec.taskId)}`);
-          if (!task || !['planning', 'planned', 'inprogress'].includes(task.status)) {
-            boardNudgeCount.delete(key);
-            return;
-          }
-          const used = boardNudgeCount.get(key) || 0;
-          if (used >= s.boardStatusNudgeMax) return;
-          boardNudgeCount.set(key, used + 1);
-          rec.handle?.agent?.followup?.(boardUserMessage(
-            `系统自动提醒：本轮已结束，但看板任务「${task.title}」仍未标记完成。`
-            + '请立刻调用 board_task_status 对齐状态：已完成用 {"status":"done","summary":"<完成摘要>"}；'
-            + '未完成或仍在等待用户用 {"status":"inprogress"}。',
-          ));
+          if (task?.status !== 'planning') return;
+          await request(s, '/api/board/agents/status', {
+            method: 'POST', body: { sessionId, status: 'failed', summary: '规划会话空闲但未提交计划' },
+          });
         } catch { /* ignore */ }
       })();
     }, Math.max(0, s.boardIdleGraceMs));

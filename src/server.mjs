@@ -3,11 +3,12 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { ApiError, ERR, nowIso, json, redactor } from './util.mjs';
 import { DshTeam } from './core.mjs';
 import { rowToTask } from './scheduler.mjs';
 
-const PANEL_DIR = new URL('./web/', import.meta.url);
+const PANEL_DIR = fileURLToPath(new URL('./web/', import.meta.url));
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
 
 export function ensureToken(home) {
@@ -266,8 +267,8 @@ export async function startServer({ home, port = 4317, host = '127.0.0.1', log =
       const rel = pathname === '/' || pathname === '/panel' || pathname === '/panel/'
         ? 'panel.html'
         : decodeURIComponent(pathname.slice('/panel/'.length));
-      const target = path.resolve(PANEL_DIR.pathname.replace(/^\/([A-Za-z]:)/, '$1'), rel);
-      const base = path.resolve(PANEL_DIR.pathname.replace(/^\/([A-Za-z]:)/, '$1'));
+      const target = path.resolve(PANEL_DIR, rel);
+      const base = path.resolve(PANEL_DIR);
       if (!target.startsWith(base)) { res.writeHead(403); res.end('forbidden'); return; }
       try {
         const buf = fs.readFileSync(target);

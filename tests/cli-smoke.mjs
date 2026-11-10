@@ -3,10 +3,11 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { mkTmp, startSidecar, waitFor } from './lib/harness.mjs';
 
 const exec = promisify(execFile);
-const REPO = path.resolve(new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
+const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BIN = path.join(REPO, 'bin', 'dsh-team.mjs');
 
 const cli = (args, dataDir) => exec(process.execPath, [BIN, ...args, '--data', dataDir], { cwd: REPO, timeout: 30000, windowsHide: true });

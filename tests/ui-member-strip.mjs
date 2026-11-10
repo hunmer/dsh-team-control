@@ -9,8 +9,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
+import { fileURLToPath } from 'node:url';
 
-const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
+const here = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT = path.join(here, '..', 'dsh-plugin-ui', 'client.js');
 const source = fs.readFileSync(CLIENT, 'utf8');
 
