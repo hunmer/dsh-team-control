@@ -82,10 +82,11 @@ function NavList({ items, active, onNavigate }: { items: NavItem[]; active: stri
 
 function ShellBody({ nav, groups = [], active, onNavigate, header, sidebarTop, footer, children }: AppShellProps) {
   const { isMobile, state, setOpenMobile } = useSidebar();
-  // 窄页面（<lg）没有多余宽度：整条侧栏和切换按钮都不渲染，内容区铺满。
   const wide = useMediaQuery({ min: 'lg' });
+  // 窄页面（<lg）不隐藏侧栏，而是始终折叠成图标条；宽屏沿用用户手动切换的状态。
+  const collapsed = !wide || state === 'collapsed';
   // 收起到图标条时顶栏没有多余宽度，把团队切换器内联进 header
-  const topInHeader = !isMobile && state === 'collapsed';
+  const topInHeader = !isMobile && collapsed;
 
   // 小屏侧栏是抽屉：跳转到别的视图（点导航、收件箱跳审阅、hash 路由变化）后自动收起，
   // 否则抽屉会盖住刚跳过去的页面。
@@ -98,19 +99,6 @@ function ShellBody({ nav, groups = [], active, onNavigate, header, sidebarTop, f
     // 点当前视图时 active 不变、上面的 effect 不会触发，这里直接收掉
     if (isMobile) setOpenMobile(false);
   };
-
-  if (!wide) {
-    return (
-      <div className="flex h-svh min-w-0 flex-col bg-background">
-        <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
-          {sidebarTop && <div className="w-44 shrink-0">{sidebarTop}</div>}
-          <div className="truncate font-medium text-sm">{header.title}</div>
-          {header.actions && <div className="ml-auto flex items-center gap-2">{header.actions}</div>}
-        </header>
-        <div className="flex min-h-0 flex-1 flex-col overflow-auto">{children}</div>
-      </div>
-    );
-  }
 
   return (
     <>
@@ -141,8 +129,13 @@ function ShellBody({ nav, groups = [], active, onNavigate, header, sidebarTop, f
       </Sidebar>
       <SidebarInset className="min-w-0">
         <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
-          <SidebarTrigger />
-          <Separator className="h-5" orientation="vertical" />
+          {/* 手机端（<md）保留抽屉开关；窄屏桌面侧栏始终折叠，不渲染无效的切换按钮 */}
+          {(wide || isMobile) && (
+            <>
+              <SidebarTrigger />
+              <Separator className="h-5" orientation="vertical" />
+            </>
+          )}
           {topInHeader && sidebarTop && <div className="w-44 shrink-0">{sidebarTop}</div>}
           {!topInHeader && <div className="truncate font-medium text-sm">{header.title}</div>}
           {header.actions && <div className="ml-auto flex items-center gap-2">{header.actions}</div>}
@@ -154,9 +147,11 @@ function ShellBody({ nav, groups = [], active, onNavigate, header, sidebarTop, f
 }
 
 export function AppShell(props: AppShellProps) {
+  // 窄屏（<lg）强制折叠：open 受控为 false，图标条保持可见可点（带 tooltip）。
+  const wide = useMediaQuery({ min: 'lg' });
   return (
     <TooltipProvider>
-      <SidebarProvider className="h-svh">
+      <SidebarProvider className="h-svh" open={wide ? undefined : false}>
         <ShellBody {...props} />
       </SidebarProvider>
     </TooltipProvider>
