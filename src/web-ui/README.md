@@ -18,7 +18,6 @@ src/web-ui/                 前端源码（本目录）
   src/store.tsx             状态层：REST 首屏快照 + SSE 实时（member.status / step.append / ...）
   src/views/                6 个视图：看板 / DAG（agent-tree 卡片树）/ 时间线（agent-lanes 泳道）/ 权限矩阵 / 审批队列 / 消息
 src/web/                    构建产物（sidecar 静态托管目录，/panel 路由）
-src/web/legacy/             旧版 vanilla 面板备份（panel.html / app.js / app.css）
 ```
 
 ## 构建
@@ -49,4 +48,3 @@ sync 脚本会把 registry 里的 `@/registry/default/**` 别名重写为 `@/com
 - 鉴权已移除：面板与 API 免 token 直接访问（sidecar 仅监听回环）；旧链接里的 `#token=` 仍被接受并自动抹除。
   同源嵌入模式全部保留；DSH 插件 iframe（`/dsh-team-api/panel?...`）无需改动。
 - 视觉换成 coss ui 设计系统（Base UI 原语 + Tailwind v4 令牌），亮暗跟随 `prefers-color-scheme`。
-- 旧 vanilla 实现备份在 `src/web/legacy/`，需要时把三个文件拷回 `src/web/` 即可回滚。

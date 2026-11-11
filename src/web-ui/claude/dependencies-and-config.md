@@ -31,9 +31,8 @@ npx tsc -b           # 类型检查（strict，noEmit）
 ```text
 src/web/
   panel.html                     唯一入口，引用下面两个 assets
-  assets/app-FxBUmmrD.js         面板主包
-  assets/panel-y8c8jBiH.css      样式
-  legacy/{panel.html,app.js,app.css}   旧 vanilla 面板备份
+  assets/app-Cnup_l1j.js         面板主包
+  assets/panel-CgW3h5RW.css      样式
 ```
 
 `.gitignore` **只白名单** `panel.html` 与被引用的那两个 assets；其余构建垃圾不入库。

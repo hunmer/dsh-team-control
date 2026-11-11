@@ -2,6 +2,11 @@
 
 > 只记录索引/文档的生成与更新，不记录产品 Changelog。倒序，最多 5 条。
 
+## 2026-11-11 · 构建产物与历史清理
+
+- 删除未引用的 `src/web/legacy/`（旧 vanilla 面板备份），更新 `src/web-ui/README.md` 与 `src/web-ui/claude/dependencies-and-config.md`。
+- 用 `git filter-repo` 从历史中剔除旧 `src/web/assets` 构建产物，再重新提交当前两份资产；最终 tree 除 `legacy` 删除外与清理前一致。
+
 ## 2026-11-11 · 构建产物清理
 
 - 新增 `src/web-ui/scripts/prune-assets.mjs` 并挂到 `postbuild`：构建后只保留 `panel.html` 当前引用的产物，同时同步 `.gitignore` 白名单，防止旧 hash 再次堆积。
