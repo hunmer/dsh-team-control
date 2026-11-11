@@ -82,6 +82,7 @@ export function TaskPanel({
   onStart,
   onStop,
   onRetry,
+  onReset,
   onArchive,
   onRestore,
   onDelete,
@@ -101,6 +102,7 @@ export function TaskPanel({
   onStart: (task: BoardTask, mode: BoardMode) => void;
   onStop: (task: BoardTask) => void;
   onRetry: (task: BoardTask) => void;
+  onReset?: (task: BoardTask) => void;
   onArchive: (task: BoardTask) => void;
   onRestore: (task: BoardTask) => void;
   onDelete: (task: BoardTask) => void;
@@ -194,6 +196,7 @@ export function TaskPanel({
               busy={busy}
               onEdit={() => setEditing(true)}
               onStop={() => onStop(task)}
+              onReset={onReset ? () => onReset(task) : undefined}
               onArchive={() => onArchive(task)}
               onRestore={() => onRestore(task)}
               onDelete={() => onDelete(task)}

@@ -2,6 +2,11 @@
 
 > 只记录索引/文档的生成与更新，不记录产品 Changelog。倒序，最多 5 条。
 
+## 2026-11-11 · 面板指标与任务重置
+
+- 面板：`agent-steering` 底部展示轮数/步数、tok/s、token 总量、缓存命中、上下文占用（数据来自 `sessionStats` + `tokenUsage` 投影→`context_snapshot.stats_json`）；`app-shell` 窄屏隐藏侧栏与 trigger；`Timeline` 去掉内部滚动；任务菜单新增仅 failed/done 可用的「重置」（`POST /api/board/tasks/:id/reset`）。
+- 索引：`claude/public-interfaces.md`、`claude/data-model.md`（schema v17 + `stats_json`）、`claude/dependencies-and-config.md`、`claude/entrypoints.md`、`claude/testing-and-quality.md`、根 `CLAUDE.md` 资产 hash 同步；全量 `npm test` 33/33。
+
 ## 2026-11-05 · 深挖（第二阶段）
 
 - `dsh-plugin/claude/overview.md`：新增「关键内存态」（leadByTeam/heldSessions 等）与「逐工具实现速查」（16 个工具的 sidecar 端点、route 合并、审批/冻结机制）两大节；`public-interfaces.md` 工具表补齐 board 两工具、标题改 16 个工具。

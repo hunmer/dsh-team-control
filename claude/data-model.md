@@ -22,7 +22,7 @@
 | `span` | 工具调用/LLM 调用的 trace 记录（`parent_id`） |
 | `artifact` | 产物登记 |
 | `member_change` | 文件改动（统一 diff） |
-| `context_snapshot` | 上下文占用快照 |
+| `context_snapshot` | 上下文占用快照（含 `stats_json`：轮数/步数/token/缓存，schema v17） |
 | `workspace` | 工作区定义 |
 | `file_state` | 文件基线哈希（供 diff/CAS） |
 | `llm_provider` / `llm_route` | 模型目录与启停开关 |

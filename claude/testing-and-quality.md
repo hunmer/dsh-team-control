@@ -52,4 +52,4 @@ npm run demo                      # demo/run-demo.mjs 手演
 
 - 端口/进程类用例容易在 CI 上抖动（`port=0` + `waitFor` 已缓解）。
 - `node --permission` 参数形态依赖 Node 版本，换大版本先跑 `ac-01`。
-- 面板构建产物名带 hash（`app-FxBUmmrD.js`、`panel-y8c8jBiH.css`），改构建配置会让 `panel-contract` 失败——属预期。
+- 面板构建产物名带 hash（`app-Cnup_l1j.js`、`panel-CgW3h5RW.css`），改构建配置会让 `panel-contract` 失败——属预期。

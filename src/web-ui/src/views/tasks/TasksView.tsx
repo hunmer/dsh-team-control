@@ -204,6 +204,10 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
     void run(`${task.id}:retry`, () => boardApi.retry(task.id), '已重试');
   };
 
+  const reset = (task: BoardTask) => {
+    void run(`${task.id}:reset`, () => boardApi.reset(task.id), '已重置为待办');
+  };
+
   /** 手动兜底：Lead 忘记调用 board_task_status 时，由用户把任务直接标记完成。 */
   const complete = (task: BoardTask) => {
     void run(`${task.id}:complete`, () => boardApi.complete(task.id), '已标记完成');
@@ -329,6 +333,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
                 onStart={(mode) => start(task, mode)}
                 onStop={() => stop(task)}
                 onRetry={() => retry(task)}
+                onReset={() => reset(task)}
                 onComplete={() => complete(task)}
                 onArchive={() => archive(task)}
                 onRestore={() => restore(task)}
@@ -375,6 +380,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
                         onStart={(mode) => start(task, mode)}
                         onStop={() => stop(task)}
                         onRetry={() => retry(task)}
+                        onReset={() => reset(task)}
                         onComplete={() => complete(task)}
                         onArchive={() => archive(task)}
                         onRestore={() => restore(task)}
@@ -435,6 +441,7 @@ export function TasksView({ workspaceId: workspaceIdProp, standalone = false }: 
                   onStart={start}
                   onStop={stop}
                   onRetry={retry}
+                  onReset={reset}
                   onArchive={archive}
                   onRestore={restore}
                   onDelete={remove}

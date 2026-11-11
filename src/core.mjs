@@ -345,7 +345,12 @@ export class DshTeam {
     const m = this.memberRow(id);
     const st = this.events.state(id);
     if (st && st.status === 'retired') throw ERR.invalidState('member is retired');
-    if (st && ['running', 'provisioning', 'blocked'].includes(st.status)) {
+    // 运行中的成员允许热改 role / permissionPreset（DSH 预设对 live session 直接生效）；
+    // 其余字段要重建会话，仍要求先 interrupt。
+    const HOT_PATCH_FIELDS = new Set(['role', 'permissionPreset']);
+    const patchKeys = Object.keys(patch).filter((k) => Object.prototype.hasOwnProperty.call(patch, k));
+    const hotOnly = patchKeys.length > 0 && patchKeys.every((k) => HOT_PATCH_FIELDS.has(k));
+    if (st && ['running', 'provisioning', 'blocked'].includes(st.status) && !hotOnly) {
       throw ERR.invalidState(`member is ${st.status}; interrupt first`);
     }
     const sets = [];
@@ -1630,6 +1635,7 @@ export class DshTeam {
       breakdown: parseJson(r.breakdown_json, {}),
       blocks: parseJson(r.blocks_json, []),
       compaction: parseJson(r.compaction_json, null),
+      stats: parseJson(r.stats_json, null),
       status: r.status ?? null,
       asOfSeq: num(r.as_of_seq),
       updatedAt: r.updated_at,
@@ -1709,15 +1715,28 @@ export class DshTeam {
         at: raw.at || t,
       };
     }
-    this.get(`INSERT INTO context_snapshot (team_id, member_id, session_id, model, provider, limit_tokens, used_tokens, breakdown_json, blocks_json, compaction_json, status, as_of_seq, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+    const stats = input.stats && typeof input.stats === 'object' ? {
+      turns: Math.max(0, Math.round(Number(input.stats.turns) || 0)),
+      steps: Math.max(0, Math.round(Number(input.stats.steps) || 0)),
+      llmMs: Math.max(0, Math.round(Number(input.stats.llmMs) || 0)),
+      toolMs: Math.max(0, Math.round(Number(input.stats.toolMs) || 0)),
+      ttftMs: Math.max(0, Math.round(Number(input.stats.ttftMs) || 0)),
+      decodeMs: Math.max(0, Math.round(Number(input.stats.decodeMs) || 0)),
+      decodeTokens: Math.max(0, Math.round(Number(input.stats.decodeTokens) || 0)),
+      inputTokens: Math.max(0, Math.round(Number(input.stats.inputTokens) || 0)),
+      outputTokens: Math.max(0, Math.round(Number(input.stats.outputTokens) || 0)),
+      cacheReadTokens: Math.max(0, Math.round(Number(input.stats.cacheReadTokens) || 0)),
+      cacheWriteTokens: Math.max(0, Math.round(Number(input.stats.cacheWriteTokens) || 0)),
+    } : null;
+    this.get(`INSERT INTO context_snapshot (team_id, member_id, session_id, model, provider, limit_tokens, used_tokens, breakdown_json, blocks_json, compaction_json, stats_json, status, as_of_seq, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(team_id, member_id) DO UPDATE SET session_id=excluded.session_id, model=excluded.model, provider=excluded.provider,
                  limit_tokens=excluded.limit_tokens, used_tokens=excluded.used_tokens, breakdown_json=excluded.breakdown_json,
-                 blocks_json=excluded.blocks_json, compaction_json=excluded.compaction_json, status=excluded.status,
-                 as_of_seq=excluded.as_of_seq, updated_at=excluded.updated_at`)
+                 blocks_json=excluded.blocks_json, compaction_json=excluded.compaction_json, stats_json=excluded.stats_json,
+                 status=excluded.status, as_of_seq=excluded.as_of_seq, updated_at=excluded.updated_at`)
       .run(teamId, memberId, input.sessionId == null ? null : String(input.sessionId), input.model ?? null, input.provider ?? null,
         num(input.limit), num(input.used), json(input.breakdown && typeof input.breakdown === 'object' ? input.breakdown : {}),
-        json(blocks), compaction ? json(compaction) : null, input.status ?? null, asOfSeq, t);
+        json(blocks), compaction ? json(compaction) : null, stats ? json(stats) : null, input.status ?? null, asOfSeq, t);
     const saved = this.contextView(this.get('SELECT * FROM context_snapshot WHERE team_id=? AND member_id=?').get(teamId, memberId));
     try { this.sse.broadcastSynthetic('context.update', { teamId, memberId, used: saved.used, limit: saved.limit }, { teamId, memberId }); } catch { /* ignore */ }
     return { item: saved };

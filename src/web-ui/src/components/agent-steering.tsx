@@ -32,6 +32,35 @@ const formatShort = (ms: number) =>
 
 const intFmt = new Intl.NumberFormat("en");
 
+/** 1.2k / 3.4M，保持窄列里的宽度稳定。 */
+const fmtTokens = (n: number) => {
+  const v = Math.max(0, Number(n) || 0);
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000) return `${(v / 1_000).toFixed(1)}k`;
+  return String(Math.round(v));
+};
+
+const fmtPercent = (v: number | null) =>
+  v == null || !Number.isFinite(v) ? "—" : `${Math.round(v * 100)}%`;
+
+function SteerStats({ metrics }: { metrics: SteerMetrics }) {
+  const speed = metrics.decodeMs > 0 ? metrics.decodeTokens / (metrics.decodeMs / 1000) : 0;
+  const billed = metrics.inputTokens + metrics.outputTokens;
+  const pressure = metrics.contextLimit > 0 ? metrics.contextUsed / metrics.contextLimit : null;
+  return (
+    <div className="ui-stc__stats">
+      <span title="已完成轮数 · 步数">{intFmt.format(metrics.turns)} 轮 · {intFmt.format(metrics.steps)} 步</span>
+      <span title="平均输出速度（输出 token / 解码耗时）">{speed.toFixed(1)} tok/s</span>
+      <span title="已计费 token（输入 + 输出）">{fmtTokens(billed)} tok</span>
+      <span title="缓存命中率（缓存读取 / 输入）">缓存 {fmtPercent(metrics.cacheHitRate)}</span>
+      <span title="上下文占用">
+        上下文 {fmtTokens(metrics.contextUsed)}
+        {metrics.contextLimit > 0 ? ` / ${fmtTokens(metrics.contextLimit)}（${fmtPercent(pressure)}）` : ""}
+      </span>
+    </div>
+  );
+}
+
 /* One 100ms interval shared by every ticking clock on the page. */
 const ticker = { subs: new Set<() => void>(), id: 0 };
 
@@ -93,6 +122,21 @@ export interface SteerStep {
   notes?: SteerNote[];
 }
 
+export interface SteerMetrics {
+  /** 已完成的轮数与步数。 */
+  turns: number;
+  steps: number;
+  /** 累计输出 token 与纯解码耗时，用于算平均输出速度。 */
+  decodeTokens: number;
+  decodeMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** 缓存读取 / 计费输入；无输入时为 null。 */
+  cacheHitRate: number | null;
+  contextUsed: number;
+  contextLimit: number;
+}
+
 export interface AgentSteeringProps {
   title: string;
   agent?: string;
@@ -120,6 +164,8 @@ export interface AgentSteeringProps {
   onDraftChange?: (text: string) => void;
   /** 头部右侧「打开聊天」入口；不传时不渲染。 */
   onOpenChat?: () => void;
+  /** 底部执行指标；不传时退回键盘提示。 */
+  metrics?: SteerMetrics;
   placeholder?: string;
   className?: string;
 }
@@ -234,6 +280,7 @@ export function AgentSteering({
   onResume,
   placeholder = "Steer the agent…",
   onOpenChat,
+  metrics,
   className,
 }: AgentSteeringProps) {
   const uid = useId();
@@ -555,7 +602,7 @@ export function AgentSteering({
               placeholder={canSteer ? placeholder : "The run has finished"}
               aria-label="Steer the agent"
               dir="auto"
-              aria-describedby={`${uid}-hint`}
+              aria-describedby={metrics ? undefined : `${uid}-hint`}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={onKeyDown}
             />
@@ -569,23 +616,27 @@ export function AgentSteering({
               <SendIcon />
             </button>
           </div>
-          <div className="ui-stc__hint" id={`${uid}-hint`}>
-            {canSteer ? (
-              <>
-                <span>
-                  <kbd>↵</kbd> next step
-                </span>
-                {onInterrupt && (
+          {metrics ? (
+            <SteerStats metrics={metrics} />
+          ) : (
+            <div className="ui-stc__hint" id={`${uid}-hint`}>
+              {canSteer ? (
+                <>
                   <span>
-                    <kbd>{modKey}</kbd>
-                    <kbd>↵</kbd> interrupt now
+                    <kbd>↵</kbd> next step
                   </span>
-                )}
-              </>
-            ) : (
-              <span>Notes still in the queue were not used</span>
-            )}
-          </div>
+                  {onInterrupt && (
+                    <span>
+                      <kbd>{modKey}</kbd>
+                      <kbd>↵</kbd> interrupt now
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span>Notes still in the queue were not used</span>
+              )}
+            </div>
+          )}
         </div>
       </div>
       <span className="ui-stc__sr" aria-live="polite">

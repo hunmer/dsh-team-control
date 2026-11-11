@@ -356,6 +356,19 @@ export class Board {
     return task;
   }
 
+  /** 把失败/已完成的任务重置回新建态：丢弃计划与执行会话，等用户重新 start。 */
+  resetTask(id) {
+    const cur = this.getTask(id);
+    if (!['failed', 'done'].includes(cur.status)) throw ERR.invalidState(`cannot reset from ${cur.status}`);
+    this.get(`UPDATE board_task SET status='todo', auto=0, force_start=0, stop_requested=0,
+      plan_md=NULL, plan_summary=NULL, planning_session_id=NULL, lead_session_id=NULL,
+      claim_token=NULL, claimed_at=NULL, resumed=0, last_error=NULL, done_at=NULL, updated_at=? WHERE id=?`)
+      .run(nowIso(), cur.id);
+    const task = this.getTask(cur.id);
+    this.addEvent(task, 'reset', null);
+    return task;
+  }
+
   /**
    * 手动标记完成：Lead 忘记调用 board_task_status 时的兜底。
    * 只允许从「已规划 / 执行中 / 失败」进入 done，并关掉自动入队，避免又被调度器拉起。
@@ -489,15 +502,20 @@ export class Board {
     const plan = text(body.plan, 500000);
     if (!sid) throw ERR.bad('sessionId required');
     if (!plan.trim()) throw ERR.bad('plan required');
-    const row = this.get('SELECT * FROM board_task WHERE planning_session_id=? AND status=? ORDER BY updated_at DESC LIMIT 1')
-      .get(sid, 'planning');
+    // 规划会话可能已经因为「空闲未提交计划」被判 failed（用户手动停止对话再继续），
+    // 只要 planning_session_id 仍是这个会话，就允许补交计划，别让用户卡在 404。
+    const row = this.get(`SELECT * FROM board_task WHERE planning_session_id=? AND archived_at IS NULL
+      AND status IN ('planning','failed') ORDER BY updated_at DESC LIMIT 1`).get(sid);
     if (!row) throw ERR.notFound('planning task for session');
     const same = row.execution_mode === 'same';
     this.get(`UPDATE board_task SET status='planned', plan_md=?, plan_summary=?, lead_session_id=?,
       claim_token=NULL, claimed_at=NULL, resumed=0, last_error=NULL, updated_at=? WHERE id=?`)
       .run(plan, text(body.summary, 2000) || null, same ? sid : null, nowIso(), row.id);
     const task = this.getTask(row.id);
-    this.addEvent(task, 'planned', { summary: task.planSummary });
+    this.addEvent(task, 'planned', {
+      summary: task.planSummary,
+      ...(row.status === 'failed' ? { recoveredFrom: 'failed' } : {}),
+    });
     return task;
   }
 

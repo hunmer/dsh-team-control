@@ -1,5 +1,5 @@
 // tests/ac-18-board.mjs — 工作区任务看板：状态机、并发槽位、claim/attach、同会话/新会话、封存
-import { mkTmp, startSidecar, assert, assertEqual, sleep } from './lib/harness.mjs';
+import { mkTmp, startSidecar, assert, assertEqual, sleep, readDb } from './lib/harness.mjs';
 
 const main = async () => {
   const tmp = mkTmp('dsh-team-board');
@@ -32,12 +32,27 @@ const main = async () => {
     });
     assertEqual(attached.planningSessionId, 'session-plan-1', '规划会话已绑定');
 
-    // 规划提交：same 模式把 lead_session_id 写成同一会话
+    // 规划会话被用户手动停止后再继续：idle 宽限把任务判 failed，补交计划必须能复活（不能 404）
+    const planFailed = await api.post('/api/board/agents/status', {
+      sessionId: 'session-plan-1', status: 'failed', summary: '规划会话空闲但未提交计划',
+    });
+    assertEqual(planFailed.status, 'failed', '规划失败落库');
+
+    // 规划提交：same 模式把 lead_session_id 写成同一会话（failed → planned 复活）
     const planned = await api.post('/api/board/agents/plan', {
       sessionId: 'session-plan-1', plan: '# 计划\n1. 做', summary: '一句话',
     });
     assertEqual(planned.status, 'planned', '提交计划后 planned');
     assertEqual(planned.leadSessionId, 'session-plan-1', 'same 模式复用规划会话');
+    const db = readDb(tmp.dataDir);
+    const recovered = db.get(
+      "SELECT detail_json FROM board_event WHERE task_id=? AND kind='planned' ORDER BY id DESC LIMIT 1", planned.id,
+    );
+    db.close();
+    assert(
+      recovered && JSON.parse(recovered.detail_json).recoveredFrom === 'failed',
+      '复活事件带 recoveredFrom=failed',
+    );
     assertEqual((await api.get(`/api/board/by-session/session-plan-1`)).id, t1.id, 'by-session 反查');
     assertEqual((await api.post('/api/board/claim', { kind: 'planning' })).item.task.id, t2.id, '规划槽位释放后 claim 第二个');
 
@@ -69,6 +84,14 @@ const main = async () => {
     assert(archived.archivedAt, '停止后可封存');
     const restored = await api.post(`/api/board/tasks/${t1.id}/restore`);
     assertEqual(restored.status, 'failed', '恢复保留封存前状态');
+
+    // 重置：已结束任务回到新建态，计划与会话绑定清空，自动入队关闭，需要重新 start
+    const reset = await api.post(`/api/board/tasks/${t1.id}/reset`);
+    assertEqual(reset.status, 'todo', '重置回 todo');
+    assertEqual(reset.auto, false, '重置关闭自动入队');
+    assertEqual(reset.planMd, null, '重置清空计划');
+    assertEqual(reset.leadSessionId, null, '重置清空执行会话');
+    assertEqual(reset.planningSessionId, null, '重置清空规划会话');
 
     // 团队绑定 + by-team
     await api.post(`/api/board/tasks/${t1.id}/teams`, { teamId: 'team-x' });

@@ -104,6 +104,16 @@ try {
   await hit('GET /api/steps', 'GET', `/api/steps?member=${m1.id}`);
   await hit('GET /api/blockers', 'GET', `/api/blockers?team=${team.id}`);
   await hit('GET /api/metrics', 'GET', `/api/metrics?team=${team.id}`);
+  // 上下文快照：stats（轮数/步数/token/缓存）落库并原样返回
+  const ctxReport = (await hit('POST /api/contexts', 'POST', '/api/contexts', {
+    teamId: team.id, memberId: m1.id, sessionId: 'sess-ctx', model: 'm', provider: 'p',
+    limit: 1000, used: 320, status: 'running',
+    stats: { turns: 7, steps: 11, llmMs: 2000, toolMs: 500, ttftMs: 100, decodeMs: 1000, decodeTokens: 200, inputTokens: 1000, outputTokens: 200, cacheReadTokens: 800, cacheWriteTokens: 0 },
+  })).json;
+  assert(ctxReport.item.stats.turns === 7 && ctxReport.item.stats.steps === 11, 'contexts 返回 stats 轮数/步数');
+  assert(ctxReport.item.stats.cacheReadTokens === 800 && ctxReport.item.stats.inputTokens === 1000, 'contexts 返回 stats token/缓存字段');
+  const ctxListed = (await hit('GET /api/contexts', 'GET', `/api/contexts?team=${team.id}`)).json.items.find((x) => x.memberId === m1.id);
+  assert(ctxListed?.stats?.decodeTokens === 200, 'contexts 列表携带 stats');
   await hit('GET /api/verify', 'GET', `/api/verify?team=${team.id}`);
   await hit('GET /api/reconcile', 'GET', `/api/reconcile?team=${team.id}`);
   await hit('GET /api/events/history', 'GET', `/api/events/history?team=${team.id}`);

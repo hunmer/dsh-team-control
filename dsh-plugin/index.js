@@ -86,6 +86,13 @@ function resolveConfig(config) {
     agentStartTimeoutMs: Number(c.agentStartTimeoutMs) || 120000,
     // 成员触发权限审批（permission preset 的 approval=ask）后，等待 Lead 调 team_approve 的上限
     approvalTimeoutMs: Number(c.approvalTimeoutMs) || 600000,
+    // 审批降噪：命令明确是「已知安全程序 + 无管道/重定向/命令替换」时直接 allowed-once，
+    // 不打扰 Lead；敏感命令（见 DEFAULT_SENSITIVE_COMMAND_PATTERNS）仍转 Lead 审批
+    autoApproveLowRisk: c.autoApproveLowRisk !== false,
+    // 追加的敏感命令正则（字符串数组）：命中即视为敏感，仍走 Lead 审批
+    sensitiveCommandPatterns: Array.isArray(c.sensitiveCommandPatterns)
+      ? c.sensitiveCommandPatterns.map((p) => String(p)).filter(Boolean)
+      : [],
     // spawnTeammate 的 provider：默认与 dsh-experimental-tool-agent-team 一致
     freshProvider: String(c.freshProvider || 'spawn'),
     forkProvider: String(c.forkProvider || 'fork'),
@@ -356,11 +363,34 @@ function collectContext(ctx, sessionId) {
   let projection = {};
   try {
     if (projections && typeof projections.snapshot === 'function') {
-      projection = projections.snapshot(session, ['contextBreakdown', 'contextPressure'])?.values || {};
+      projection = projections.snapshot(session, ['contextBreakdown', 'contextPressure', 'sessionStats', 'tokenUsage'])?.values || {};
     }
   } catch { projection = {}; }
   const breakdown = projection.contextBreakdown || {};
   const pressure = projection.contextPressure || {};
+  const sessionStats = projection.sessionStats || null;
+  const tokenUsage = projection.tokenUsage || null;
+  let stats = null;
+  if (sessionStats || tokenUsage) {
+    const uncached = Number(tokenUsage?.uncachedInputTokens) || 0;
+    const cacheRead = Number(tokenUsage?.cacheReadTokens) || 0;
+    const cacheWrite = Number(tokenUsage?.cacheWriteTokens) || 0;
+    const input = uncached + cacheRead + cacheWrite;
+    stats = {
+      turns: Number(sessionStats?.turns) || 0,
+      steps: Number(sessionStats?.steps) || 0,
+      llmMs: Number(sessionStats?.llmMs) || 0,
+      toolMs: Number(sessionStats?.toolMs) || 0,
+      ttftMs: Number(sessionStats?.ttftMs) || 0,
+      decodeMs: Number(sessionStats?.decodeMs) || 0,
+      decodeTokens: Number(sessionStats?.decodeTokens) || 0,
+      inputTokens: input,
+      outputTokens: Number(tokenUsage?.outputTokens) || 0,
+      cacheReadTokens: cacheRead,
+      cacheWriteTokens: cacheWrite,
+      cacheHitRate: input > 0 ? cacheRead / input : null,
+    };
+  }
 
   // 当前 surface 上的事件才计价：被压缩掉的事件不在 nodes 里。
   const priceBySeq = new Map();
@@ -459,6 +489,7 @@ function collectContext(ctx, sessionId) {
     },
     blocks,
     compaction,
+    stats,
     status: null,
     asOfSeq: Number(session.seq) || null,
     surfaceCount,
@@ -1097,6 +1128,99 @@ async function dispatchLoop(s, ctx, teamId) {
 // ---------- 权限审批转发：成员 preset 触发 approval/request → Lead 用 team_approve 决定 ----------
 const pendingApprovals = new Map();
 
+// 审批分类：approval/request 只带 toolName 与 callId，不带命令参数；
+// 在 tools/pre-execute 里按 callId 记住成员这一轮的入参，供低风险命令自动放行判定。
+const preExecuteArgs = new Map();
+const PRE_EXECUTE_TTL_MS = 5 * 60 * 1000;
+const PRE_EXECUTE_MAX = 500;
+const SHELL_TOOL_RE = /(^|[._-])(bash|shell|exec|command|powershell|pwsh|zsh|sh)($|[._-])/i;
+// 只有这些程序出现在命令首位才考虑自动放行；不在表里的（rm、curl、ssh、脚本解释执行等）仍转 Lead。
+const SAFE_COMMAND_PROGRAMS = new Set([
+  'node', 'npm', 'npx', 'pnpm', 'yarn', 'bun', 'deno', 'tsc', 'vitest', 'jest', 'mocha', 'eslint', 'prettier', 'biome',
+  'python', 'python3', 'py', 'pytest', 'uv', 'pip', 'pip3',
+  'cargo', 'rustc', 'go', 'dotnet', 'javac', 'java', 'mvn', 'gradle',
+  'ls', 'dir', 'cat', 'type', 'head', 'tail', 'rg', 'grep', 'find', 'fd', 'where', 'which',
+  'git', 'echo', 'cd', 'pwd', 'mkdir', 'touch',
+]);
+// 解释器带 -e/-c 等价于任意代码执行，不自动放行。
+const INTERPRETER_PROGRAMS = new Set(['node', 'python', 'python3', 'py', 'deno', 'bun']);
+const DEFAULT_SENSITIVE_COMMAND_PATTERNS = new RegExp([
+  String.raw`\brm\s+-[a-z]*[rf]`,
+  String.raw`\bremove-item\b[^\n]*-(recurse|force)`,
+  String.raw`\bdel\s+/[sfq]`,
+  String.raw`\bformat\s+[a-z]:`,
+  String.raw`\bmkfs\b`,
+  String.raw`\bdiskpart\b`,
+  String.raw`\bgit\s+push\b[^\n]*(--force|-f\b)`,
+  String.raw`\bgit\s+reset\s+--hard\b`,
+  String.raw`\bgit\s+clean\s+-[a-z]*f`,
+  String.raw`\b(npm|pnpm|yarn)\s+publish\b`,
+  String.raw`\b(curl|wget)\b[^\n|]*\|\s*(ba|z)?sh\b`,
+  String.raw`\b(iex|invoke-expression)\b`,
+  String.raw`\b(sudo|runas)\b`,
+  String.raw`\breg\s+(add|delete)\b`,
+  String.raw`\bsc\s+delete\b`,
+  String.raw`\bnet\s+user\b`,
+  String.raw`\b(icacls|takeown|bcdedit)\b`,
+  String.raw`\b(shutdown|reboot|taskkill)\b`,
+  String.raw`\bchmod\s+777\b`,
+  String.raw`[\\/]\.ssh[\\/]id_`,
+  String.raw`(^|[\\/\s])\.env\b`,
+  String.raw`[\\/]\.aws[\\/]`,
+  String.raw`[\\/]\.npmrc\b`,
+  String.raw`[\\/]\.netrc\b`,
+].join('|'), 'i');
+
+function rememberPreExecuteArgs(exec) {
+  const sessionId = exec?.agent?.id != null ? String(exec.agent.id) : null;
+  const callId = exec?.callId != null ? String(exec.callId) : null;
+  if (!sessionId || !callId || !sessionMember.has(sessionId)) return;
+  preExecuteArgs.set(`${sessionId}:${callId}`, {
+    name: String(exec.name || ''),
+    args: exec.arguments && typeof exec.arguments === 'object' ? exec.arguments : {},
+    at: Date.now(),
+  });
+  while (preExecuteArgs.size > PRE_EXECUTE_MAX) {
+    const oldest = preExecuteArgs.keys().next().value;
+    if (oldest == null) break;
+    preExecuteArgs.delete(oldest);
+  }
+}
+
+function cachedPreExecuteArgs(sessionId, callId) {
+  const key = `${sessionId}:${callId}`;
+  const hit = preExecuteArgs.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > PRE_EXECUTE_TTL_MS) {
+    preExecuteArgs.delete(key);
+    return null;
+  }
+  return hit;
+}
+
+/**
+ * 低风险命令判定：白名单程序 + 禁止管道/重定向/命令替换 + 敏感规则。
+ * 这是启发式而非完整 shell 解析——宁可漏放行（转 Lead），也不误放行。
+ */
+function isLowRiskCommand(command, extraPatterns = []) {
+  const text = String(command || '').trim();
+  if (!text || text.length > 2000) return false;
+  if (/[|<>`]|\$\(|\n|\r/.test(text)) return false;
+  if (DEFAULT_SENSITIVE_COMMAND_PATTERNS.test(text)) return false;
+  for (const pattern of extraPatterns) {
+    try { if (new RegExp(pattern, 'i').test(text)) return false; } catch { /* 非法正则忽略 */ }
+  }
+  for (const seg of text.split(/&&|\|\||;/)) {
+    const part = seg.trim();
+    if (!part) continue;
+    const words = part.split(/\s+/);
+    const prog = words[0].replace(/^.*[\\/]/, '').replace(/\.(exe|cmd|bat|ps1)$/i, '').toLowerCase();
+    if (!SAFE_COMMAND_PROGRAMS.has(prog)) return false;
+    if (INTERPRETER_PROGRAMS.has(prog) && words.slice(1).some((w) => /^(-e|-c|--eval|--command|\/c)$/i.test(w))) return false;
+  }
+  return true;
+}
+
 function settleApproval(s, requestId, decision, reason, decidedBy) {
   const entry = pendingApprovals.get(requestId);
   if (!entry) return null;
@@ -1170,6 +1294,27 @@ async function onApprovalRequest(s, ctx, req, next) {
   };
   // 同一个请求重复进入（理论上不会）直接拒绝，避免两个 waiter 争同一个 id。
   if (pendingApprovals.has(requestId)) return 'rejected';
+
+  // 低风险命令自动放行：审批噪声主要来自成员跑 npm/node/git 这类命令时的沙箱升级。
+  // 必须同时满足「工具名像 shell」「参数里带 command」「命令通过白名单校验」才放行。
+  const cached = sessionId && req?.callId != null ? cachedPreExecuteArgs(sessionId, String(req.callId)) : null;
+  if (s.autoApproveLowRisk && cached) {
+    const toolName = String(cached.name || info.toolName || '');
+    const command = cached.args?.command;
+    if (SHELL_TOOL_RE.test(toolName) && typeof command === 'string' && isLowRiskCommand(command, s.sensitiveCommandPatterns)) {
+      const autoReason = `低风险命令自动放行：${clip(command, 300)}`;
+      void request(s, '/api/approvals', {
+        method: 'POST',
+        body: {
+          id: requestId, teamId: info.teamId, memberId: info.memberId,
+          sessionId, toolName: info.toolName, reason: autoReason,
+        },
+      }).then(() => request(s, `/api/approvals/${encodeURIComponent(requestId)}/decide`, {
+        method: 'POST', body: { decision: 'allowed', decidedBy: 'auto', reason: autoReason },
+      })).catch(() => { /* 镜像失败不影响放行 */ });
+      return 'allowed-once';
+    }
+  }
 
   // 先镜像到 sidecar，面板/报告可见；失败不影响审批。
   void request(s, '/api/approvals', {
@@ -1273,6 +1418,9 @@ function forgetSession(sessionId) {
   heldSessions.delete(sid);
   agentStatusBySession.delete(sid);
   sessionMember.delete(sid);
+  for (const key of [...preExecuteArgs.keys()]) {
+    if (key.startsWith(`${sid}:`)) preExecuteArgs.delete(key);
+  }
 }
 
 /**
@@ -2767,7 +2915,7 @@ function buildTools(s, ctx) {
 
   tools.push({
     name: 'team_member',
-    description: "Update or remove a team member. `update` changes role/permission/model/context and, when model, agentProvider, contextMode, agentPreset or reasoningEffort changes, rebuilds the member's DSH sub-agent session so the new config takes effect (old context is lost). The member must be idle or interrupted; interrupt a running member first. `retire` keeps the member row as retired and frees capacity; `remove` deletes the row and requires confirm:true. Both release the sub-agent session.",
+    description: "Update or remove a team member. `update` changes role/permission/model/context. `permissionPreset` (and `role`) applies to a RUNNING member immediately, no interrupt needed; changing model, agentProvider, contextMode, agentPreset or reasoningEffort rebuilds the member's DSH sub-agent session (old context is lost) and therefore requires the member to be idle or interrupted. `retire` keeps the member row as retired and frees capacity; `remove` deletes the row and requires confirm:true. Both release the sub-agent session.",
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -2814,9 +2962,6 @@ function buildTools(s, ctx) {
 
       if (args.action !== 'update') throw new Error(`team_member unknown action: ${args.action}`);
       if (current.status === 'retired') throw new Error('member is retired; create a new member instead');
-      if (['running', 'provisioning', 'blocked'].includes(current.status)) {
-        throw new Error(`member is ${current.status}; interrupt it before updating configuration`);
-      }
 
       const has = (key) => Object.prototype.hasOwnProperty.call(args, key);
       const metadata = {};
@@ -2824,12 +2969,20 @@ function buildTools(s, ctx) {
         if (has(key)) metadata[key] = args[key];
       }
       const restart = ['model', 'agentProvider', 'contextMode', 'agentPreset', 'reasoningEffort'].some(has);
+      // 运行中的成员只允许热改 role / permissionPreset（DSH 预设支持对 live session 直接 set）；
+      // 换模型/上下文/组合需要重建会话，仍要求先 interrupt。
+      if (['running', 'provisioning', 'blocked'].includes(current.status) && restart) {
+        throw new Error(`member is ${current.status}; interrupt it before changing model/provider/context/agentPreset. role and permissionPreset can be updated while it runs`);
+      }
 
       if (!restart) {
         const updated = await request(s, `/api/members/${id}`, { method: 'PATCH', body: metadata });
         let presetApplied = null;
         if (has('permissionPreset') && updated.agentSessionId) {
           presetApplied = applyPermissionPreset(ctx, String(updated.agentSessionId), updated.permissionPreset);
+          // 热更新后同步插件侧绑定，后续审批通知/分类按新预设走。
+          const live = sessionMember.get(String(updated.agentSessionId));
+          if (live) live.permissionPreset = updated.permissionPreset ?? null;
         }
         return {
           member: updated,
@@ -3376,6 +3529,15 @@ export function apply(ctx, config) {
     });
   }
 
+  // 审批分类需要工具参数，但 approval/request 只带 toolName/callId：
+  // 在 pre-execute 里按 callId 缓存成员这一轮的入参（只记成员，带 TTL），供低风险命令自动放行判定。
+  if (s.autoApproveLowRisk) {
+    ctx.on('tools/pre-execute', (exec, next) => {
+      try { rememberPreExecuteArgs(exec); } catch { /* ignore */ }
+      return typeof next === 'function' ? next() : undefined;
+    });
+  }
+
   // 成员权限审批：preset 的 approval=ask 触发时，把请求转给 Lead，由 team_approve 决定。
   // 放在最前面（prepend），确保本插件的成员请求不会再弹出宿主审批 UI。
   ctx.effect(() => {
@@ -3588,11 +3750,13 @@ export function apply(ctx, config) {
   }
 
   // 看板会话的后续用户消息：done/failed 被追问时翻回 inprogress（sidecar 只对这些状态生效）。
-  // 自己注入的首条 prompt 也会触发，但此时状态是 planning/inprogress，sidecar 会拒绝，不会误翻。
+  // 规划阶段例外：任务可能已被 idle 宽限判 failed，此时翻 inprogress 会让提交计划只认 planning
+  // 的状态机报 404；保持原状，由 submitPlan 按 planning_session_id 复活。
   ctx.on('session/event', (session, event) => {
     const sessionId = session?.id != null ? String(session.id) : null;
     if (!sessionId || !boardSessionIds.has(sessionId)) return;
     if (!event || event.type !== 'user/message') return;
+    if (boardSessions.get(sessionId)?.phase === 'planning') return;
     void request(s, '/api/board/agents/status', {
       method: 'POST', body: { sessionId, status: 'inprogress' },
     }).catch(() => { /* 非终态时 sidecar 会拒绝，忽略 */ });

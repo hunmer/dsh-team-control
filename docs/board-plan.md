@@ -351,6 +351,7 @@ done ──user message──► inprogress（仅未封存）
 | `POST` | `/api/board/tasks/{id}/start` | `{mode?: 'same'\|'new'}`；置 `auto=1`，可改 `execution_mode`。todo 走规划，planned 直接等执行 |
 | `POST` | `/api/board/tasks/{id}/stop` | 活动任务 → failed + `stop_requested` |
 | `POST` | `/api/board/tasks/{id}/retry` | failed → planned/todo |
+| `POST` | `/api/board/tasks/{id}/reset` | failed/done → `todo`，清空计划、会话绑定与失败信息（需手动 start） |
 | `POST` | `/api/board/tasks/{id}/archive` | 终态任务封存 |
 | `POST` | `/api/board/tasks/{id}/restore` | 取消封存 |
 | `POST` | `/api/board/tasks/{id}/status` | 手动兜底：`{status:'done'\|'failed'\|'inprogress'}` |

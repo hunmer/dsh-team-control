@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 17;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -186,6 +186,7 @@ CREATE TABLE IF NOT EXISTS context_snapshot (
   breakdown_json TEXT NOT NULL DEFAULT '{}',
   blocks_json TEXT NOT NULL DEFAULT '[]',
   compaction_json TEXT,
+  stats_json TEXT,
   status TEXT, as_of_seq INTEGER,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (team_id, member_id)
@@ -353,6 +354,7 @@ export function openDb(file) {
   ensureColumn(db, 'preset_delete', 'attempts', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'preset_delete', 'last_error', 'TEXT');
   ensureColumn(db, 'memory_link', 'task_id', 'TEXT');
+  ensureColumn(db, 'context_snapshot', 'stats_json', 'TEXT');
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_todo_task ON todo(task_id, order_no)'); } catch { /* ignore */ }
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_member_session ON member(agent_session_id)'); } catch { /* ignore */ }
   const get = q(db);

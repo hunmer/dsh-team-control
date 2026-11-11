@@ -100,6 +100,7 @@ export const boardApi = {
     api<BoardTask>(`/api/board/tasks/${enc(id)}/start`, { method: 'POST', body: { executionMode } }),
   stop: (id: string) => api<BoardTask>(`/api/board/tasks/${enc(id)}/stop`, { method: 'POST', body: {} }),
   retry: (id: string) => api<BoardTask>(`/api/board/tasks/${enc(id)}/retry`, { method: 'POST', body: {} }),
+  reset: (id: string) => api<BoardTask>(`/api/board/tasks/${enc(id)}/reset`, { method: 'POST', body: {} }),
   archive: (id: string) => api<BoardTask>(`/api/board/tasks/${enc(id)}/archive`, { method: 'POST', body: {} }),
   restore: (id: string) => api<BoardTask>(`/api/board/tasks/${enc(id)}/restore`, { method: 'POST', body: {} }),
   remove: (id: string) => api<{ ok: true; id: string }>(`/api/board/tasks/${enc(id)}`, { method: 'DELETE' }),

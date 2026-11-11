@@ -28,6 +28,7 @@ import {
 } from '@/components/ui/sidebar';
 import { Separator } from '@/components/ui/separator';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { useMediaQuery } from '@/hooks/use-media-query';
 
 export interface NavItem {
   label: string;
@@ -81,6 +82,8 @@ function NavList({ items, active, onNavigate }: { items: NavItem[]; active: stri
 
 function ShellBody({ nav, groups = [], active, onNavigate, header, sidebarTop, footer, children }: AppShellProps) {
   const { isMobile, state, setOpenMobile } = useSidebar();
+  // 窄页面（<lg）没有多余宽度：整条侧栏和切换按钮都不渲染，内容区铺满。
+  const wide = useMediaQuery({ min: 'lg' });
   // 收起到图标条时顶栏没有多余宽度，把团队切换器内联进 header
   const topInHeader = !isMobile && state === 'collapsed';
 
@@ -95,6 +98,19 @@ function ShellBody({ nav, groups = [], active, onNavigate, header, sidebarTop, f
     // 点当前视图时 active 不变、上面的 effect 不会触发，这里直接收掉
     if (isMobile) setOpenMobile(false);
   };
+
+  if (!wide) {
+    return (
+      <div className="flex h-svh min-w-0 flex-col bg-background">
+        <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
+          {sidebarTop && <div className="w-44 shrink-0">{sidebarTop}</div>}
+          <div className="truncate font-medium text-sm">{header.title}</div>
+          {header.actions && <div className="ml-auto flex items-center gap-2">{header.actions}</div>}
+        </header>
+        <div className="flex min-h-0 flex-1 flex-col overflow-auto">{children}</div>
+      </div>
+    );
+  }
 
   return (
     <>

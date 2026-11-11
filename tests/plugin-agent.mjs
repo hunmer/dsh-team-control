@@ -289,6 +289,21 @@ const main = async () => {
     await waitFor('t3 自动派发', async () => (
       (await api.get(`/api/tasks/${t3.task.id}`)).status === 'running' ? true : null
     ), 8000);
+    // ⑦b 运行中只改 permissionPreset：热写 DSH 预设，不重建会话；换模型仍要求先 interrupt
+    const hot = await tool('team_member').execute(
+      { action: 'update', teamId: team.id, memberId: spawned.member.id, permissionPreset: 'read-only' }, lead,
+    );
+    assert.equal(hot.restarted, false, '运行中改权限不重建会话');
+    assert.equal(hot.member.permissionPreset, 'read-only', '成员权限已更新');
+    assert.equal(hot.agent.sessionId, sessionId, '仍是同一个会话');
+    assert(ctx.presets.applied.some((p) => p.session === sessionId && p.name === 'read-only'), '热写 DSH 权限预设');
+    let restartBlocked = null;
+    try {
+      await tool('team_member').execute(
+        { action: 'update', teamId: team.id, memberId: spawned.member.id, model: 'next-model' }, lead,
+      );
+    } catch (e) { restartBlocked = e; }
+    assert(restartBlocked && /interrupt it before changing/.test(restartBlocked.message), '运行中换模型仍被拒');
     const ctl = await tool('team_control').execute(
       { action: 'interrupt', teamId: team.id, memberId: spawned.member.id, reason: '换个方向' }, lead,
     );

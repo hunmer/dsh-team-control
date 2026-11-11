@@ -76,9 +76,41 @@ const main = async () => {
       return i?.status === 'allowed' ? i : null;
     }, 5000);
 
+    // ②b 低风险命令自动放行：pre-execute 缓存参数 → 审批直接 allowed-once，不通知 Lead
+    const pre = (ctx.handlers.get('tools/pre-execute') || [])[0];
+    assert.equal(typeof pre, 'function', 'apply 注册 tools/pre-execute 用于审批分类');
+    await pre(
+      { agent: { id: sessionId }, callId: 'call-auto', name: 'ops_bash', arguments: { command: 'npm test' } },
+      async () => ({ decision: 'ask' }),
+    );
+    const beforeAuto = ctx.agents.messages.length;
+    const auto = await handler(
+      { id: 'req-auto', agent: { id: sessionId }, toolName: 'ops_bash', callId: 'call-auto', reason: 'sandbox escalation' },
+      async () => 'unavailable',
+    );
+    assert.equal(auto, 'allowed-once', '低风险命令自动放行');
+    assert.equal(ctx.agents.messages.length, beforeAuto, '自动放行不打扰 Lead');
+    await waitFor('自动放行镜像为 allowed/auto', async () => {
+      const i = (await api.get(`/api/approvals?team=${team.id}`)).items.find((x) => x.id === 'req-auto');
+      return i?.status === 'allowed' && i?.decidedBy === 'auto' ? i : null;
+    }, 5000);
+
+    // ②c 敏感命令仍转 Lead：rm -rf 不允许自动放行
+    await pre(
+      { agent: { id: sessionId }, callId: 'call-danger', name: 'ops_bash', arguments: { command: 'rm -rf build' } },
+      async () => ({ decision: 'ask' }),
+    );
+    const pDanger = handler(
+      { id: 'req-danger', agent: { id: sessionId }, toolName: 'ops_bash', callId: 'call-danger', reason: 'sandbox escalation' },
+      async () => 'unavailable',
+    );
+    await waitFor('敏感命令仍通知 Lead', async () => (ctx.agents.messages.length > beforeAuto ? true : null), 5000);
+    await tool('team_approve').execute({ teamId: team.id, requestId: 'req-danger', decision: 'deny', reason: '危险命令' }, lead);
+    assert.equal(await pDanger, 'rejected', '敏感命令不自动放行');
+
     // ③ 拒绝 → rejected
     const p2 = handler({ id: 'req-2', agent: { id: sessionId }, toolName: 'fs.write', reason: '写 /etc/hosts' }, async () => 'unavailable');
-    await waitFor('第二条通知', async () => (ctx.agents.messages.length >= 2 ? true : null), 5000);
+    await waitFor('第二条通知', async () => (ctx.agents.messages.length >= 3 ? true : null), 5000);
     await tool('team_approve').execute({ teamId: team.id, requestId: 'req-2', decision: 'deny', reason: '不允许' }, lead);
     assert.equal(await p2, 'rejected', '拒绝本次操作');
     await waitFor('镜像状态 rejected', async () => {
@@ -87,13 +119,14 @@ const main = async () => {
     }, 5000);
 
     // ④ 非成员请求交回原链路
+    const beforeStranger = ctx.agents.messages.length;
     const stranger = await handler({ id: 'req-3', agent: { id: 'sess-stranger' }, toolName: 'exec' }, async () => 'unavailable');
     assert.equal(stranger, 'unavailable', '非成员请求不拦截');
-    assert.equal(ctx.agents.messages.length, 2, '非成员不发通知');
+    assert.equal(ctx.agents.messages.length, beforeStranger, '非成员不发通知');
 
     // ⑤ 非 Lead 不能批
     const p3 = handler({ id: 'req-4', agent: { id: sessionId }, toolName: 'exec' }, async () => 'unavailable');
-    await waitFor('第三条通知', async () => (ctx.agents.messages.length >= 3 ? true : null), 5000);
+    await waitFor('第三条通知', async () => (ctx.agents.messages.length > beforeStranger ? true : null), 5000);
     let denied = null;
     try {
       await tool('team_approve').execute({ teamId: team.id, requestId: 'req-4', decision: 'allow' }, { agent: { id: 'sess-other' } });

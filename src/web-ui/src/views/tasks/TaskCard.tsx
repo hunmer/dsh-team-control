@@ -59,6 +59,7 @@ export function TaskCard({
   onStart,
   onStop,
   onRetry,
+  onReset,
   onComplete,
   onArchive,
   onRestore,
@@ -75,6 +76,7 @@ export function TaskCard({
   onStart: (mode: BoardMode) => void;
   onStop: () => void;
   onRetry: () => void;
+  onReset?: () => void;
   onComplete: () => void;
   onArchive: () => void;
   onRestore: () => void;
@@ -144,6 +146,7 @@ export function TaskCard({
             busy={busy}
             onEdit={onEdit}
             onStop={onStop}
+            onReset={onReset}
             onArchive={onArchive}
             onRestore={onRestore}
             onDelete={onDelete}

@@ -3,7 +3,7 @@
  * 一条竖线 + 行内白芯圆点，事件按时间正序逐行展开；hover 行浮起胶囊背景。
  * 所有事件同页纵向滚动。
  */
-import { useEffect, useMemo, useRef } from 'react';
+import { useMemo } from 'react';
 import { PHASES, usePanel } from '@/store';
 import { fmtClockSec, fmtDateTime, safeToken } from '@/lib/format';
 import type { Member, TimelineEntry } from '@/types';
@@ -57,8 +57,6 @@ const dayOf = (ts: string) => (ts || '').slice(0, 10);
 export function TimelineView() {
   const { state, setPaused, setFilterMember, setFilterPhase, memberName } = usePanel();
   const { timeline, filters, paused, errors, members } = state;
-  const listRef = useRef<HTMLDivElement | null>(null);
-  const stickToBottom = useRef(true);
 
   // 时间正序（旧的在上、新的在下）
   const rows = useMemo(() => {
@@ -75,27 +73,6 @@ export function TimelineView() {
 
   /** 事件 → 成员，用于在行首展示该成员所用模型的厂商图标 */
   const memberById = useMemo(() => new Map(members.map((m) => [m.id, m])), [members]);
-
-  /** 首次进入 / 切换团队时定位到最新一条 */
-  useEffect(() => {
-    const node = listRef.current;
-    if (!node) return;
-    stickToBottom.current = true;
-    node.scrollTop = node.scrollHeight;
-  }, [state.teamId]);
-
-  /** 新事件进来时，若本来就在底部则继续跟随 */
-  useEffect(() => {
-    const node = listRef.current;
-    if (!node || !stickToBottom.current) return;
-    node.scrollTop = node.scrollHeight;
-  }, [rows.length]);
-
-  const onScroll = () => {
-    const node = listRef.current;
-    if (!node) return;
-    stickToBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight < 40;
-  };
 
   return (
     <section className="relative space-y-3" data-view="timeline">
@@ -139,9 +116,7 @@ export function TimelineView() {
             ? <EmptyState title="当前过滤条件下没有事件" detail="清空成员 / phase 过滤" />
             : (
               <div
-                ref={listRef}
-                onScroll={onScroll}
-                className="max-h-[calc(100vh-13rem)] overflow-auto overscroll-contain rounded-xl bg-card
+                className="rounded-xl bg-card
                   shadow-[0_0_0_0.5px_var(--color-border),0_1px_2px_-1px_rgb(0_0_0/0.07),0_1px_3px_0_rgb(0_0_0/0.05)]
                   dark:shadow-[0_0_0_0.5px_var(--color-border),0_2px_6px_-1px_rgb(0_0_0/0.4)]"
               >

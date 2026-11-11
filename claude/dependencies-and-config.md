@@ -7,7 +7,7 @@
 | 依赖 | 版本 | 用途 | 风险 |
 |---|---|---|---|
 | Node | `>= 22.15`（实测 24.22） | `node:sqlite`、`module.registerHooks`、`node --permission` | 低于 22.15 直接崩 |
-| `node:sqlite` | 内置 | SQLite WAL，schema v7 | 实验性 API，Node 升级可能变签名 |
+| `node:sqlite` | 内置 | SQLite WAL，schema v17 | 实验性 API，Node 升级可能变签名 |
 | 系统 `sqlite3` CLI | 可选 | 测试里 `readDb()` 读库校验 | 缺失时相关断言跳过 |
 
 后端**零 npm 依赖**（`dsh-plugin/package.json` 只声明 `dsh-team-control-cli ^0.1.1` 作为自引用 CLI 包）。
@@ -54,6 +54,9 @@
 | `boardDispatchMs` | `2000` | 看板泵间隔（最小 500ms） |
 | `boardIdleGraceMs` | `6000` | 规划会话 idle 后等待提交计划的宽限 |
 | `boardPlanningTimeoutMs` | `1800000` | 规划超时，超时置 failed |
+| `approvalTimeoutMs` | `600000` | 成员审批等待 Lead 的上限，超时自动拒绝 |
+| `autoApproveLowRisk` | `true` | 低风险 shell 命令自动放行（镜像 `decidedBy:auto`，不通知 Lead） |
+| `sensitiveCommandPatterns` | `[]` | 追加的敏感命令正则，命中仍转 Lead |
 | `agentAutoDispatch` | `true` | agent 团队自动派发 |
 | `agentIdleSettleMs` | — | idle 判定窗口 |
 | `agentHeartbeatMs` | — | 心跳间隔 |

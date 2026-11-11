@@ -10,7 +10,7 @@ node bin/dsh-team.mjs up [--port N] [--data DIR] [--foreground]
   ├ 确定 home：--data > DSH_TEAM_HOME > ~/.dsh/team
   ├ mkdir home / home/run / home/workers
   ├ startServer({home, port, host:'127.0.0.1'})   src/server.mjs
-  │    ├ openDb(home/team.db)  SQLite WAL + migrate（schema v7，幂等）
+  │    ├ openDb(home/team.db)  SQLite WAL + migrate（schema v17，幂等）
   │    ├ createCore(...)       src/core.mjs 组合根 + recoverAll()
   │    └ http.createServer(createRoutes(core))
   ├ 写 home/run/sidecar.json {pid,port,url,startedAt}

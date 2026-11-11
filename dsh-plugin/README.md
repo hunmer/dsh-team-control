@@ -33,6 +33,7 @@
 - `team_create.permissionPreset`：团队默认值（默认 `workspace-write`）。
 - `team_spawn.permissionPreset`：成员覆盖；不传则继承团队。
 - 返回值里的 `permissionPresetApplied` 表示是否真的写进子会话；宿主没有这个服务或预设名未知时给 `permissionPresetWarning`，不阻断派发。
+- `team_member({action:"update", permissionPreset})` 可对 **运行中** 的成员热改权限（直接 `permissionPresets.set`，无需 interrupt）；换模型/上下文/组合仍要求先 `interrupt`。
 
 `agentPreset` 是另一套（组合：工具/skill/MCP + 系统提示词）：团队默认 + 成员覆盖，用宿主 `agentPresets.list()` 校验；
 只在 `contextMode: 'fresh'` 时透传给 `startActivation`，`fork` 继承父方组合并返回 `agentPresetWarning`。
@@ -47,9 +48,10 @@
 成员触发的宿主审批不会静默失败，而是转发给 Lead：
 
 1. 全局监听 `approval/request`；请求的 agent 不属于任何团队成员 → 交给后面的 handler（`next()`）。
-2. 属于成员 → `POST /api/approvals` 镜像一条 pending，并 `subagents.sendMessage` 通知 Lead，文本含 `requestId`、成员、工具、原因与 `team_approve` 调用示例。
-3. Lead 调 `team_approve {teamId, requestId, decision: allow|deny, reason?}` → 插件 resolve 为 `allowed-once` / `rejected`，同时把 sidecar 记录改成 allowed/rejected。
-4. 超过 `approvalTimeoutMs`（默认 10 分钟）自动拒绝并标记 expired；成员回合被取消时按 cancelled 处理。
+2. 属于成员 → 先做低风险判定：`tools/pre-execute` 按 `callId` 缓存入参，若工具名像 shell、参数带字符串 `command`，且命令是白名单程序、无管道/重定向/命令替换、不命中敏感规则 → 直接返回 `allowed-once` 并镜像 `decidedBy:"auto"`，不通知 Lead。
+3. 其余请求 → `POST /api/approvals` 镜像一条 pending，并 `subagents.sendMessage` 通知 Lead，文本含 `requestId`、成员、工具、原因与 `team_approve` 调用示例。
+4. Lead 调 `team_approve {teamId, requestId, decision: allow|deny, reason?}` → 插件 resolve 为 `allowed-once` / `rejected`，同时把 sidecar 记录改成 allowed/rejected。
+5. 超过 `approvalTimeoutMs`（默认 10 分钟）自动拒绝并标记 expired；成员回合被取消时按 cancelled 处理。
 
 ## 模型路由（每个成员不同的 provider / model / effort）
 
@@ -93,6 +95,8 @@ dsh plugin --profile web add dsh-team-control
 | `startTimeoutMs` | `20000` | 自动拉起的等待上限 |
 | `requestTimeoutMs` | `60000` | 单次 API 调用超时 |
 | `approvalTimeoutMs` | `600000` | 成员审批等待 Lead 的上限；超时自动拒绝 |
+| `autoApproveLowRisk` | `true` | 低风险 shell 命令自动放行（不通知 Lead，镜像 `decidedBy:auto`） |
+| `sensitiveCommandPatterns` | `[]` | 追加的敏感命令正则；命中即转 Lead 审批 |
 | `reportToolCalls` | `true` | 监听 `tools/execute`，把每次工具调用上报为 `POST /api/spans` 的 span |
 | `traceInputMax` | `1200` | 上报参数/结果预览的截断长度（字符） |
 | `agentAutoDispatch` | `true` | 调度器自动把 ready 任务派给 idle 成员 |

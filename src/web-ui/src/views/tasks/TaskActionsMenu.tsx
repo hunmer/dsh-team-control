@@ -1,8 +1,9 @@
 /**
- * 任务操作菜单（任务卡片与详情卡片复用）：编辑 / 停止 / 封存或恢复 / 删除。
- * 编辑仅对待办任务可用；停止对非进行中的任务禁用；删除会二次确认，进行中的任务需先停止。
+ * 任务操作菜单（任务卡片与详情卡片复用）：编辑 / 停止 / 重置 / 封存或恢复 / 删除。
+ * 编辑仅对待办任务可用；停止对非进行中的任务禁用；重置仅对已结束（完成/失败）的任务可用；
+ * 删除会二次确认，进行中的任务需先停止。
  */
-import { Archive, ArchiveRestore, MoreHorizontal, Pencil, Square, Trash2 } from 'lucide-react';
+import { Archive, ArchiveRestore, MoreHorizontal, Pencil, RotateCcw, Square, Trash2 } from 'lucide-react';
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from '@/components/ui/menu';
 import type { BoardTask } from '@/lib/board';
 import { cn } from '@/lib/utils';
@@ -12,6 +13,7 @@ export function TaskActionsMenu({
   busy,
   onEdit,
   onStop,
+  onReset,
   onArchive,
   onRestore,
   onDelete,
@@ -22,6 +24,7 @@ export function TaskActionsMenu({
   busy: string;
   onEdit?: () => void;
   onStop: () => void;
+  onReset?: () => void;
   onArchive?: () => void;
   onRestore?: () => void;
   onDelete: () => void;
@@ -35,6 +38,11 @@ export function TaskActionsMenu({
   const confirmDelete = () => {
     if (!window.confirm(`删除任务「${task.title}」？删除后无法恢复。`)) return;
     onDelete();
+  };
+
+  const confirmReset = () => {
+    if (!window.confirm(`重置任务「${task.title}」为待办？将清空计划、执行记录与失败信息。`)) return;
+    onReset?.();
   };
 
   return (
@@ -68,6 +76,16 @@ export function TaskActionsMenu({
             <Square />
             停止
           </MenuItem>
+          {onReset && !task.archivedAt && (
+            <MenuItem
+              onClick={confirmReset}
+              disabled={!terminal || isBusy}
+              title={terminal ? '清空计划与执行记录，回到待办' : '仅已完成或失败的任务可以重置'}
+            >
+              <RotateCcw />
+              重置
+            </MenuItem>
+          )}
           {onRestore && task.archivedAt && (
             <MenuItem onClick={onRestore} disabled={isBusy}>
               <ArchiveRestore />

@@ -264,6 +264,21 @@ export interface ContextUsage {
   cost: number;
 }
 
+/** 成员会话的执行统计（轮数/步数/解码速度/token 与缓存命中），由 Host 插件从 DSH 投影折出。 */
+export interface ContextStats {
+  turns: number;
+  steps: number;
+  llmMs: number;
+  toolMs: number;
+  ttftMs: number;
+  decodeMs: number;
+  decodeTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
 /** 某个成员当前的上下文快照（/api/contexts）。 */
 export interface ContextSnapshot {
   teamId: string;
@@ -276,6 +291,7 @@ export interface ContextSnapshot {
   breakdown?: { system?: number; tools?: number; messages?: number } | null;
   blocks: ContextBlock[];
   compaction?: ContextCompaction | null;
+  stats?: ContextStats | null;
   status?: string | null;
   asOfSeq?: number | null;
   updatedAt?: string;

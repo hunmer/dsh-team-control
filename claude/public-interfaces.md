@@ -34,7 +34,7 @@
 
 **可观测/产物**
 - `GET|POST /api/artifacts`、`GET|POST /api/changes`
-- `GET|POST /api/contexts`、`GET|POST /api/workspaces`
+- `GET|POST /api/contexts`（快照含 `stats`：轮数/步数/token/缓存）、`GET|POST /api/workspaces`
 - `GET /api/status`、`GET /api/steps`、`GET /api/blockers`、`GET /api/metrics`
 - `GET /api/events/history`、`POST|GET /api/spans`、`GET /api/trace`
 - `GET /api/verify`、`GET /api/reconcile`、`GET /api/audit`、`GET /api/report`
@@ -60,7 +60,7 @@
 - `GET /api/board/by-session/{sessionId}`、`GET /api/board/by-team/{teamId}`
 - `GET|PUT /api/board/settings?workspaceId=…`
 - `POST /api/board/tasks`、`POST /api/board/claim`、`GET /api/board/tasks/{id}`
-- `PATCH /api/board/tasks/{id}`、`POST …/start|stop|retry|archive|restore`、`DELETE /api/board/tasks/{id}`
+- `PATCH /api/board/tasks/{id}`、`POST …/start|stop|retry|reset|archive|restore`、`DELETE /api/board/tasks/{id}`
 - `GET|POST /api/host/web`（宿主面板地址登记）
 - `stopTask` 命中运行中的团队时会联动 `POST /api/teams/{id}/stop` 强制中断成员会话
 

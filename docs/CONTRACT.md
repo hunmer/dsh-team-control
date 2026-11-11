@@ -11,7 +11,7 @@
 |---|---|---|---|
 | **C1** | 沙箱只由 DSH permission preset 决定 | sidecar 不做 fs/exec/net/env 判定；团队/成员只存 `permissionPreset` 名（默认 `workspace-write`）。插件在子会话创建后调 `ctx.permissionPresets.set(session, name)`；宿主缺失该服务时返回 `permissionPresetApplied:false` + 警告，成员按宿主默认权限运行。 | `tests/plugin-agent.mjs` 断言 `presets.set` 调用；`tests/ac-15-agent-runtime.mjs` 断言团队/成员预设落库与覆盖 |
 | **C2** | `event` 只增不改；`member_state` 能由 event 完全重建 | `append()` 是唯一写入口：同一事务内 `INSERT event`(seq 由 max+1 分配) + upsert `member_state`。`rebuild()` 只读 event 生成投影。`member_state.seq == max(event.seq)` 否则 `stale=1`。 | `tests/ac-*` 含 rebuild 对账：`progress 事件数 == member_state.seq`，逐字段深比较 |
-| **C3** | 审批只由宿主产生，sidecar 只镜像 | 成员命中 preset 的 `ask` 策略时，DSH 发 `approval/request`；插件把它转给 Lead 并阻塞等待 `team_approve`，返回宿主 `allowed-once` / `rejected`。sidecar 的 `approval` 表只记录镜像与决策审计，**不参与放行**。 | `tests/plugin-approval.mjs`：allow→`allowed-once`、deny→`rejected`、非成员放行原链路；`tests/ac-17-approval.mjs`：镜像/指标/报告 |
+| **C3** | 审批只由宿主产生，sidecar 只镜像 | 成员命中 preset 的 `ask` 策略时，DSH 发 `approval/request`；插件把它转给 Lead 并阻塞等待 `team_approve`，返回宿主 `allowed-once` / `rejected`；低风险 shell 命令（白名单程序、无管道/重定向、不命中敏感规则）由插件直接放行并以 `decidedBy:auto` 镜像。sidecar 的 `approval` 表只记录镜像与决策审计，**不参与放行**。 | `tests/plugin-approval.mjs`：allow→`allowed-once`、deny→`rejected`、低风险自动放行、敏感命令仍转 Lead、非成员放行原链路；`tests/ac-17-approval.mjs`：镜像/指标/报告 |
 | **C4** | 决策审计必须可回放 | `POST /api/approvals` 幂等登记 pending；`POST /api/approvals/{id}/decide` 写状态 + `approval.request`/`approval.decide` 事件。超时/中断在插件侧也会镜像 `expired`/`cancelled`。 | `tests/ac-17-approval.mjs`：pending→allowed/rejected、metrics、report；`tests/ac-13`：原因/工具名脱敏 |
 | **C5** | 中断必须**同步**写状态，禁止残留 `running` | `interruptMember()` 同步事务：`member.status=interrupted` + `agent.interrupt` 事件 + 在途任务转 `paused`（不计 attempts、不触发 failurePolicy、不自动重派）；提交后才通知 Host `subagents.interrupt`。API 返回即已落库。 | `tests/ac-08`：interrupt 返回后立即 GET 必须 `interrupted`（<100ms），任务为 `paused` 且 `attempts` 不变 |
 
@@ -199,7 +199,9 @@ root(run:team)                         ← 团队整体
 1. `team_create({permissionPreset})` / `team_spawn({permissionPreset})` 解析并校验预设名（默认 `workspace-write`，正则 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`；宿主 `names` 可用时校验）。
 2. `startActivation` 返回后立刻 `ctx.permissionPresets.set(sessions.get(childId), preset)`；返回 `permissionPresetApplied`，失败只警告不回滚。
 3. `ctx.on('approval/request', handler, {prepend:true})`：只有绑定了成员的 session 才拦截；镜像 `POST /api/approvals`，用 `subagents.sendMessage` 通知 Lead（含 `requestId` 与 `team_approve` 示例），Promise 等待。
+3b. 低风险命令自动放行（`autoApproveLowRisk`，默认 `true`）：`tools/pre-execute` 按 `callId` 缓存成员这次调用的入参；审批到来时若工具名像 shell、参数里有字符串 `command`，且命令满足「程序白名单 + 无管道/重定向/命令替换 + 不命中敏感规则（`sensitiveCommandPatterns` 可追加）」，插件直接返回宿主 `allowed-once` 并镜像 `decidedBy:"auto"`，不通知 Lead。其余情况（无入参、非 shell、解释器 `-e/-c`、命中敏感规则）仍走第 3/4 步。判定是启发式，宁可漏放行也不误放行。
 4. `team_approve({teamId, requestId, decision, reason})` 只有团队 Lead 可调；`allow` → 宿主 `allowed-once`，`deny` → `rejected`；超时（`approvalTimeoutMs`，默认 600000）→ `rejected` 并镜像 `expired`；`req.signal` abort → `cancelled`。
+4b. `team_member({action:"update"})`：运行中的成员允许热改 `role` / `permissionPreset`（直接 `permissionPresets.set`，不重建会话）；`model`/`agentProvider`/`contextMode`/`agentPreset`/`reasoningEffort` 变更仍要求先 `interrupt`。
 5. 非成员请求 `return next()`，仍走 DSH 原有审批链路。
 
 #### 3.6.2 agent 组合预设（agentPreset）
@@ -327,7 +329,7 @@ root(run:team)                         ← 团队整体
 | `GET/POST /api/host/web` | POST `{url}`：Host 插件把 DSH Web 的浏览器地址上报给 sidecar | `{url}` |
 | `POST /api/board/tasks` | `{workspaceId, title, description?, auto?, needPlan?, useTeam?, executionMode?, priority?, planRoute?, leadRoute?, teamModels?}` | board task |
 | `PATCH /api/board/tasks/:id` | 同上字段 | board task |
-| `POST /api/board/tasks/:id/start|stop|retry|archive|restore` | `{executionMode?}` / `{reason?}` | board task；`stop` 还会暂停并终止 `board_task_team` 绑定的团队（终态/成员保留） |
+| `POST /api/board/tasks/:id/start|stop|retry|reset|archive|restore` | `{executionMode?}` / `{reason?}` | board task；`stop` 还会暂停并终止 `board_task_team` 绑定的团队（终态/成员保留）；`reset` 仅 failed/done，清空计划与会话绑定并回到 `todo` |
 | `POST /api/board/tasks/:id/teams` | `{teamId}` | board task（幂等绑定） |
 | `POST /api/board/claim` | `{kind:'planning'|'inprogress'}` | `{item:{task,workspace,settings,fence}}` 或 `{item:null}`；内部接口 |
 | `POST /api/board/tasks/:id/attach` | `{kind,sessionId,fence}` | board task；写 `planning_session_id` 或 `lead_session_id` |
@@ -441,7 +443,7 @@ v2 删除了 `src/broker.mjs`、`src/policy.mjs`、`src/runner.mjs`、`src/worke
 | `tests/plugin-agent.mjs` | 插件这一半的 agent 闭环（含权限预设落会话）：`team_spawn` 真调 `subagents.startActivation` 并回注 session、任务简报含 `taskId`/`team_report_task` 指引、成员回报推进任务、未知 session 回报被拒（工具与 `POST /api/members/:id/agent-status` 两处）、`agent/status=idle` 兜底收尾并自动接着派发、`interrupt` 走 `subagents.interrupt` 且任务转 `paused`、团队停止后 force-stop 泵以 `{kind:'user',parentSessionId}` 真正中断成员会话、`team_member` 的 update 重建/drain、retire/remove、`permissionPresets.set` 被调用 |
 | `tests/plugin-client.mjs` | 客户端入口注册与工具清单 |
 | `tests/plugin-trace.mjs` | Trace 上报链路（session span 挂成员节点） |
-| `tests/plugin-approval.mjs` | 审批转发：`approval/request` → 通知 Lead → `team_approve` allow=`allowed-once` / deny=`rejected`、非成员放行原链路、非 Lead 被拒 |
+| `tests/plugin-approval.mjs` | 审批转发：`approval/request` → 通知 Lead → `team_approve` allow=`allowed-once` / deny=`rejected`、非成员放行原链路、非 Lead 被拒；低风险 `npm test` 自动放行（不通知 Lead、镜像 `decidedBy:auto`）、敏感 `rm -rf` 仍转 Lead |
 | `tests/db-migration.mjs` | 老库就地迁移：schema v1（`team` 无 `permission_preset`、`member` 无 `agent_session_id`）能补列/补索引/升版本，旧数据保留且默认 `workspace-write`，二次打开幂等 |
 
 `tests/run-all.mjs` 先跑全部 `ac-*.mjs`，再跑上述插件/面板/路由/CLI/迁移脚本，任一失败即非零退出。

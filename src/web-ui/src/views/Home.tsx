@@ -17,10 +17,10 @@
 import { useMemo, useRef, useState } from 'react';
 import { usePanel } from '@/store';
 import { api, enc } from '@/lib/api';
-import type { Member, Task, Todo } from '@/types';
+import type { ContextSnapshot, Member, Task, Todo } from '@/types';
 import { Button } from '@/components/ui/button';
 import { ActivityFeed } from '@/components/activity-feed';
-import { AgentSteering, type SteerNote, type SteerStatus, type SteerStep } from '@/components/agent-steering';
+import { AgentSteering, type SteerMetrics, type SteerNote, type SteerStatus, type SteerStep } from '@/components/agent-steering';
 import { modelAvatar } from '@/components/ModelAvatar';
 import { openMemberConversation } from '@/lib/dsh-bridge';
 import type { PlanStep } from '@/components/plan-steps';
@@ -99,7 +99,7 @@ function elapsedOf(task?: Task): number | undefined {
 
 export function HomeView() {
   const { state, refreshMessages, setFilterMember, memberName, toast } = usePanel();
-  const { dag, tasks, todos, timeline, members, messages } = state;
+  const { dag, tasks, todos, timeline, members, messages, contexts } = state;
 
   /** 点成员卡片时切换 Plan/Activity 跟随的任务。 */
   const [selectedId, setSelectedId] = useState('');
@@ -195,6 +195,29 @@ export function HomeView() {
     }
     return map;
   }, [steerable, todos, taskById]);
+
+  /** 成员 id → 底部执行指标（Host 从 DSH 会话投影折出的轮数/速度/token/缓存/上下文）。 */
+  const metricsByMember = useMemo(() => {
+    const map = new Map<string, SteerMetrics>();
+    for (const snapshot of contexts as ContextSnapshot[]) {
+      const stats = snapshot.stats;
+      if (!stats) continue;
+      // listContexts 按 updated_at DESC 返回，先到的是最新快照。
+      if (map.has(snapshot.memberId)) continue;
+      map.set(snapshot.memberId, {
+        turns: stats.turns,
+        steps: stats.steps,
+        decodeTokens: stats.decodeTokens,
+        decodeMs: stats.decodeMs,
+        inputTokens: stats.inputTokens,
+        outputTokens: stats.outputTokens,
+        cacheHitRate: stats.inputTokens > 0 ? stats.cacheReadTokens / stats.inputTokens : null,
+        contextUsed: snapshot.used ?? 0,
+        contextLimit: snapshot.limit ?? 0,
+      });
+    }
+    return map;
+  }, [contexts]);
 
   /** 成员 id → 队列里的 steer 消息（sidecar 里 kind='steer' 且仍是 queued）。 */
   const queueByMember = useMemo(() => {
@@ -332,6 +355,7 @@ export function HomeView() {
                         Date.now()
                       }
                       steps={stepsByMember.get(member.id) ?? []}
+                      metrics={metricsByMember.get(member.id)}
                       queue={queueByMember.get(member.id) ?? []}
                       onQueue={(text) => void sendSteer(member, text)}
                       onInterrupt={(text, queuedId) => {

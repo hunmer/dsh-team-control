@@ -49,7 +49,7 @@ Lead 主动出手只有三种情况：用户给了新指令（改派/加任务/�
 - 插件在子会话创建后调 `ctx.permissionPresets.set(session, preset)`，返回里看 `permissionPresetApplied`；
   `false` 时 `permissionPresetWarning` 会说明宿主没有这个预设（别慌，成员仍按宿主默认权限运行）。
 - 预设名必须是宿主 `permissionPresets.names` 里的项；传错会直接报错并列出可用预设。
-- **`ops_bash` 报工作区缺 `WRITE_OWNER` / ACL 无法启动**：这不是 `agentPreset` 的问题；`workspace-write` 在 Windows 上要求工作区目录由当前用户拥有且具备 `WRITE_OWNER`。`procm-mcp`、文件读写能正常工作，不代表 bash 沙箱能完成 provisioning。先看 `team_status` 的 `permissionPreset`；临时可先 `team_control interrupt` 再 `team_member({action:"update", permissionPreset:"danger-full-access"})`，根因用 DSH 的 `diagnose-windows-sandbox-acl` 技能修目录权限。
+- **`ops_bash` 报工作区缺 `WRITE_OWNER` / ACL 无法启动**：这不是 `agentPreset` 的问题；`workspace-write` 在 Windows 上要求工作区目录由当前用户拥有且具备 `WRITE_OWNER`。`procm-mcp`、文件读写能正常工作，不代表 bash 沙箱能完成 provisioning。先看 `team_status` 的 `permissionPreset`；临时可 `team_member({action:"update", permissionPreset:"danger-full-access"})`（运行中即时生效，无需 interrupt），根因用 DSH 的 `diagnose-windows-sandbox-acl` 技能修目录权限。
 
 ## 0.1 组合：给成员换一套工具/skill/MCP（agentPreset）
 
@@ -110,6 +110,7 @@ requestId=req-...
 ```
 
 - `allow` = 只放行这一次操作（DSH 的 `allowed-once`）；`deny` = 拒绝。
+- 低风险 shell 命令（白名单程序、无管道/重定向、不命中敏感规则）由插件自动放行，不打扰你；只有敏感命令或非 shell 工具才需要 `team_approve`。
 - 只有该团队的 Lead 能批；不是成员会话的审批请求不会拦截，仍走宿主原链路。
 - 超时（插件配置 `approvalTimeoutMs`，默认 10 分钟）自动拒绝；请求也会镜像到 sidecar，
   `dsh-team approvals <team>`、`GET /api/approvals`、运行报告里都能看到。
@@ -176,7 +177,7 @@ team_spawn({ teamId, name:"architect", prompt:"...", agentProvider:"deepseek", m
 `team_control({action, memberId, taskId})`：`interrupt` 停成员并把在途任务转 `paused`（不计重试）；
 `resume` 解冻；`assign` 把任务交给 idle 成员；`abort` 永久作废任务（`aborted`，不重试）。
 `team_member({action:"update", memberId, model?, agentProvider?, contextMode?, reasoningEffort?, agentPreset?, permissionPreset?, role?})`：
-改模型/上下文会重建该成员的子会话（旧上下文丢失）；只改 role/permissionPreset 不重建。成员须先 idle 或 interrupted。
+改模型/上下文会重建该成员的子会话（旧上下文丢失，须先 idle/interrupted）；只改 `role`/`permissionPreset` 不重建，**运行中也能热改权限**，立即生效。
 `team_member({action:"retire"|"remove", memberId, confirm?})`：retire 保留历史，remove 物理删除且必须 `confirm:true`；两者都会释放子会话。
 
 ## 3. 拆任务与并发
@@ -198,7 +199,7 @@ team_spawn({ teamId, name:"architect", prompt:"...", agentProvider:"deepseek", m
 | 返回 `agentPresetWarning` 提到 fork | `contextMode:'fork'` 继承 Lead 组合 | 改用 `fresh`，或接受成员与 Lead 同组合 |
 | `team_preset` save 报「已由宿主定义」 | id 与内置预设撞名 | 换 id；内置预设只读 |
 | `permissionPresetApplied: false` | 宿主没启用 permission-presets 服务 | 看 `permissionPresetWarning`；成员会按宿主默认权限运行，换团队预设或让用户开插件 |
-| `ops_bash` 启动报工作区缺 `WRITE_OWNER` | 成员是 `workspace-write`，但 Windows 工作区目录 ACL 不满足 bash 沙箱 provisioning；与 `agentPreset` 是否 `standard` 无关 | 先 `team_control interrupt`，再 `team_member({action:"update", permissionPreset:"danger-full-access"})` 临时绕过；根因用 `diagnose-windows-sandbox-acl` 修 ACL |
+| `ops_bash` 启动报工作区缺 `WRITE_OWNER` | 成员是 `workspace-write`，但 Windows 工作区目录 ACL 不满足 bash 沙箱 provisioning；与 `agentPreset` 是否 `standard` 无关 | 运行中直接 `team_member({action:"update", permissionPreset:"danger-full-access"})` 临时绕过（无需 interrupt）；根因用 `diagnose-windows-sandbox-acl` 修 ACL |
 | 成员一直 `running` 不 done | 简报没让它调 `team_report_task`，或卡在审批 | 先看 `team_status` 的 blockers 与 `/api/approvals`；审批用 `team_approve`，否则补 `prompt` 后 `interrupt` → `resume` → `assign` 重派；确定不要了就 `abort` 作废 |
 | `team_task` 建完没人接 | 成员全 busy/queued，或 `assignee` 用了 name | 省略 `assignee` 让调度器挑，或 `team_status` 看谁 idle |
 | 任务 `done` 但产物不对 | 成员看不到 Lead 的对话 | 简报自包含：目标文件、验收标准、不要假设它读过本对话；产物好坏交给用户判定，Lead 不自己返工复核 |
