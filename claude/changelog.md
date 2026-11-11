@@ -2,6 +2,11 @@
 
 > 只记录索引/文档的生成与更新，不记录产品 Changelog。倒序，最多 5 条。
 
+## 2026-11-11 · 构建产物清理
+
+- 新增 `src/web-ui/scripts/prune-assets.mjs` 并挂到 `postbuild`：构建后只保留 `panel.html` 当前引用的产物，同时同步 `.gitignore` 白名单，防止旧 hash 再次堆积。
+- 删除 35 个历史构建产物（约 35 MB）；`dsh-team-control-cli` 的 npm 包从 11.4 MB 降到约 0.6 MB。
+
 ## 2026-11-11 · 面板指标与任务重置
 
 - 面板：`agent-steering` 底部展示轮数/步数、tok/s、token 总量、缓存命中、上下文占用（数据来自 `sessionStats` + `tokenUsage` 投影→`context_snapshot.stats_json`）；`app-shell` 窄屏隐藏侧栏与 trigger；`Timeline` 去掉内部滚动；任务菜单新增仅 failed/done 可用的「重置」（`POST /api/board/tasks/:id/reset`）。
