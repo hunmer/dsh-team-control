@@ -38,11 +38,11 @@ const main = async () => {
     });
     assertEqual(planFailed.status, 'failed', '规划失败落库');
 
-    // 规划提交：same 模式把 lead_session_id 写成同一会话（failed → planned 复活）
+    // 规划提交：same 模式直接 claim 执行槽位并 attach 回同一会话（failed → inprogress 复活）
     const planned = await api.post('/api/board/agents/plan', {
       sessionId: 'session-plan-1', plan: '# 计划\n1. 做', summary: '一句话',
     });
-    assertEqual(planned.status, 'planned', '提交计划后 planned');
+    assertEqual(planned.status, 'inprogress', '提交计划即进入执行槽位');
     assertEqual(planned.leadSessionId, 'session-plan-1', 'same 模式复用规划会话');
     const db = readDb(tmp.dataDir);
     const recovered = db.get(
@@ -56,12 +56,8 @@ const main = async () => {
     assertEqual((await api.get(`/api/board/by-session/session-plan-1`)).id, t1.id, 'by-session 反查');
     assertEqual((await api.post('/api/board/claim', { kind: 'planning' })).item.task.id, t2.id, '规划槽位释放后 claim 第二个');
 
-    // 执行槽位：planned -> inprogress，同会话 attach
-    const c2 = await api.post('/api/board/claim', { kind: 'inprogress' });
-    assertEqual(c2.item.task.id, t1.id, 'claim 执行槽位');
-    await api.post(`/api/board/tasks/${t1.id}/attach`, {
-      kind: 'inprogress', sessionId: 'session-plan-1', fence: c2.item.fence,
-    });
+    // 执行槽位：提交计划时已占用，泵再 claim 不到
+    assertEqual((await api.post('/api/board/claim', { kind: 'inprogress' })).item, null, '执行槽位已被本任务占用');
     assertEqual((await api.get(`/api/board/tasks/${t1.id}`)).status, 'inprogress', '执行中');
 
     // done -> 用户追问 -> inprogress
@@ -174,11 +170,7 @@ const main = async () => {
     await api.post('/api/board/agents/plan', {
       sessionId: 'sess-board-stop-plan', plan: '# 停止联动', summary: '联动',
     });
-    const execClaim = await api.post('/api/board/claim', { kind: 'inprogress' });
-    assertEqual(execClaim.item.task.id, boardStop.id, '联动用例拿到执行槽位');
-    await api.post(`/api/board/tasks/${boardStop.id}/attach`, {
-      kind: 'inprogress', sessionId: 'sess-board-stop-plan', fence: execClaim.item.fence,
-    });
+    assertEqual((await api.get(`/api/board/tasks/${boardStop.id}`)).status, 'inprogress', '联动用例提交计划即进入执行槽位');
     await api.post(`/api/board/tasks/${boardStop.id}/teams`, { teamId: stopTeam.id });
     await api.post(`/api/board/tasks/${boardStop.id}/stop`, { reason: '联动测试' });
     assertEqual((await api.get(`/api/tasks/${teamTask.id}`)).status, 'paused', '看板停止暂停绑定团队任务');

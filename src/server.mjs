@@ -153,7 +153,7 @@ export function createRoutes(core) {
     ['GET', /^\/api\/board\/settings$/, async (ctx) => C.board.settings(need(qs(ctx.url).get('workspaceId'), 'workspaceId'))],
     ['PUT', /^\/api\/board\/settings$/, async (ctx) => C.board.saveSettings(need(ctx.body.workspaceId, 'workspaceId'), ctx.body)],
     ['POST', /^\/api\/board\/tasks$/, async (ctx) => C.board.createTask(ctx.body)],
-    ['POST', /^\/api\/board\/claim$/, async (ctx) => C.board.claim(need(ctx.body.kind, 'kind'))],
+    ['POST', /^\/api\/board\/claim$/, async (ctx) => C.board.claim(need(ctx.body.kind, 'kind'), ctx.body.taskId || null)],
     ['GET', /^\/api\/board\/tasks\/([^/]+)$/, async (ctx) => C.board.getTask(ctx.p[0])],
     ['PATCH', /^\/api\/board\/tasks\/([^/]+)$/, async (ctx) => C.board.updateTask(ctx.p[0], ctx.body)],
     ['POST', /^\/api\/board\/tasks\/([^/]+)\/start$/, async (ctx) => C.board.startTask(ctx.p[0], ctx.body)],

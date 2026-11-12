@@ -1770,10 +1770,18 @@ function boardPromptModels(task) {
 
 function boardPlanningPrompt(task, settings) {
   const useTeam = task.useTeam !== false;
+  // 同会话模式：规划与执行是同一个会话，board_plan_submit 会直接领执行槽位，
+  // 所以执行规则从一开始就写进规划 prompt，提交后不再补发「现在开始执行」。
+  const sameSession = task.executionMode === 'same';
   const models = boardPromptModels(task);
   const head = [
-    `你是「${task.title}」的规划 Agent。只做规划，不写代码、不修改文件、不创建团队。`,
-    '规划完成后不要开始执行；调度器会在执行槽位空出后，在同一会话里让你继续。',
+    `你是「${task.title}」的规划 Agent。`,
+    sameSession
+      ? '这一轮先只做规划，不要写代码、不要修改文件、不要创建团队。'
+      : '只做规划，不写代码、不修改文件、不创建团队。',
+    sameSession
+      ? '计划提交后读取 board_plan_submit 的返回：status 是 inprogress 就直接在同一会话里按计划开始执行（此时可以写文件、可以调用 team_*）；status 是 planned 说明执行槽位已满，立刻停下等待调度器。'
+      : '规划完成后不要开始执行；调度器会在执行槽位空出后，在同一会话里让你继续。',
     '',
     `工作区：${task.workspacePath}`,
     '任务描述：',
@@ -1790,7 +1798,7 @@ function boardPlanningPrompt(task, settings) {
       '请先阅读必要文件，然后输出一份可执行计划，必须包含：',
       '1. 目标与验收标准',
       '2. 实施步骤（到文件/模块级）',
-      '3. 团队与成员建议（每个成员的角色、模型、依赖关系）',
+      '3. 团队与成员建议（每个成员的角色、模型、依赖关系；按能力域合并，同一模块或相邻功能优先交给同一个成员，能一人完成就不要拆成多人）',
       '4. 风险与回滚',
     ]
     : [
@@ -1806,13 +1814,15 @@ function boardPlanningPrompt(task, settings) {
     ...body,
     '',
     '最后必须调用 board_plan_submit({ plan: "<完整 markdown>", summary: "<一句话>" })。',
-    '不要只把计划写在回复里。提交后停下，等待执行指令。',
+    '不要只把计划写在回复里。',
+    ...(sameSession
+      ? ['', '提交后如果返回 inprogress，继续按下面的规则执行；返回 planned 则忽略这些规则并停下：', '', ...boardLeadRules(task)]
+      : ['提交后停下，等待执行指令。']),
   ].join('\n');
 }
 
-function boardLeadPrompt(task, sameSession) {
+function boardLeadRules(task) {
   const useTeam = task.useTeam !== false;
-  const needPlan = task.needPlan !== false;
   const models = boardPromptModels(task);
   // 任务已有关联团队（重试、失败后继续、或完成后再次执行）时，在原团队上接着干，
   // 不要每轮都 team_create 出一个新团队。
@@ -1829,7 +1839,7 @@ function boardLeadPrompt(task, sameSession) {
     teamRule,
     '2. 调用 team_models 查看可用路由；只能使用以下模型：',
     models,
-    '3. 用 team_task 拆解并派发；用 team_status / team_report 跟踪。不要自己写代码，不要重复成员的工作。',
+    '3. 用 team_task 拆解并派发；用 team_status / team_report 跟踪。不要自己写代码，不要重复成员的工作。成员按能力域分配：同一模块/相邻功能、或一个成员能顺手做完的多个条目，合并给同一个成员；成员数取能完成工作的最小值，不要按需求条目数量等量创建成员。',
     '4. 用户反馈 Bug 时，不要自己去读代码排查：先判断归属成员，用 team_send 把复现步骤与怀疑点派给对应成员定位、修复；你只做分派、汇总与状态汇报。',
     '5. 每轮结束前必须先调用 board_task_status 对齐状态：全部任务成功→done（附完成摘要），失败→failed（附原因），仍需继续或等待用户→inprogress。不能只在开始时调用一次。',
     '6. 用户再次发消息时，先调用 board_task_status({ status: "inprogress" })，再继续处理。',
@@ -1842,8 +1852,14 @@ function boardLeadPrompt(task, sameSession) {
     '2. 每轮结束前必须先调用 board_task_status 对齐状态：全部完成→done（附完成摘要），失败→failed（附原因），仍需继续或等待用户→inprogress。不能只在开始时调用一次。',
     '3. 用户再次发消息时，先调用 board_task_status({ status: "inprogress" })，再继续处理。',
   ];
-  const rules = useTeam ? teamRules : soloRules;
+  return useTeam ? teamRules : soloRules;
+}
+
+function boardLeadPrompt(task, sameSession) {
+  const useTeam = task.useTeam !== false;
+  const needPlan = task.needPlan !== false;
   // 同会话执行：计划已经在同一会话的上文里，不再重复注入任务描述与 plan 全文。
+  const rules = boardLeadRules(task);
   if (sameSession) {
     return [
       `现在开始执行「${task.title}」。计划就在同一会话的上文里，不要重复输出计划。`,
@@ -2105,7 +2121,7 @@ function buildTools(s, ctx) {
 
   tools.push({
     name: 'team_create',
-    description: 'START HERE to build a working team of agents. Order: team_create({name, workspace, permissionPreset?}) → team_models() to see the enabled provider/model routes → team_spawn({teamId, name, prompt, agentProvider?, model?, reasoningEffort?, permissionPreset?}) once per member, choosing a cheap/fast route for mechanical work and a strong-reasoning route for architecture, debugging, or review → team_task({teamId, subject, assignee?, plan, acceptance}) per DAG node → each member finishes by calling team_report_task → inspect with team_status / team_report. Every member is a real DSH sub-agent session (own model, tools, context, message inbox). `permissionPreset` decides the member sandbox + approval policy (DSH permission presets, e.g. workspace-write or danger-full-access); the team value is the default and team_spawn can override it per member. When a member hits an operation its preset requires approval for, the approval is forwarded to the Lead, who decides with team_approve. `workspace` is an absolute directory shared by the members and becomes their cwd. Keep teamId from this response (result.team.id): every later call needs it. For the full recipe with per-field pitfalls, load the skill "dsh-agent-team".',
+    description: 'START HERE to build a working team of agents. Order: team_create({name, workspace, permissionPreset?}) → team_models() to see the enabled provider/model routes → team_spawn({teamId, name, prompt, agentProvider?, model?, reasoningEffort?, permissionPreset?}) once per member, choosing a cheap/fast route for mechanical work and a strong-reasoning route for architecture, debugging, or review → team_task({teamId, subject, assignee?, plan, acceptance}) per DAG node → each member finishes by calling team_report_task → inspect with team_status / team_report. Every member is a real DSH sub-agent session (own model, tools, context, message inbox). `permissionPreset` decides the member sandbox + approval policy (DSH permission presets, e.g. workspace-write or danger-full-access); the team value is the default and team_spawn can override it per member. When a member hits an operation its preset requires approval for, the approval is forwarded to the Lead, who decides with team_approve. `workspace` is an absolute directory shared by the members and becomes their cwd. Keep teamId from this response (result.team.id): every later call needs it. Spawn members by capability domain, not one per requirement item: one member can own several related team_task items, so keep the member count at the minimum needed. For the full recipe with per-field pitfalls, load the skill "dsh-agent-team".',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -2506,7 +2522,7 @@ function buildTools(s, ctx) {
         to: { type: 'string', description: "Member name (agent teams) or member id, or '*' for broadcast." },
         message: { type: 'string', description: 'Message body.' },
         correlationId: { type: 'string', description: 'Optional correlation id to pair a request with its response.' },
-        interrupt: { type: 'boolean', description: 'Default true: if the target member is running, interrupt its current turn before delivering so this message takes effect immediately. false = deliver at the next step boundary without interrupting.' },
+        interrupt: { type: 'boolean', description: 'Default true: if the target member is running, interrupt its current turn before delivering so this message takes effect immediately. false = keep the current turn and deliver at the next step boundary; the message is still queued durably and will be read (a pending steer forces another turn, an idle member is woken), but it may land only after the member finished the current step, so it cannot be relied on to change this turn.' },
       },
       required: ['teamId', 'to', 'message'],
     },
@@ -3141,7 +3157,7 @@ function buildTools(s, ctx) {
 
   tools.push({
     name: 'board_plan_submit',
-    description: 'Submit the finished plan for the current workspace-board task. Call this at the end of the planning session; the scheduler stores the plan and moves the task to planned. In same-session mode the task will later resume this session for execution.',
+    description: 'Submit the finished plan for the current workspace-board task. Call this at the end of the planning session; the scheduler stores the plan and moves the task to planned. In same-session mode this tool also moves the task into the execution slot and keeps this session running: if the returned task status is inprogress, continue with the plan immediately; if it is planned, stop and wait for the scheduler.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -3160,7 +3176,14 @@ function buildTools(s, ctx) {
         body: { sessionId, plan: args.plan, summary: args.summary || null },
       });
       const rec = boardSessions.get(sessionId);
-      if (rec) rec.phase = 'planned';
+      // 同会话模式：sidecar 保存计划时已经 claim 执行槽位并 attach 回本会话，
+      // 这里只切权限、改 phase，让同一个回合直接继续执行（不再补发第二条 prompt）。
+      if (task?.status === 'inprogress') {
+        if (task.leadPermissionPreset) boardSetPermission(ctx, rec?.handle?.agent || exec?.agent, task.leadPermissionPreset);
+        if (rec) { rec.phase = 'execution'; rec.sawRunning = false; }
+      } else if (rec) {
+        rec.phase = 'planned';
+      }
       if (task?.executionMode === 'new' && rec) {
         const timer = setTimeout(() => {
           if (rec.phase !== 'planned') return;

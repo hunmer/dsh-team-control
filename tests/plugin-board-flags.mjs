@@ -76,7 +76,7 @@ const main = async () => {
   try {
     const api = sidecar.api;
     await api.post('/api/workspaces', { items: [{ id: 'ws-bf', title: 'BF', path: tmp.ws }] });
-    const { ctx, created } = mkFakeCtx();
+    const { ctx, created, permissions } = mkFakeCtx();
     apply(ctx, {
       baseUrl: sidecar.url, home: tmp.dataDir, autoStart: false,
       reportToolCalls: false, reportChanges: false, reportLlmCalls: false,
@@ -119,27 +119,21 @@ const main = async () => {
     assert.equal((await api.get(`/api/board/tasks/${soloPlan.id}`)).status, 'planning', '进入 planning');
 
     await planTool.execute({ plan: 'PLAN_SOLO_MARKER', summary: '一句话' }, { agent: { id: planRec.agent.id } });
-    await waitFor('solo same-session execution', () => planRec.followups.length >= 2);
-    const soloExec = text(planRec, 1);
-    assert.match(soloExec, /现在开始执行/, '同会话只发开始执行');
-    assert.doesNotMatch(soloExec, /PLAN_SOLO_MARKER/, '同会话执行不重复注入计划');
-    assert.doesNotMatch(soloExec, /描述X/, '同会话执行不重复注入任务描述');
-    assert.doesNotMatch(soloExec, /dsh-agent-team/, '单人执行不要求加载团队技能');
-    assert.match(soloExec, /board_task_status/, '保留收尾状态规则');
+    assert.equal((await api.get(`/api/board/tasks/${soloPlan.id}`)).status, 'inprogress', '提交计划即进入执行槽位');
+    assert.equal(planRec.followups.length, 1, '同会话不再补发执行 prompt');
+    assert.match(planText, /board_task_status/, '同会话规划 prompt 自带收尾规则');
+    assert.equal(permissions.filter((p) => p.sessionId === planRec.agent.id).at(-1)?.name, 'danger-full-access', '执行切到 danger-full-access');
     await statusTool.execute({ status: 'done', summary: '完成' }, { agent: { id: planRec.agent.id } });
 
-    // 3) 默认（needPlan/useTeam 都为 true）：规划走团队技能；同会话执行仍不重复计划
+    // 3) 默认（needPlan/useTeam 都为 true）：规划走团队技能；同会话提交后直接执行
     const teamTask = await api.post('/api/board/tasks', {
       workspaceId: 'ws-bf', title: '团队任务', auto: true, executionMode: 'same',
     });
     const teamPlanRec = await waitFor('team planning session', () => created[2]?.followups?.length ? created[2] : null);
     assert.match(text(teamPlanRec), /dsh-agent-team/, '默认规划要求加载团队技能');
     await planTool.execute({ plan: 'PLAN_TEAM_MARKER', summary: '一句话' }, { agent: { id: teamPlanRec.agent.id } });
-    await waitFor('team same-session execution', () => teamPlanRec.followups.length >= 2);
-    const teamExec = text(teamPlanRec, 1);
-    assert.match(teamExec, /现在开始执行/, '同会话只发开始执行');
-    assert.doesNotMatch(teamExec, /PLAN_TEAM_MARKER/, '同会话不再发送计划摘要');
-    assert.match(teamExec, /dsh-agent-team/, '团队执行仍要求加载技能');
+    assert.equal((await api.get(`/api/board/tasks/${teamTask.id}`)).status, 'inprogress', '团队任务提交计划即进入执行');
+    assert.equal(teamPlanRec.followups.length, 1, '团队任务不再补发执行 prompt');
     await statusTool.execute({ status: 'done', summary: '完成' }, { agent: { id: teamPlanRec.agent.id } });
 
     // 4) 新会话执行：默认团队任务把计划注入新会话；useTeam=false 的新会话用单人规则

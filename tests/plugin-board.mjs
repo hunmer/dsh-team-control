@@ -107,20 +107,19 @@ const main = async () => {
     assert.equal(perm(permissions, rec.agent.id), 'read-only', '规划只读');
     assert.match(rec.followups[0].content[0].text, /规划 Agent/, '投了规划 prompt');
     assert.match(rec.followups[0].content[0].text, /dsh-agent-team/, '规划 prompt 要求先加载 dsh-agent-team 技能');
+    assert.match(rec.followups[0].content[0].text, /board_task_status/, '同会话规划 prompt 自带执行规则，提交后不再补发');
     assert.equal((await api.get(`/api/board/tasks/${task.id}`)).status, 'planning', '任务进入 planning');
 
     const planTool = ctx.tools.get('board_plan_submit');
     assert(planTool, 'board_plan_submit 已注册');
     await planTool.execute({ plan: '# 计划', summary: '一句话' }, { agent: { id: rec.agent.id } });
     const planned = await api.get(`/api/board/tasks/${task.id}`);
-    assert(['planned', 'inprogress'].includes(planned.status), '提交后进入 planned 或被立即 claim');
+    assert.equal(planned.status, 'inprogress', '提交计划即进入执行槽位');
     assert.equal(planned.leadSessionId, rec.agent.id, 'same 模式 lead 是同一会话');
 
-    await waitFor('same-session execution', () => rec.followups.length >= 2);
     assert.equal(created.length, 1, 'same 模式不新建会话');
     assert.equal(perm(permissions, rec.agent.id), 'danger-full-access', '执行切到 danger-full-access');
-    assert.match(rec.followups[1].content[0].text, /现在开始执行/, '投了执行 prompt');
-    assert.match(rec.followups[1].content[0].text, /dsh-agent-team/, '执行 prompt 要求先加载 dsh-agent-team 技能');
+    assert.equal(rec.followups.length, 1, '不再补发「现在开始执行」');
     assert.equal((await api.get(`/api/board/tasks/${task.id}`)).status, 'inprogress', '任务进入 inprogress');
 
     const statusTool = ctx.tools.get('board_task_status');
@@ -132,7 +131,7 @@ const main = async () => {
     ctx.emit('session/event', { id: rec.agent.id }, { type: 'user/message', data: { content: [{ type: 'text', text: '继续' }] } });
     await waitFor('done -> inprogress', async () => (await api.get(`/api/board/tasks/${task.id}`)).status === 'inprogress');
     await sleep(2500);
-    assert.equal(rec.followups.length, 2, '用户追问不重复注入执行 prompt');
+    assert.equal(rec.followups.length, 1, '用户追问不重复注入执行 prompt');
     await statusTool.execute({ status: 'done', summary: '完成' }, { agent: { id: rec.agent.id } });
 
     // new：规划完成后新建 Lead 会话

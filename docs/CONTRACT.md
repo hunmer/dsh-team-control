@@ -317,7 +317,7 @@ root(run:team)                         ← 团队整体
 
 看板任务以 `workspace_id` 隔离，独立于团队内 DAG 的 `task`。状态机：`todo → planning → planned → inprogress → done | failed`；`planned` 不占 planning 槽位，只等 inprogress 槽位。`auto=1` 的任务才会被 Host 插件 claim；`execution_mode=same` 时首轮执行复用规划会话，`new` 时另建 Lead 会话。
 
-两个任务级开关（默认都为 `1`，旧数据/旧调用按开启处理）：`need_plan=0` 时跳过 planning，`todo` 直接等 inprogress 槽位被 claim；`use_team=0` 时执行提示词改为单人模式（禁止 `team_create`/`team_spawn`/`team_task`，不要求加载 `dsh-agent-team` 技能，规划阶段也不再要求成员建议）。same 模式的执行 prompt 只发「现在开始执行」，不再重复注入任务描述与计划全文；新会话执行在 `need_plan=1` 时注入「已确认的计划」。任务进入 `done/failed` 后用户再次发消息，状态回到 `inprogress`，并复用已有 `lead_session_id`（不再新建会话）；此时 `resumed=1`，泵只 attach、不重复注入执行 prompt。
+两个任务级开关（默认都为 `1`，旧数据/旧调用按开启处理）：`need_plan=0` 时跳过 planning，`todo` 直接等 inprogress 槽位被 claim；`use_team=0` 时执行提示词改为单人模式（禁止 `team_create`/`team_spawn`/`team_task`，不要求加载 `dsh-agent-team` 技能，规划阶段也不再要求成员建议）。same 模式提交计划时 sidecar 直接把任务切到 `inprogress`、claim 执行槽位并 attach 回同一会话，不再补发第二条执行 prompt（规划 prompt 末尾已带执行规则）；执行槽位满时保持 `planned`，等泵 claim 后只补一条「现在开始执行」。新会话执行在 `need_plan=1` 时注入「已确认的计划」。任务进入 `done/failed` 后用户再次发消息，状态回到 `inprogress`，并复用已有 `lead_session_id`（不再新建会话）；此时 `resumed=1`，泵只 attach、不重复注入执行 prompt。
 
 | 方法 路径 | 请求 | 响应 |
 |---|---|---|
@@ -331,10 +331,10 @@ root(run:team)                         ← 团队整体
 | `PATCH /api/board/tasks/:id` | 同上字段 | board task |
 | `POST /api/board/tasks/:id/start|stop|retry|reset|archive|restore` | `{executionMode?}` / `{reason?}` | board task；`stop` 还会暂停并终止 `board_task_team` 绑定的团队（终态/成员保留）；`reset` 仅 failed/done，清空计划与会话绑定并回到 `todo` |
 | `POST /api/board/tasks/:id/teams` | `{teamId}` | board task（幂等绑定） |
-| `POST /api/board/claim` | `{kind:'planning'|'inprogress'}` | `{item:{task,workspace,settings,fence}}` 或 `{item:null}`；内部接口 |
+| `POST /api/board/claim` | `{kind:'planning'|'inprogress', taskId?}` | `{item:{task,workspace,settings,fence}}` 或 `{item:null}`；`taskId` 可选，只 claim 指定任务；内部接口 |
 | `POST /api/board/tasks/:id/attach` | `{kind,sessionId,fence}` | board task；写 `planning_session_id` 或 `lead_session_id` |
 | `POST /api/board/tasks/:id/release` | `{kind,error}` | board task → failed |
-| `POST /api/board/agents/plan` | `{sessionId,plan,summary?}` | board task → planned（same 模式同时写 lead_session_id） |
+| `POST /api/board/agents/plan` | `{sessionId,plan,summary?}` | board task → `planned`；same 模式在同一调用里 claim 执行槽位并 attach 回该会话，直接返回 `inprogress`（槽位满则仍是 `planned`） |
 | `POST /api/board/agents/status` | `{sessionId,status:'done'|'failed'|'inprogress',summary?}` | board task |
 
 `fence` 是 claim 令牌（DB 列 `claim_token`），只出现在 claim 响应里；因全局脱敏规则，任何含 `token` 的字段都会被替换成 `<redacted>`，所以对外叫 `fence`。
@@ -381,7 +381,7 @@ Host 插件默认 `boardEnabled=true`（显式 `false` 可关闭），每 `board
 
 重试（`retry`）复用已有团队：任务的 `board_task_team` 绑定、计划与 DAG 成员数据都保留，插件在 `boardLeadPrompt` 里把 `task.teams` 告诉新的 Lead，要求先用 `team_status` 查看既有团队、用 `team_task` 追加剩余工作，不再无条件 `team_create`（仅当原团队被删除或不可用时才新建）。提示词是软约束，因此插件另加硬约束：对「spawn 时任务已有关联团队」的续跑会话，`team_create` 若发现原团队仍存在会直接报错并给出继续步骤，只有显式传 `force:true` 或原团队全部被删除/归档时才允许新建。因此失败重试不会再凭空多出一个团队。
 
-GUI 入口：`dsh-plugin-ui` 把「编排」与「任务看板」注册成两个独立页签（原生右侧栏对应 `dsh-team` / `dsh-team-board`）。看板页路由为 `#/board[/<workspaceId>]`，不渲染编排侧栏、不依赖当前 team；切换工作区只改 `workspaceId` 与 URL。编排页不再包含任务看板页签。看板任务详情里的「关联团队」按钮通过 `postMessage`（`dsh-team:open-team`）让 Host 切到「编排」页签并锁定该 team；独立浏览器页面（非 DSH 环境）没有 Host，改用 `window.open` 在新窗口打开同一面板的 `#/t/<teamId>` 路由。任务有 `lead_session_id` 时，详情里还会显示「执行会话」按钮：`postMessage`（`dsh-team:open-session`）→ Host `uiWorkspace.openSession(sessionId)`，直接打开 Lead 所在的 DSH 会话；独立页面若已拿到 Host 上报的 `dshWebUrl`，改为 `window.open(\`${dshWebUrl}/#dsh-session=<id>\`)`：DSH 内的 `dsh-plugin-ui` 客户端启动时读取 `location.hash` 里的 `dsh-session`，调 `uiWorkspace.openSession(sessionId)` 打开会话，再用 `history.replaceState` 清掉 hash；Host 未上报 `dshWebUrl` 时回退默认地址 `http://127.0.0.1:3080`（`dsh web` 默认端口）。DSH Web 本身没有会话级 URL 路由，这个 hash 约定完全由本插件两端实现。任务详情面板只读展示字段；右上角的编辑按钮仅在任务处于 `todo` 且未封存时可用，点击后打开编辑对话框（标题、描述、需要规划、开启团队、执行方式、自动入队、规划/执行模型、团队模型），保存走 `PATCH /api/board/tasks/:id`。新建任务的「需要规划」默认关闭（关闭时隐藏执行方式/规划模型），「开启团队」默认开启（关闭时隐藏团队模型选择；团队模型不选任何一项即表示不限制）。
+GUI 入口：`dsh-plugin-ui` 把「编排」与「任务看板」注册成两个独立页签（原生右侧栏对应 `dsh-team` / `dsh-team-board`）。看板页路由为 `#/board[/<workspaceId>]`，不渲染编排侧栏、不依赖当前 team；切换工作区只改 `workspaceId` 与 URL。编排页不再包含任务看板页签。看板任务详情里的「关联团队」按钮通过 `postMessage`（`dsh-team:open-team`）让 Host 切到「编排」页签并锁定该 team；独立浏览器页面（非 DSH 环境）没有 Host，改用 `window.open` 在新窗口打开同一面板的 `#/t/<teamId>` 路由。任务有 `lead_session_id` 时，详情里还会显示「执行会话」按钮：`postMessage`（`dsh-team:open-session`）→ Host `uiWorkspace.openSession(sessionId)`，直接打开 Lead 所在的 DSH 会话；独立页面若已拿到 Host 上报的 `dshWebUrl`，改为 `window.open(\`${dshWebUrl}/#dsh-session=<id>\`)`：DSH 内的 `dsh-plugin-ui` 客户端启动时读取 `location.hash` 里的 `dsh-session`，调 `uiWorkspace.openSession(sessionId)` 打开会话，再用 `history.replaceState` 清掉 hash；Host 未上报 `dshWebUrl` 时回退默认地址 `http://127.0.0.1:3080`（`dsh web` 默认端口）。DSH Web 本身没有会话级 URL 路由，这个 hash 约定完全由本插件两端实现。任务详情面板只读展示字段；右上角的编辑按钮仅在任务处于 `todo` 且未封存时可用，点击后打开编辑对话框（标题、描述、需要规划、开启团队、执行方式、自动入队、规划/执行模型、团队模型），保存走 `PATCH /api/board/tasks/:id`。新建任务的「需要规划」默认关闭（关闭时隐藏执行方式/规划模型），「开启团队」默认开启（关闭时隐藏团队模型选择；团队模型不选任何一项即表示不限制）。固定停靠层（右侧栏）的看板只在**每次打开时**读取一次当前会话工作区（iframe `&cwd=`）并据此设置工作区下拉，不随会话切换重载；面板内再切工作区只改自身选择。
 
 新增工具：`board_plan_submit({plan,summary?})`、`board_task_status({status,summary?})`。`team_create` 在 Lead 会话里创建团队后会自动把 team 绑到该会话对应的 board task；`team_spawn` 在该 task 配了 `teamModels` 时把成员 route 限制在白名单内（未指定 model 取第一条）。
 

@@ -59,6 +59,12 @@ window.__ModuleLoader__.load({
         status_queued: '排队中',
         status_provisioning: '启动中',
         status_unknown: '未知状态',
+        // ---- 聊天回合末尾：本次读取了哪些来自其他成员的留言 ----
+        receipt_read: '读取了来自 {name} 的 {n} 条未读消息',
+        receipt_expand: '展开消息内容',
+        receipt_collapse: '收起消息内容',
+        receipt_lead: '上级',
+        receipt_empty: '（空消息）',
       },
       en: {
         title: 'dsh-team console',
@@ -107,6 +113,11 @@ window.__ModuleLoader__.load({
         status_queued: 'queued',
         status_provisioning: 'provisioning',
         status_unknown: 'Unknown',
+        receipt_read: 'Read {n} unread message(s) from {name}',
+        receipt_expand: 'Show messages',
+        receipt_collapse: 'Hide messages',
+        receipt_lead: 'the Lead',
+        receipt_empty: '(empty message)',
       },
     };
 
@@ -481,15 +492,11 @@ window.__ModuleLoader__.load({
     /** 独立任务看板：整页 iframe 指向 #/board，不继承任何 team。 */
     function BoardView({ t, getService }) {
       const frameRef = React.useRef(null);
-      // 当前会话的 cwd：看板据此默认选中对应工作区（取不到再由面板回退到上次工作区）。
-      const [sessionTeam, setSessionTeam] = React.useState(() => sessionTeamStore.snapshot());
-      React.useEffect(() => {
-        const sync = () => setSessionTeam(sessionTeamStore.snapshot());
-        sync();
-        return sessionTeamStore.subscribe(sync);
-      }, []);
+      // 只在打开看板（本组件挂载）时取一次当前会话的 cwd：固定停靠的看板不跟着会话切换
+      // 刷新，否则 iframe 会重载、把用户手动选的工作区冲掉。
+      const [cwd] = React.useState(() => sessionTeamStore.snapshot().cwd);
       const frameSrc = '/dsh-team-api/panel?api=/dsh-team-api&embed=1'
-        + (sessionTeam.cwd ? '&cwd=' + encodeURIComponent(sessionTeam.cwd) : '')
+        + (cwd ? '&cwd=' + encodeURIComponent(cwd) : '')
         + '#/board';
       // 看板详情里点「打开编排」→ 在 Host 侧切到编排页，并把 iframe 指到对应团队。
       React.useEffect(() => {
@@ -1750,12 +1757,176 @@ window.__ModuleLoader__.load({
 .ui-afc__agent .ui-afc__count{grid-area:auto;font-variant-numeric:tabular-nums;font-size:11px;line-height:14px;color:var(--ui-afc-muted)}
 `;
 
+    /**
+     * 输入框下方的常驻回执条：本会话最近一批「来自其他 agent 的留言」。
+     * 数据来源是聊天快照里的 user 节点（`source.kind === 'agent-message'`，
+     * 由 dsh-subagent 的 createAgentMessage 打标），不额外记状态。
+     */
+    const READ_RECEIPT_CSS = `
+.dsht-receipt { display:flex; flex-direction:column; align-items:center; gap:6px; max-width:100%; font-size:12px; line-height:17px; color:var(--dsw-alias-label-secondary); }
+.dsht-receipt-group { display:flex; flex-direction:column; align-items:center; gap:5px; min-width:0; max-width:100%; }
+.dsht-receipt-head { display:inline-flex; align-items:center; gap:6px; max-width:100%; padding:2px 8px 2px 6px; border:1px solid var(--dsw-alias-border-l1); border-radius:999px; background:var(--dsw-alias-bg-layer-2); color:inherit; font:inherit; cursor:pointer; }
+.dsht-receipt-head:hover { border-color:var(--dsw-alias-brand-primary); color:var(--dsw-alias-brand-primary); }
+.dsht-receipt-head:focus-visible { outline:2px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, transparent); outline-offset:1px; }
+.dsht-receipt-dot { width:5px; height:5px; border-radius:50%; background:var(--dsw-alias-brand-primary); flex:none; }
+.dsht-receipt-text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dsht-receipt-caret { flex:none; font-size:9px; opacity:.7; }
+.dsht-receipt-list { display:flex; flex-direction:column; gap:3px; margin:0; padding:0 0 0 10px; list-style:none; border-left:1px solid var(--dsw-alias-border-l1); width:min(520px, 92vw); max-height:150px; overflow-y:auto; text-align:left; }
+.dsht-receipt-item { display:flex; gap:8px; min-width:0; }
+.dsht-receipt-time { flex:none; font-variant-numeric:tabular-nums; color:var(--dsw-alias-label-tertiary); }
+.dsht-receipt-body { min-width:0; color:var(--dsw-alias-label-primary); white-space:pre-wrap; overflow-wrap:anywhere; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+`;
+
+    /** `Agent <id> sent a message: ` 是宿主给跨 agent 消息加的前缀，回执里去掉。 */
+    const AGENT_MESSAGE_PREFIX = /^Agent [^\s]+ sent a message:[ \t]*/;
+    const EMPTY_KEYS = Object.freeze([]);
+
+    /** 把一条 user 消息的文本块拼起来（图片等非文本块直接跳过）。 */
+    function userMessageText(content) {
+      if (!content || typeof content.length !== 'number') return '';
+      const parts = [];
+      for (let i = 0; i < content.length; i += 1) {
+        const block = content[i];
+        if (block && block.type === 'text' && typeof block.text === 'string') parts.push(block.text);
+      }
+      const text = parts.join('\n').replace(AGENT_MESSAGE_PREFIX, '');
+      return text.trim();
+    }
+
+    /** 一条 user 节点若是跨 agent 消息，折成回执行；否则 null。 */
+    function agentMessageRow(key, node) {
+      if (!node || node.kind !== 'user') return null;
+      const location = node.location;
+      if (!location || (location.kind !== 'turn' && location.kind !== 'step')) return null;
+      const data = node.data;
+      const source = data && data.source;
+      if (!source || source.kind !== 'agent-message') return null;
+      const owner = location.turn;
+      const ownerTurn = owner && typeof owner === 'object' ? owner.turn : owner;
+      return {
+        key,
+        turn: typeof ownerTurn === 'number' ? ownerTurn : null,
+        sender: source.senderSessionId ? String(source.senderSessionId) : '',
+        time: typeof data.time === 'number' ? data.time : 0,
+        text: userMessageText(data.content),
+      };
+    }
+
+    /** 一回合里的跨 agent 消息（按出现顺序）。 */
+    function collectAgentMessages(nodes, order, turnNo) {
+      const rows = [];
+      if (!nodes || !order || !order.length || turnNo === null) return rows;
+      for (let i = 0; i < order.length; i += 1) {
+        const key = order[i];
+        let node;
+        try { node = nodes.get(key); } catch { node = undefined; }
+        const row = agentMessageRow(key, node);
+        if (row && row.turn === turnNo) rows.push(row);
+      }
+      return rows;
+    }
+
+    /** 最近一批跨 agent 消息所在的回合号；没有就 null。 */
+    function latestAgentTurn(nodes, order) {
+      if (!nodes || !order || !order.length) return null;
+      let latest = null;
+      for (let i = 0; i < order.length; i += 1) {
+        const key = order[i];
+        let node;
+        try { node = nodes.get(key); } catch { node = undefined; }
+        const row = agentMessageRow(key, node);
+        if (!row || row.turn === null) continue;
+        if (latest === null || row.turn > latest) latest = row.turn;
+      }
+      return latest;
+    }
+
+    /** 发送者显示名：成员用团队里的名字，其余一律当「上级」。 */
+    function senderLabel(sender) {
+      const cached = sender ? memberCache.bySession[sender] : null;
+      return (cached && cached.name) || null;
+    }
+
+    /** `HH:MM`，时间缺失就不显示。 */
+    function clockText(ms) {
+      if (typeof ms !== 'number' || !isFinite(ms) || ms <= 0) return '';
+      const date = new Date(ms);
+      return String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0');
+    }
+
+    /**
+     * 注册到 `conversation.composer.dock`（输入框下方的常驻行）：显示本会话最近一批
+     * 「读取了来自 {name} 的 {n} 条未读消息」，点开看每条正文与时间。
+     * 没有跨 agent 消息时返回 null，不占位置。
+     */
+    function readReceiptDock(T) {
+      return function TeamReadReceipt(props) {
+        const useChat = props && props.useChat;
+        const order = typeof useChat === 'function'
+          ? useChat((state) => (state && state.order) || EMPTY_KEYS)
+          : EMPTY_KEYS;
+        const nodes = typeof useChat === 'function'
+          ? useChat((state) => (state && state.nodes) || null)
+          : null;
+        const turnNo = React.useMemo(() => latestAgentTurn(nodes, order), [nodes, order]);
+        const rows = React.useMemo(
+          () => collectAgentMessages(nodes, order, turnNo),
+          [nodes, order, turnNo],
+        );
+        const rowKey = rows.map((row) => row.key).join('|');
+        const [openSender, setOpenSender] = React.useState('');
+        // 成员名来自 sidecar（异步 + 15s 缓存）：拉到后重渲染一次，名字从「上级」换成真名
+        const [, setNameTick] = React.useState(0);
+        React.useEffect(() => {
+          if (!rowKey) return undefined;
+          let stopped = false;
+          loadMembers()
+            .then(() => { if (!stopped) setNameTick((value) => value + 1); })
+            .catch(() => { /* sidecar 没起：保持占位名 */ });
+          return () => { stopped = true; };
+        }, [rowKey]);
+        if (rows.length === 0) return null;
+        const groups = [];
+        const index = {};
+        for (const row of rows) {
+          let group = index[row.sender];
+          if (!group) {
+            group = { sender: row.sender, items: [] };
+            index[row.sender] = group;
+            groups.push(group);
+          }
+          group.items.push(row);
+        }
+        return h('div', { className: 'dsht-receipt', 'data-dsh-team-receipt': 'messages' },
+          groups.map((group) => {
+            const open = openSender === group.sender && group.items.length > 0;
+            const name = senderLabel(group.sender) || T('receipt_lead');
+            const label = T('receipt_read', { name, n: group.items.length });
+            return h('div', { className: 'dsht-receipt-group', key: group.sender || 'unknown' },
+              h('button', {
+                type: 'button',
+                className: 'dsht-receipt-head',
+                title: open ? T('receipt_collapse') : T('receipt_expand'),
+                'aria-expanded': open ? 'true' : 'false',
+                onClick: () => setOpenSender(open ? '' : group.sender),
+              },
+              h('span', { className: 'dsht-receipt-dot', 'aria-hidden': 'true' }),
+              h('span', { className: 'dsht-receipt-text' }, label),
+              h('span', { className: 'dsht-receipt-caret', 'aria-hidden': 'true' }, open ? '▴' : '▾')),
+              open ? h('ul', { className: 'dsht-receipt-list' },
+                group.items.map((item) => h('li', { className: 'dsht-receipt-item', key: item.key },
+                  h('span', { className: 'dsht-receipt-time' }, clockText(item.time)),
+                  h('span', { className: 'dsht-receipt-body' }, item.text || T('receipt_empty'))))) : null);
+          }));
+      };
+    }
+
     function ensureStyles() {
       if (typeof document === 'undefined' || !document || !document.head) return;
       if (document.getElementById('dsh-team-ui-styles')) return;
       const node = document.createElement('style');
       node.id = 'dsh-team-ui-styles';
-      node.textContent = CSS + '\n' + AGENT_FINDINGS_CSS + '\n' + PLAN_CSS + '\n' + CARD_LAYOUT_CSS;
+      node.textContent = CSS + '\n' + AGENT_FINDINGS_CSS + '\n' + PLAN_CSS + '\n' + CARD_LAYOUT_CSS + '\n' + READ_RECEIPT_CSS;
       document.head.appendChild(node);
     }
 
@@ -1957,6 +2128,13 @@ window.__ModuleLoader__.load({
             order: 30,
             label: () => T('card_title'),
           }, teamCardDock(T, getService))));
+          // 成员/上级对话里：输入框下方常驻「读取了来自 X 的 N 条未读消息」回执
+          disposers.push(slots.inject('conversation.composer.dock', () => slots.register({
+            name: 'conversation.composer.dock',
+            id: 'dsh-team:read-receipt',
+            order: 90,
+            locale: NS,
+          }, readReceiptDock(T))));
           // 「看板」行右端的固定开关 + 网页最右侧的固定看板（跨会话常驻，不进右侧栏）
           disposers.push(slots.inject('shell.overlay', () => slots.register({
             name: 'shell.overlay',

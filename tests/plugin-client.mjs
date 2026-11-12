@@ -297,5 +297,49 @@ check('cleanup 幂等（重复调用不抛错）', () => {
   return 'ok';
 });
 
+// ---------- ④ 输入框下方的「读取未读消息」回执 ----------
+check('输入框下方回执：只统计最近一批跨 agent 消息，无消息时不占位', () => {
+  const app = makeCtx({ betterSidebar: makeBetter() });
+  plugin.apply(app.ctx);
+  const entry = app.entries.find((e) => e.spec.name === 'conversation.composer.dock');
+  assert.ok(entry, '注册了 conversation.composer.dock');
+  assert.equal(entry.spec.id, 'dsh-team:read-receipt');
+  assert.equal(entry.spec.order, 90, '排在宿主 activity/usage 两个 pill 之后');
+  const nodes = new Map([
+    ['u1', {
+      kind: 'user',
+      location: { kind: 'step', turn: { turn: 2 }, step: 1 },
+      data: {
+        source: { kind: 'agent-message', form: 'relay', senderSessionId: 'lead-1' },
+        time: Date.UTC(2026, 0, 1, 2, 3),
+        content: [{ type: 'text', text: 'Agent lead-1 sent a message: 上一批消息' }],
+      },
+    }],
+    ['a1', { kind: 'assistant-step', location: { kind: 'step', turn: { turn: 2 }, step: 1 }, data: {} }],
+    ['u2', {
+      kind: 'user',
+      location: { kind: 'turn', turn: { turn: 3 } },
+      data: {
+        source: { kind: 'agent-message', form: 'relay', senderSessionId: 'lead-1' },
+        time: Date.UTC(2026, 0, 1, 2, 4),
+        content: [{ type: 'text', text: 'Agent lead-1 sent a message: 最新一批消息' }],
+      },
+    }],
+  ]);
+  const useChat = (selector) => selector({ order: ['u1', 'a1', 'u2'], nodes: { get: (key) => nodes.get(key) } });
+  const tree = render(entry.component({ useChat, sessionId: 'sess-1' }));
+  const text = JSON.stringify(tree);
+  assert.ok(text.includes('1 条未读消息'), '最近一批只算 1 条：' + text.slice(0, 160));
+  assert.ok(text.includes('上级'), 'sidecar 没起时发送者显示为「上级」');
+  assert.ok(!text.includes('上一批消息'), '更早回合的消息不算进来');
+  assert.ok(!text.includes('最新一批消息'), '默认折叠，不直接铺开正文');
+  const noAgent = (selector) => selector({ order: ['a1'], nodes: { get: (key) => nodes.get(key) } });
+  assert.equal(render(entry.component({ useChat: noAgent, sessionId: 'sess-1' })), null, '没有跨 agent 消息返回 null');
+  const noChat = render(entry.component({ sessionId: 'sess-1' }));
+  assert.equal(noChat, null, '宿主没给 useChat 也不崩');
+  app.effects.forEach((dispose) => dispose());
+  return 'receipt ok';
+});
+
 console.log(`\n${failed === 0 ? 'ALL PASS' : failed + ' FAILED'}`);
 process.exit(failed ? 1 : 0);

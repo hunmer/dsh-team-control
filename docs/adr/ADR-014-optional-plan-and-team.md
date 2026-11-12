@@ -26,8 +26,11 @@
 - **claim 条件集中写在 sidecar**：planning 只 claim `need_plan=1` 的 `todo`；inprogress 接受
   `status='planned'`，或 `need_plan=0 AND status='todo' AND auto=1`。插件不新增分支，只按
   claim 到的 `status` 决定投规划还是执行 prompt。
-- **同会话执行不再重复计划**：`boardLeadPrompt(task, true)` 只发「现在开始执行『标题』。计划就在
-  同一会话的上文里」+ 收尾状态规则，不注入 `description` 与 `planMd`。新会话执行（`executionMode=new`
+- **同会话执行不再重复计划**：`same` 模式提交计划时，sidecar 在 `submitPlan` 内直接 claim
+  inprogress 槽位并 attach 回规划会话（避免「先提交、再 claim」被调度泵抢先），规划 prompt 末尾
+  已带执行规则，插件不再补发第二条 prompt。只有执行槽位已满、任务留在 `planned` 时，泵 claim 后
+  才用 `boardLeadPrompt(task, true)` 补一条「现在开始执行『标题』。计划就在同一会话的上文里」+
+  收尾状态规则，不注入 `description` 与 `planMd`。新会话执行（`executionMode=new`
   或 `need_plan=0` 的首轮）仍注入任务描述；`need_plan=1` 时再带「已确认的计划」。
 - **团队模型白名单随 `use_team=0` 失效**：`teamModels` 仍可保留在任务上，但单人提示词不使用它；
   新建/编辑对话框在关闭团队时隐藏该选项，提交时写 `teamModels: null`。不选任何模型同样表示不限制，

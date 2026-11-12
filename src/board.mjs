@@ -431,15 +431,20 @@ export class Board {
   }
 
   // ---------- claim / attach / plan ----------
-  claim(kind) {
+  claim(kind, taskId = null) {
     if (!['planning', 'inprogress'].includes(kind)) throw ERR.bad('kind must be planning|inprogress');
     // 不需要规划的任务（need_plan=0）直接跳进执行槽位；需要规划的仍走 todo → planning → planned。
     const where = kind === 'planning'
       ? "status='todo' AND auto=1 AND need_plan=1"
       : "(status='planned' OR (status='todo' AND need_plan=0 AND auto=1))";
+    // taskId 用于「同会话合并执行」：规划会话提交计划后只领自己这条，不去抢别的任务。
+    const only = taskId ? text(taskId, 200) : null;
     const stamp = nowIso();
-    const rows = this.get(`SELECT * FROM board_task WHERE ${where} AND archived_at IS NULL AND stop_requested=0
-      ORDER BY priority DESC, position ASC, created_at ASC`).all();
+    const rows = only
+      ? this.get(`SELECT * FROM board_task WHERE ${where} AND id=? AND archived_at IS NULL AND stop_requested=0
+        ORDER BY priority DESC, position ASC, created_at ASC`).all(only)
+      : this.get(`SELECT * FROM board_task WHERE ${where} AND archived_at IS NULL AND stop_requested=0
+        ORDER BY priority DESC, position ASC, created_at ASC`).all();
     for (const row of rows) {
       const settings = this.settings(row.workspace_id, row.workspace_path);
       const limit = kind === 'planning' ? settings.planningConcurrency : settings.inprogressConcurrency;
@@ -516,6 +521,18 @@ export class Board {
       summary: task.planSummary,
       ...(row.status === 'failed' ? { recoveredFrom: 'failed' } : {}),
     });
+    // same 模式：规划会话就是执行会话，提交计划时直接领执行槽位并 attach。
+    // 这样同一个回合就能继续干活，不需要插件再补发「现在开始执行」，
+    // 也避免了「先提交、再 claim」之间被调度泵抢先的竞态。
+    if (same) {
+      const claimed = this.claim('inprogress', task.id);
+      if (claimed?.item?.task?.id === task.id) {
+        const attached = this.attach(task.id, { kind: 'inprogress', sessionId: sid, fence: claimed.item.fence });
+        this.addEvent(attached, 'inprogress.started', { sessionId: sid });
+        // 只回给插件用于切权限，不落库。
+        return { ...attached, leadPermissionPreset: claimed.item.settings.leadPermissionPreset };
+      }
+    }
     return task;
   }
 

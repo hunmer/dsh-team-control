@@ -172,7 +172,7 @@ team_spawn({ teamId, name:"architect", prompt:"...", agentProvider:"deepseek", m
 
 其他常用参数：`team_spawn({agentProvider, model, reasoningEffort, permissionPreset, agentPreset, contextMode})`；
 `team_task({dispatch:false})` 只建不派；`deps:[{from: taskId}]` 声明上游；
-`team_send({teamId, to: "writer"|"*"|"lead", message, interrupt?})` 给成员递话；成员正在跑时默认先打断当前回合再投递（`interrupt:false` 则不打断、等下个 step 边界）；
+`team_send({teamId, to: "writer"|"*"|"lead", message, interrupt?})` 给成员递话；成员正在跑时默认先打断当前回合再投递（`interrupt:false` 则不打断、等下个 step 边界：消息不会丢，但只能保证“读到”，不保证当前回合改道）；
 `team_approve({teamId, requestId, decision:"allow"|"deny", reason})` 决定成员审批。
 `team_control({action, memberId, taskId})`：`interrupt` 停成员并把在途任务转 `paused`（不计重试）；
 `resume` 解冻；`assign` 把任务交给 idle 成员；`abort` 永久作废任务（`aborted`，不重试）。
@@ -186,6 +186,9 @@ team_spawn({ teamId, name:"architect", prompt:"...", agentProvider:"deepseek", m
   （它只在 `team_control` 恢复或审批处理后补一次）。
 - 并发上限 = 建团时 `maxConcurrency`（默认 8）；成员上限 `maxMembers`（默认 64，超出变 `queued` 不报错）。
 - 同一文件别让两个成员同时写：按文件/目录切 owner，或串成 `deps`。
+- 成员按能力域分配，不按需求条目数量：同一模块/相邻改动、或一个成员能顺手做完的多个功能，
+  合并给同一个成员（多个 `team_task` 可以同一个 `assignee`）；成员数取能完成工作的最小值，
+  不要一条需求一个人。
 - 失败重试 `maxAttempts`（默认 3）+ `failurePolicy`(`continue`/`abort`)。Lead 只在汇报时读一眼 `team_status`，
   不替成员复核产物（见开头「Lead 的边界」）。
 

@@ -287,8 +287,14 @@ const main = async () => {
 
     // ⑦ interrupt 走 subagents.interrupt（先把成员跑起来，idle 没得中断）
     const t3 = await tool('team_task').execute({ teamId: team.id, subject: '补一版文档', dispatch: false }, lead);
+    const t3Mark = ctx.agents.ops.length;
     await waitFor('t3 自动派发', async () => (
       (await api.get(`/api/tasks/${t3.task.id}`)).status === 'running' ? true : null
+    ), 8000);
+    // 派发简报的 sendMessage 可能晚于 task 进入 running 才落下来；先等它送达再取基线，
+    // 否则并发派发的 send 会插进下面「interrupt → send」的顺序断言里。
+    await waitFor('t3 派发简报已投递', () => (
+      ctx.agents.ops.slice(t3Mark).some((op) => op.startsWith('send:')) ? true : null
     ), 8000);
     // ⑦a team_send：成员还在跑时先打断当前回合再投递（否则只能等下一个 step 边界）
     const sendMark = ctx.agents.ops.length;

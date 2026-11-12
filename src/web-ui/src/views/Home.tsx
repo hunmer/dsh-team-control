@@ -1,30 +1,23 @@
 /**
  * 主页 = AffectUI 组件 + 真实 sidecar 数据（不保留 demo 数据）。
  *
- * 布局（xl 及以上）：左列每个 agent 成员一张 `AgentSteering`（成员引导 + 队列回复），
- *      卡片按两列网格排布、点卡片选中它当前的任务（头部图标用成员模型图标）；
- *      右列上 Plan（任务计划清单，来自 `team_todo` 工具写入的 /api/todos）、下 Activity
- *      （任务事件流），两者都按「当前选中的任务」过滤；窄屏时依次上下堆叠。
+ * 布局：上方是成员列表，每个 agent 成员一张 `AgentSteering`（成员引导 + 队列回复），
+ *      卡片按两列网格排布；下方内嵌时间线。
  *
  * 真实数据源：
  * - `GET /api/status` → 成员（每个 agent 成员一个 steering 卡片）；
  * - `GET /api/todos?team=` → 成员步骤（成员用 team_todo / todo_write 维护）；
  * - `GET /api/messages?team=` → 排队回复（kind=steer 且 status=queued 的消息）；
  * - `POST /api/messages` → 面板排队一条 steer 消息，Host 插件负责投进成员会话；
- * - `GET /api/tasks` + `GET /api/dag` → Plan/Activity 跟随的任务（点卡片选中）；
- * - `GET /api/events/history` → Activity。
+ * - `GET /api/tasks` + `GET /api/dag` → 卡片跟随的任务（用于时长/步骤）。
  */
-import { useMemo, useRef, useState } from 'react';
+import { useMemo } from 'react';
 import { usePanel } from '@/store';
 import { api, enc } from '@/lib/api';
 import type { ContextSnapshot, Member, Task, Todo } from '@/types';
-import { Button } from '@/components/ui/button';
-import { ActivityFeed } from '@/components/activity-feed';
 import { AgentSteering, type SteerMetrics, type SteerNote, type SteerStatus, type SteerStep } from '@/components/agent-steering';
 import { modelAvatar } from '@/components/ModelAvatar';
 import { openMemberConversation } from '@/lib/dsh-bridge';
-import type { PlanStep } from '@/components/plan-steps';
-import { PlanCard, toPlanStep } from '@/components/plan-card';
 import { TimelineView } from '@/views/Timeline';
 
 /** todo 状态 → steering 步骤状态。 */
@@ -98,25 +91,14 @@ function elapsedOf(task?: Task): number | undefined {
 }
 
 export function HomeView() {
-  const { state, refreshMessages, setFilterMember, memberName, toast } = usePanel();
-  const { dag, tasks, todos, timeline, members, messages, contexts } = state;
-
-  /** 点成员卡片时切换 Plan/Activity 跟随的任务。 */
-  const [selectedId, setSelectedId] = useState('');
-
-  /** 任务 id → 成员 id，供 Activity 过滤使用。 */
-  const assignees = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const node of dag?.nodes ?? []) if (node.assignee) map.set(node.taskId, node.assignee);
-    for (const task of tasks) if (task.assignee) map.set(task.id, task.assignee);
-    return map;
-  }, [dag, tasks]);
+  const { state, refreshMessages, memberName, toast } = usePanel();
+  const { dag, tasks, todos, members, messages, contexts } = state;
 
   const taskById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
 
   /**
-   * 成员 id → 可点选的任务：`memberView` 只把 running 任务算成 currentTaskId，成员空闲时
-   * currentTaskId 是 null，所以要退回该成员最近一次被派发的任务，否则点卡片没反应。
+   * 成员 id → 卡片跟随的任务：`memberView` 只把 running 任务算成 currentTaskId，成员空闲时
+   * currentTaskId 是 null，所以要退回该成员最近一次被派发的任务，时长/步骤才不会跳。
    */
   const taskIdByMember = useMemo(() => {
     const latest = new Map<string, { id: string; at: number }>();
@@ -132,35 +114,6 @@ export function HomeView() {
     }
     return new Map([...latest].map(([memberId, entry]) => [memberId, entry.id]));
   }, [tasks, dag, taskById]);
-
-  /** 默认跟随：最新一个运行中的任务；否则最近的任务行。 */
-  const fallbackId = useMemo(() => {
-    const running = [...(dag?.nodes ?? [])].reverse().find((node) =>
-      ['in_progress', 'running', 'assigned'].includes(node.status ?? ''),
-    );
-    if (running) return running.taskId;
-    const latestTask = [...tasks].reverse().find((task) => task.status !== 'pending');
-    return latestTask?.id ?? dag?.nodes?.[dag.nodes.length - 1]?.taskId ?? '';
-  }, [dag, tasks]);
-
-  const activeId = selectedId || fallbackId;
-  const activeNode = (dag?.nodes ?? []).find((node) => node.taskId === activeId);
-  const activeTask = taskById.get(activeId);
-  const activeMemberId = activeNode?.assignee ?? activeTask?.assignee ?? assignees.get(activeId);
-  const activeTitle =
-    activeNode?.subject || activeTask?.subject || (activeId ? activeId : '未选择任务');
-  const activeDone = activeTask?.status === 'done' || activeNode?.status === 'done';
-
-  const planSteps = useMemo<PlanStep[]>(
-    () => todos.filter((todo: Todo) => todo.taskId === activeId).map(toPlanStep),
-    [todos, activeId],
-  );
-
-  /** 当前任务的真实事件流（时间线回填 + SSE 增量都在 state.timeline 里），按时间正序。 */
-  const activity = useMemo(
-    () => timeline.filter((entry) => entry.taskId === activeId),
-    [timeline, activeId],
-  );
 
   /** 能收到面板消息的成员：只有 agent 运行时才有 DSH 会话（worker 没有会话）。 */
   const steerable = useMemo(() => members.filter((member) => !!member.agentSessionId), [members]);
@@ -282,117 +235,63 @@ export function HomeView() {
     else if (result === 'not-embedded') toast('面板不在 DSH 页面里打开，无法唤起成员对话', 'warn');
   };
 
-  /** Activity 卡的「查看时间线」：时间线已内嵌在本页下方，选中该成员筛选后平滑滚过去。 */
-  const timelineRef = useRef<HTMLElement | null>(null);
-  const jumpToTimeline = () => {
-    setFilterMember(activeMemberId ?? '');
-    timelineRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  };
-
   return (
     <div className="flex flex-col gap-3">
-      <div className="grid gap-3 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-        {/* ---------------- 左列：每个 agent 成员一张成员引导卡 ---------------- */}
-        <section className="min-w-0 xl:min-h-0">
-          <div className="flex h-full min-h-0 flex-col rounded-xl border bg-card">
-            <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2">
-              <div className="text-sm font-medium">成员列表</div>
-            </div>
-            <div className="grid min-h-0 flex-1 auto-rows-min grid-cols-1 gap-3 overflow-y-auto p-3 lg:grid-cols-2">
-              {steerable.length === 0 && (
-                <div className="rounded-lg border border-dashed p-4 text-xs text-muted-foreground">
-                  还没有 agent 成员（worker 成员没有会话，收不到面板消息）。
-                </div>
-              )}
-              {steerable.map((member) => {
-                const memberTaskId = member.currentTaskId || taskIdByMember.get(member.id) || '';
-                const task = memberTaskId ? taskById.get(memberTaskId) : undefined;
-                const selected = memberTaskId !== '' && memberTaskId === activeId;
-                const pick = () => {
-                  if (memberTaskId) setSelectedId(memberTaskId);
-                };
-                return (
-                  <div
-                    key={member.id}
-                    role={memberTaskId ? 'button' : undefined}
-                    tabIndex={memberTaskId ? 0 : undefined}
-                    aria-pressed={memberTaskId ? selected : undefined}
-                    aria-label={memberTaskId ? `选中 ${memberName(member.id)} 的任务` : undefined}
-                    onClick={(event) => {
-                      // 卡片里还有文本框 / 队列 chip：交互它们时不要顺带切右侧面板
-                      if ((event.target as HTMLElement).closest('textarea,input,button,a')) return;
-                      pick();
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.target !== event.currentTarget) return;
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        pick();
-                      }
-                    }}
-                    className={[
-                      'rounded-xl outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-ring',
-                      memberTaskId ? 'cursor-pointer' : 'cursor-default',
-                      selected
-                        ? 'ring-2 ring-primary ring-offset-2 ring-offset-background'
-                        : memberTaskId
-                          ? 'hover:ring-2 hover:ring-border'
-                          : '',
-                    ].join(' ')}
-                  >
-                    <AgentSteering
-                      className="max-w-none!"
-                      icon={modelAvatar(member.model, memberName(member.id), undefined, 14)}
-                      agent={[member.model, member.role].filter(Boolean).join(' · ') || undefined}
-                      title={memberName(member.id)}
-                      status={steerStatusOf(member)}
-                      stateLabel={steerStateLabelOf(member)}
-                      stateTone={steerStateToneOf(member)}
-                      startedAt={
-                        ms(task?.attemptedAt) ??
-                        ms(task?.createdAt) ??
-                        ms(member.createdAt) ??
-                        Date.now()
-                      }
-                      steps={stepsByMember.get(member.id) ?? []}
-                      metrics={metricsByMember.get(member.id)}
-                      queue={queueByMember.get(member.id) ?? []}
-                      onQueue={(text) => void sendSteer(member, text)}
-                      onInterrupt={(text, queuedId) => {
-                        if (queuedId) void dropSteer(queuedId);
-                        void sendSteer(member, text, true);
-                      }}
-                      onRemove={(id) => void dropSteer(id)}
-                      onOpenChat={() => openChat(member)}
-                    />
-                  </div>
-                );
-              })}
-            </div>
+      {/* ---------------- 成员列表：每个 agent 成员一张成员引导卡 ---------------- */}
+      <section className="min-w-0">
+        <div className="flex flex-col rounded-xl border bg-card">
+          <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2">
+            <div className="text-sm font-medium">成员列表</div>
           </div>
-        </section>
-
-        {/* ---------------- 右列：上 Plan、下 Activity ---------------- */}
-        <div className="grid min-h-0 gap-3 xl:grid-rows-2">
-          <section className="min-w-0 xl:min-h-0">
-            <PlanCard
-              key={activeId}
-              title={activeTitle}
-              steps={planSteps}
-              done={activeDone}
-              memberName={activeMemberId ? memberName(activeMemberId) : undefined}
-              attempts={activeTask?.attempts}
-            />
-          </section>
-
-          <section className="min-w-0 xl:min-h-0">
-            <ActivityFeed entries={activity} memberName={memberName} onOpenTimeline={jumpToTimeline} />
-          </section>
+          <div className="grid min-h-0 flex-1 auto-rows-min grid-cols-1 gap-3 overflow-y-auto p-3 lg:grid-cols-2">
+            {steerable.length === 0 && (
+              <div className="rounded-lg border border-dashed p-4 text-xs text-muted-foreground">
+                还没有 agent 成员（worker 成员没有会话，收不到面板消息）。
+              </div>
+            )}
+            {steerable.map((member) => {
+              const memberTaskId = member.currentTaskId || taskIdByMember.get(member.id) || '';
+              const task = memberTaskId ? taskById.get(memberTaskId) : undefined;
+              return (
+                <div key={member.id}>
+                  <AgentSteering
+                    className="max-w-none!"
+                    icon={modelAvatar(member.model, memberName(member.id), undefined, 14)}
+                    agent={
+                      [member.model, member.role, member.reasoningEffort ? `思考 ${member.reasoningEffort}` : null]
+                        .filter(Boolean)
+                        .join(' · ') || undefined
+                    }
+                    title={memberName(member.id)}
+                    status={steerStatusOf(member)}
+                    stateLabel={steerStateLabelOf(member)}
+                    stateTone={steerStateToneOf(member)}
+                    startedAt={
+                      ms(task?.attemptedAt) ??
+                      ms(task?.createdAt) ??
+                      ms(member.createdAt) ??
+                      Date.now()
+                    }
+                    steps={stepsByMember.get(member.id) ?? []}
+                    metrics={metricsByMember.get(member.id)}
+                    queue={queueByMember.get(member.id) ?? []}
+                    onQueue={(text) => void sendSteer(member, text)}
+                    onInterrupt={(text, queuedId) => {
+                      if (queuedId) void dropSteer(queuedId);
+                      void sendSteer(member, text, true);
+                    }}
+                    onRemove={(id) => void dropSteer(id)}
+                    onOpenChat={() => openChat(member)}
+                  />
+                </div>
+              );
+            })}
+          </div>
         </div>
-      </div>
+      </section>
 
       {/* ---------------- 下方：内嵌时间线（原独立 timeline 页签已取消，路由并入主页） ---------------- */}
-      <section className="min-h-[50vh] min-w-0 scroll-mt-4" ref={timelineRef}>
+      <section className="min-h-[50vh] min-w-0">
         <TimelineView />
       </section>
     </div>

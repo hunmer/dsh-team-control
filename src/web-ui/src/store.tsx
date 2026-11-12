@@ -638,7 +638,9 @@ export function PanelProvider({ children }: { children: ReactNode }) {
       if (index < 0) return prev;
       found = true;
       const members = prev.members.slice();
-      members[index] = { ...members[index], ...patch };
+      // 帧里的可选字段可能是 undefined（如 member.update 不带 status）：跳过，别把已有值抹掉。
+      const defined = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
+      members[index] = { ...members[index], ...defined };
       return { ...prev, members };
     });
     if (!found && !stateRef.current.members.some((m) => m.id === memberId)) scheduleRefresh('status', 400);
@@ -691,6 +693,9 @@ export function PanelProvider({ children }: { children: ReactNode }) {
           });
           // 成员状态变化 → 团队运行状态 badge 去抖刷新
           refreshTeamsSoon();
+          // init 相位的帧（agent.spawn / member.update）只带状态，不带 model / role / 思考强度：
+          // 再拉一次 /api/status 才能让 team_member update 后的配置立刻上屏。
+          scheduleRefresh('status', 150);
           break;
         }
         case 'step.append': {

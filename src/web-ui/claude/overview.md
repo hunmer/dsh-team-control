@@ -20,7 +20,7 @@ App.tsx
 
 | 视图 | 文件 | 看什么 |
 |---|---|---|
-| Home | `views/Home.tsx` | 团队总览、成员引导卡、Plan/Activity；底部内嵌 `Timeline.tsx` 事件时间线（cap 2000，原 timeline 页签并入此处，落地页不算页签） |
+| Home | `views/Home.tsx` | 团队总览、成员引导卡（副标题 = 模型 · 角色 · 思考强度）+ 底部内嵌 `Timeline.tsx` 事件时间线（cap 2000，原 timeline 页签并入此处，落地页不算页签） |
 | Board | `views/Board.tsx` | **成员 Trace 瀑布**（`GET /api/trace`，root(团队)→member→step/span）；注意不是任务看板 |
 | Review | `views/Review.tsx` | 待评审/变更（`member_change`） |
 | Context | `views/Context.tsx` | 上下文占用（`context_snapshot`） |
@@ -65,7 +65,9 @@ SSE（store.tsx:624-717）
                      span.append / artifact.added / context.update
   （'change.added' 未入具名列表，靠 onmessage 的 type 分发兜底）
   ├ 帧 data 即 payload 本身（无 envelope）；history 回填才有 {payload} 包裹（:658）
-  ├ member.status → patchMember + 去抖 refreshTeams(400ms)
+  ├ member.status → patchMember + 去抖 refreshTeams(400ms) + 去抖 refreshStatus(150ms)
+  │                （init 相位的 agent.spawn / member.update 帧不带 model/role/思考强度，
+  │                  只有回拉 /api/status 才能让 team_member update 的配置立刻上屏；undefined 字段不覆盖）
   ├ step.append  → 时间线 ingest + 去抖 trace(200ms)；action==='task.todo' 时刷 todos
   ├ task.state   → dag/tasks/artifacts 去抖
   └ span.append  → trace 去抖(120ms)

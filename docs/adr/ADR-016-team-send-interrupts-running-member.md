@@ -24,7 +24,11 @@ DSH 的 `subagents.sendMessage` 走 `delivery:"steer"`，消息进入成员会�
 ## 权衡
 
 - 打断会让成员丢掉当前 step 的成果（未落盘的推理），换取指令即时生效；不想打断的调用方显式传
-  `interrupt:false`。
+  `interrupt:false`。此时消息仍然**不会丢**：DSH 的 steer 落在持久 inbox 的 `next-step`，下一个 step
+  边界被 `inbox.claim` 取走，回合收尾时 `turn()` 还会因 `hasPending` 为真继续开一轮（idle 则 `wakeDriver`
+  直接开新回合，会话被回收则 `coldResume`），投递失败也会抛错而不是静默丢弃。但“读到”不等于“来得及时”：
+  当前 step 可能是几分钟的构建/测试，成员也可能在这一步里就 `team_report_task` 交卷，消息到得太晚就
+  只剩“补一句”的作用。要立刻改道就用默认的 `interrupt:true`。
 - 打断后 DSH 会短时报一次 `idle`，插件按 `agentIdleSettleMs`（默认 12s）延迟上报；紧随其后的新回合
   会把它取消并重新报 `running`，因此 sidecar 不会误把任务判 `done`。
 - 目标已是 idle 时不调 `interrupt`（对空闲会话是 no-op），直接投递并唤醒。

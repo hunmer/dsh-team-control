@@ -536,7 +536,7 @@ async function setPermission(session, preset) {
 要点：
 
 - **attach 在 followup 之前**，否则 Lead 第一次调工具可能查不到任务。
-- **同一会话模式不新建 Lead**：只给原 session 切权限、再 `followup`。`board_plan_submit` 已经把 `lead_session_id` 写成同一个 session。
+- **同一会话模式不新建 Lead**：sidecar 在 `board_plan_submit` 内直接 claim 执行槽位并 attach 回原 session，插件只切权限，不再 `followup`。只有槽位满、任务留在 `planned` 时，泵 claim 后才给原 session 补一条「现在开始执行」。
 - **权限切换要在执行 prompt 之前**：`setPermission` 内部对未知 preset 只记日志并降级，不让任务失败。
 - claim 返回 `{item:null}` 时不建会话，不记错误。
 - 创建/attach 失败必须 `release`，否则槽位永久占用；同会话模式下 session 不在则回 `failed`，由用户 retry 或改「在新的会话执行」。
@@ -583,7 +583,7 @@ ctx.on('approval/request', async (req, next) => {
 - 任务已 `archived` 或有 `stop_requested`：取消并 `dispose` 对应 agent，调 `release/stop`。
 - `planning` 且 `claimed_at` 超过 `boardPlanningTimeoutMs`：调 `/api/board/agents/status` 置 `failed`（`planning_timeout`），再取消 agent。
 - `board_plan_submit` 成功后：
-  - `execution_mode='same'`：**保留会话**，只把 `phase` 留在 `planning`；等 inprogress claim 后切权限、投执行 prompt。
+  - `execution_mode='same'`：sidecar 在保存计划时**直接 claim inprogress 槽位并 attach 回规划会话**（`lead_session_id` 就是同一个 session），返回 `inprogress`；插件只把权限切到 `leadPermissionPreset`，同一个回合继续执行，不补发任何 prompt。执行槽位满时任务留在 `planned`，等泵 claim 后再走同会话 attach + 一条「现在开始执行」。
   - `execution_mode='new'`：5s 后 `dispose` 规划会话并移出 `boardSessions`；计划已存 sidecar，新 Lead 会话会重新拿到计划。
 - 侧车里有 `lead_session_id`，但 `boardSessions` 没有、且 `ctx.agents.get(id)` 也不存在：标记 `last_error='session_not_live'`，UI 显示「会话已断开，可重试」。不自动重建，避免重复干活。
 
@@ -601,8 +601,8 @@ ctx.on('approval/request', async (req, next) => {
 ### 9.1 规划 prompt
 
 ```text
-你是「{title}」的规划 Agent。只做规划，不写代码、不修改文件、不创建团队。
-规划完成后不要开始执行；调度器会在执行槽位空出后，在同一会话里让你继续。
+你是「{title}」的规划 Agent。{same ? "这一轮先只做规划" : "只做规划"}，不写代码、不修改文件、不创建团队。
+{same ? "计划提交后读取 board_plan_submit 的返回：status 是 inprogress 就直接在同一会话里按计划开始执行（此时可以写文件、可以调用 team_*）；status 是 planned 说明执行槽位已满，立刻停下等待调度器。" : "规划完成后不要开始执行；调度器会在执行槽位空出后，在同一会话里让你继续。"}
 
 开始规划前，先加载 `dsh-agent-team` 技能（调用 skill 工具，参数 {"name":"dsh-agent-team"}），按技能里的团队编排流程、成员拆分与工具字段执行，不要凭记忆猜参数。
 
@@ -616,11 +616,11 @@ ctx.on('approval/request', async (req, next) => {
 请先阅读必要文件，然后输出一份可执行计划，必须包含：
 1. 目标与验收标准
 2. 实施步骤（到文件/模块级）
-3. 团队与成员建议（每个成员的角色、模型、依赖关系）
+3. 团队与成员建议（每个成员的角色、模型、依赖关系；按能力域合并，同一模块或相邻功能优先交给同一个成员，能一人完成就不要拆成多人）
 4. 风险与回滚
 
 最后必须调用 board_plan_submit({ plan: "<完整 markdown>", summary: "<一句话>" })。
-不要只把计划写在回复里。提交后停下，等待执行指令。
+{same ? "（同会话模式在调用要求后附一句「返回 inprogress 就按下面规则继续执行」并接上 Lead 的执行规则，不再补发第二条 prompt）" : "不要只把计划写在回复里。提交后停下，等待执行指令。"}
 ```
 
 ### 9.2 Lead prompt
@@ -647,6 +647,8 @@ ctx.on('approval/request', async (req, next) => {
 
 Prompt 里不塞完整历史，只塞任务与计划；文件内容让模型自己读。
 
+`sameSession` 分支只在**执行槽位已满**、任务被泵从 `planned` 领走时使用；正常 same 流程在提交计划时就已经 attach，不会发这条 prompt。
+
 ---
 
 ## 10. 工具扩展
@@ -655,7 +657,7 @@ Prompt 里不塞完整历史，只塞任务与计划；文件内容让模型自�
 
 | 工具 | 作用域 | 行为 |
 |---|---|---|
-| `board_plan_submit` | 规划会话 | `{plan, summary}`；按 `exec.agent.session.id` 反查 `planning_session_id`，调 `/api/board/agents/plan`。`execution_mode='same'` 时 sidecar 同时把 `lead_session_id` 写成这个 session，之后同一个会话就能调 `board_task_status`；不在规划会话里调用则报错 |
+| `board_plan_submit` | 规划会话 | `{plan, summary}`；按 `exec.agent.session.id` 反查 `planning_session_id`，调 `/api/board/agents/plan`。`execution_mode='same'` 时 sidecar 在保存计划的同时 claim 执行槽位并 attach 回同一个 session（返回 `inprogress`），插件据此切权限、同一回合继续执行；槽位满则返回 `planned`，等泵接管。不在规划会话里调用则报错 |
 | `board_task_status` | Lead 会话 | `{status:'done'\|'failed'\|'inprogress', summary?}`；按 `lead_session_id` 反查，调 `/api/board/agents/status`。`same` 模式下与规划是同一个会话 |
 
 两个工具都只允许在对应会话里用，避免普通会话误改看板。
