@@ -172,7 +172,7 @@ team_spawn({ teamId, name:"architect", prompt:"...", agentProvider:"deepseek", m
 
 其他常用参数：`team_spawn({agentProvider, model, reasoningEffort, permissionPreset, agentPreset, contextMode})`；
 `team_task({dispatch:false})` 只建不派；`deps:[{from: taskId}]` 声明上游；
-`team_send({teamId, to: "writer"|"*"|"lead", content})` 给成员递话；
+`team_send({teamId, to: "writer"|"*"|"lead", message, interrupt?})` 给成员递话；成员正在跑时默认先打断当前回合再投递（`interrupt:false` 则不打断、等下个 step 边界）；
 `team_approve({teamId, requestId, decision:"allow"|"deny", reason})` 决定成员审批。
 `team_control({action, memberId, taskId})`：`interrupt` 停成员并把在途任务转 `paused`（不计重试）；
 `resume` 解冻；`assign` 把任务交给 idle 成员；`abort` 永久作废任务（`aborted`，不重试）。

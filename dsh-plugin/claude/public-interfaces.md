@@ -11,7 +11,7 @@
 | `team_models` | 无 | 列出宿主已启用的 provider/model 路由 |
 | `team_status` | `teamId`、`detail:"summary"\|"dag"` | 成员快照（含两个预设）或任务 DAG |
 | `team_task` | `teamId`、`subject`、`plan`、`assignee`、`deps[]`、`acceptance`、`priority`、`dispatch` | 建 DAG 节点；`plan` 是给成员的简报 |
-| `team_send` | `teamId`、`to`（名字/`*`/`lead`）、`message`、`correlationId` | 投消息（成员 → 子会话；给 lead 只落信箱） |
+| `team_send` | `teamId`、`to`（名字/`*`/`lead`）、`message`、`correlationId`、`interrupt`（默认 true） | 投消息（成员 → 子会话；给 lead 只落信箱）；目标在跑时先 `subagents.interrupt` 打断当前回合再投递，`interrupt:false` 退回 step 边界投递 |
 | `team_todo` | `teamId`、`taskId`、`items[]`、`by` | 任务清单，落 sidecar，面板可见 |
 | `team_report_task` | `teamId`、`taskId`、`status:"done"\|"failed"\|"blocked"`、`summary` | 成员交卷：推进 DAG、释放成员、套用失败策略 |
 | `team_dispatch` | `teamId` | 手动泵一次派发器 |

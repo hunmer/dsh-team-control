@@ -2497,7 +2497,7 @@ function buildTools(s, ctx) {
 
   tools.push({
     name: 'team_send',
-    description: "Send a message that a member will actually read: the text is injected into the target sub-agent's message inbox (a running member sees it at its next step boundary, an idle member is woken). `to` is a member NAME (member id also accepted) or '*' to broadcast; use to:'lead' to reply to the Lead. Every send is also recorded on the sidecar so the panel shows the conversation.",
+    description: "Send a message that a member will actually read: the text is injected into the target sub-agent's message inbox. By default a running member's current turn is interrupted first, so the message immediately starts a fresh turn instead of waiting for the next step boundary; pass `interrupt: false` to keep the current turn and deliver at the next step boundary. An idle member is woken. `to` is a member NAME (member id also accepted) or '*' to broadcast; use to:'lead' to reply to the Lead. Every send is also recorded on the sidecar so the panel shows the conversation.",
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -2506,10 +2506,11 @@ function buildTools(s, ctx) {
         to: { type: 'string', description: "Member name (agent teams) or member id, or '*' for broadcast." },
         message: { type: 'string', description: 'Message body.' },
         correlationId: { type: 'string', description: 'Optional correlation id to pair a request with its response.' },
+        interrupt: { type: 'boolean', description: 'Default true: if the target member is running, interrupt its current turn before delivering so this message takes effect immediately. false = deliver at the next step boundary without interrupting.' },
       },
       required: ['teamId', 'to', 'message'],
     },
-    output: jsonOutput('{ message, messages?, delivered? }'),
+    output: jsonOutput('{ message, messages?, delivered?, interrupted?, failed? }'),
     async execute(args, exec) {
       // 调用者可能是 Lead，也可能是某个成员（成员用 send_message 工具调用本工具时 exec.agent 就是成员会话）。
       const callerSessionId = exec?.agent?.sessionId ?? exec?.agent?.id ?? null;
@@ -2547,10 +2548,24 @@ function buildTools(s, ctx) {
       const targets = candidates.filter((m) => m.agentSessionId);
       const delivered = [];
       const failed = [];
+      const interrupted = [];
+      const interruptErrors = [];
       if (!targets.length) failed.push({ target: args.to, error: '该成员没有绑定 sub-agent 会话（可能还没 spawn 或已回收）' });
       for (const target of targets) {
+        const sid = String(target.agentSessionId);
         try {
-          await subs.sendMessage(caller, String(target.agentSessionId), content, { signal: AbortSignal.timeout(s.requestTimeoutMs) });
+          // 成员还在跑：先打断当前回合，新消息才会立刻开一轮；否则 steer 只能等下一个 step 边界。
+          const busy = agentStatusBySession.get(sid) === 'running' || target.agentStatus === 'running' || target.status === 'running';
+          if (args.interrupt !== false && busy && typeof subs.interrupt === 'function') {
+            try {
+              await Promise.resolve(subs.interrupt(sid, { kind: 'ancestor', agent: caller }));
+              interrupted.push(target.name);
+            } catch (err) {
+              // 打断失败不能连消息一起丢：退化成 step 边界投递。
+              interruptErrors.push({ target: target.name, error: String(err?.message || err) });
+            }
+          }
+          await subs.sendMessage(caller, sid, content, { signal: AbortSignal.timeout(s.requestTimeoutMs) });
           delivered.push(target.name);
           // 投递成功才补记送达：这一条消息确实进了成员会话
           const row = (recorded.messages || [recorded.message]).find((m) => m && String(m.to) === String(target.id));
@@ -2559,7 +2574,13 @@ function buildTools(s, ctx) {
           failed.push({ target: target.name, error: String(err?.message || err) });
         }
       }
-      return { ...recorded, delivered, ...(failed.length ? { failed } : {}) };
+      return {
+        ...recorded,
+        delivered,
+        ...(interrupted.length ? { interrupted } : {}),
+        ...(interruptErrors.length ? { interruptErrors } : {}),
+        ...(failed.length ? { failed } : {}),
+      };
     },
   });
 

@@ -12,7 +12,7 @@
 - `team_preset`（:2151）→ 主链路在宿主（`presetDir/<id>.json` + `agentPresets.register` 即时生效），save 后 `POST /api/presets/sync` 镜像；面板删除走 pending-deletes 队列（≥5 次放弃）。
 - `team_status` → `GET /api/dag` 或 `GET /api/status`，投影 members（status/step/seq/pct/blockers/两个预设）。
 - `team_task` → `POST /api/tasks`；`dispatch!==false` 时 sleep(agentSettleMs=250ms 依赖窗口) 后 dispatchLoop。
-- `team_send`（:2324）→ `POST /api/messages` + `subagents.sendMessage`；to='lead' 只落信箱；成员→成员借 Lead 句柄；送达后 `POST /api/messages/<id>/ack`(delivered)。
+- `team_send`（:2324）→ `POST /api/messages` + `subagents.sendMessage`；目标在跑时先 `subagents.interrupt` 打断当前回合再投（`interrupt:false` 可关）；to='lead' 只落信箱；成员→成员借 Lead 句柄；送达后 `POST /api/messages/<id>/ack`(delivered)。
 - `team_todo` → `POST /api/tasks/<taskId>/todos`（整份替换，≤50 条）。
 - `team_report_task`（:2430）→ `POST /api/agents/report` 推进 DAG → `collectArtifacts`（扫成员会话事件，按 lastArtifactSeq 增量，取后 12 条）`POST /api/artifacts` → 再跑一轮 dispatchLoop。
 - `team_dispatch` → 本地 dispatchLoop：循环 `POST /api/agents/dispatch` 原子认领（≤16 轮）+ deliverTask（先 `POST /api/messages` 落含 team_report_task 模板的简报，再 subs.sendMessage）；投递失败按 failed 交回重试。

@@ -25,13 +25,14 @@ const mkFakeCtx = () => {
     spawned: [],
     messages: [],
     interrupts: [],
+    ops: [],
     drains: [],
     async startActivation(spec) {
       agents.spawned.push({ req: spec });
       return { childId: spec.childId, messageId: `msg-${agents.spawned.length}`, result: Promise.resolve({ output: [], stopReason: 'completed' }), dispose: async () => {} };
     },
-    async sendMessage(caller, targetId, content) { agents.messages.push({ caller, target: targetId, content }); return `msg-${agents.messages.length}`; },
-    interrupt(targetId, authority) { agents.interrupts.push({ targetId, authority }); },
+    async sendMessage(caller, targetId, content) { agents.messages.push({ caller, target: targetId, content }); agents.ops.push(`send:${targetId}`); return `msg-${agents.messages.length}`; },
+    interrupt(targetId, authority) { agents.interrupts.push({ targetId, authority }); agents.ops.push(`interrupt:${targetId}`); },
     async drainChildren(parent, childIds) { agents.drains.push({ parent, childIds }); return { drained: childIds.length }; },
     list: () => ['spawn', 'fork'],
   };
@@ -289,6 +290,21 @@ const main = async () => {
     await waitFor('t3 自动派发', async () => (
       (await api.get(`/api/tasks/${t3.task.id}`)).status === 'running' ? true : null
     ), 8000);
+    // ⑦a team_send：成员还在跑时先打断当前回合再投递（否则只能等下一个 step 边界）
+    const sendMark = ctx.agents.ops.length;
+    const sent = await tool('team_send').execute(
+      { teamId: team.id, to: 'alice', message: '换个方向：先补测试' }, lead,
+    );
+    assert.deepEqual(sent.interrupted, ['alice'], '运行中的成员被先打断');
+    assert.deepEqual(sent.delivered, ['alice'], '打断后消息仍然投递');
+    assert.deepEqual(ctx.agents.ops.slice(sendMark), [`interrupt:${sessionId}`, `send:${sessionId}`], '顺序是先 interrupt 再 sendMessage');
+    // ⑦a2 interrupt:false 保留旧行为：不打断，直接按 step 边界投递
+    const quietMark = ctx.agents.ops.length;
+    const quiet = await tool('team_send').execute(
+      { teamId: team.id, to: 'alice', message: '顺带一句', interrupt: false }, lead,
+    );
+    assert.equal(quiet.interrupted, undefined, 'interrupt:false 不打断');
+    assert.deepEqual(ctx.agents.ops.slice(quietMark), [`send:${sessionId}`], 'interrupt:false 直接投递');
     // ⑦b 运行中只改 permissionPreset：热写 DSH 预设，不重建会话；换模型仍要求先 interrupt
     const hot = await tool('team_member').execute(
       { action: 'update', teamId: team.id, memberId: spawned.member.id, permissionPreset: 'read-only' }, lead,
@@ -304,12 +320,13 @@ const main = async () => {
       );
     } catch (e) { restartBlocked = e; }
     assert(restartBlocked && /interrupt it before changing/.test(restartBlocked.message), '运行中换模型仍被拒');
+    const interruptsBeforeCtl = ctx.agents.interrupts.length;
     const ctl = await tool('team_control').execute(
       { action: 'interrupt', teamId: team.id, memberId: spawned.member.id, reason: '换个方向' }, lead,
     );
-    assert.equal(ctx.agents.interrupts.length, 1, 'interrupt 调了 subagents.interrupt');
-    assert.equal(ctx.agents.interrupts[0].targetId, sessionId, '中断的目标是成员 session');
-    assert.equal(ctx.agents.interrupts[0].authority.kind, 'ancestor', '以 Lead 作为祖先授权');
+    assert.equal(ctx.agents.interrupts.length, interruptsBeforeCtl + 1, 'interrupt 调了 subagents.interrupt');
+    assert.equal(ctx.agents.interrupts.at(-1).targetId, sessionId, '中断的目标是成员 session');
+    assert.equal(ctx.agents.interrupts.at(-1).authority.kind, 'ancestor', '以 Lead 作为祖先授权');
     assert.equal(ctl.member.status, 'interrupted', '成员同步置 interrupted');
     assert.equal((await api.get(`/api/tasks/${t3.task.id}`)).status, 'paused', '在途任务转 paused，等 Lead 处置');
     assert.equal((await api.get(`/api/tasks/${t3.task.id}`)).attempts, 1, 'interrupt 不消耗 attempt');
