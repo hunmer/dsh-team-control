@@ -23,6 +23,10 @@ export interface BoardTask {
   needPlan: boolean;
   /** 是否开启团队（默认 true，兼容旧数据） */
   useTeam: boolean;
+  /** 实验性：同会话执行时，规划完成后把同一会话切到执行模型续跑 */
+  prewalk: boolean;
+  /** 任务开始前要切到的 git 分支；null = 不切分支 */
+  gitBranch: string | null;
   priority: number;
   position: number;
   planRoute: BoardRoute;
@@ -85,6 +89,10 @@ export interface CreateBoardTask {
   executionMode?: BoardMode;
   needPlan?: boolean;
   useTeam?: boolean;
+  /** 实验性 prewalk：规划完成后在同一会话切到执行模型继续（仅 executionMode='same' 生效） */
+  prewalk?: boolean;
+  /** 任务开始前切到的 git 分支；'' = 自动生成 task/<id>，null/缺省 = 不切分支 */
+  gitBranch?: string | null;
   planRoute?: BoardRoute | null;
   leadRoute?: BoardRoute | null;
   teamModels?: BoardRoute[] | null;

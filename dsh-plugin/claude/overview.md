@@ -22,6 +22,9 @@
 - `team_report` → `GET /api/report?format=md`（截 200k；聚合全在 sidecar：members/tasks/DAG/审批/审计）。
 - `board_plan_submit`（:2787）→ `POST /api/board/agents/plan`；executionMode=new 时 5s 后 dispose 规划会话。
 - `board_task_status` → `POST /api/board/agents/status` {sessionId,status,summary}。
+- `team_task_get` → `GET /api/tasks/<id>`（校验 teamId 归属）+ `GET /api/dag?team=` 取同 id 节点，返回 { task, node }。
+- `board_task_create` → `POST /api/board/tasks`；`workspaceId` 省略时按 `GET /api/board/by-session/<sid>` → `GET /api/workspaces`（仅 1 个时）推断，否则报缺 workspaceId。
+- `board_task_get` → 有 `taskId` 走 `GET /api/board/tasks/<id>`，否则 `GET /api/board/by-session/<sid>`，结果按 `pick()` 精简字段返回。
 
 ## 配置解析（`resolveConfig`）
 

@@ -39,7 +39,7 @@ const main = async () => {
     const ctx = mkFakeCtx();
     apply(ctx, { baseUrl: sidecar.url, autoStart: false, reportToolCalls: true });
     assert.equal(typeof ctx.first('tools/execute'), 'function', '插件注册了 tools/execute 监听器');
-    assert.equal(ctx.disposed.length, 21, '21 个工具已注册（19 个 team_* + board_plan_submit / board_task_status）');
+    assert.equal(ctx.disposed.length, 24, '24 个工具已注册（20 个 team_* + 4 个 board_*）');
 
     const drive = ctx.first('tools/execute');
 

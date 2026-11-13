@@ -148,14 +148,14 @@ export class LlmCatalog {
   /** 面板/工具读的完整目录：provider 分组，含未开启项。 */
   catalog() {
     const providers = this.get('SELECT * FROM llm_provider ORDER BY name ASC, provider ASC').all()
-      .map((p) => ({ id: p.provider, name: p.name || p.provider, source: p.source, error: p.error || null, models: [] }));
+      .map((p) => ({ id: p.provider, name: p.name || p.provider, note: p.note || null, source: p.source, error: p.error || null, models: [] }));
     const byId = new Map(providers.map((p) => [p.id, p]));
     for (const r of this.get('SELECT * FROM llm_route ORDER BY name ASC, model ASC').all()) {
       const model = this.rowToModel(r);
       const group = byId.get(r.provider);
       if (group) group.models.push(model);
       else {
-        const orphan = { id: r.provider, name: r.provider, source: r.source, error: null, models: [model] };
+        const orphan = { id: r.provider, name: r.provider, note: null, source: r.source, error: null, models: [model] };
         byId.set(r.provider, orphan); providers.push(orphan);
       }
     }
@@ -205,5 +205,20 @@ export class LlmCatalog {
         .run(next === null ? null : JSON.stringify(next), nowIso(), row.provider, row.model);
     }
     return this.getRoute(row.provider, row.model);
+  }
+
+  /**
+   * 写厂商级备注（面板分组头调用）：说明该厂商整体擅长什么，模型级 note 说明单模型。
+   * 未知 provider 抛 404，避免 typo 静默写丢。
+   */
+  setProvider(provider, { note } = {}) {
+    const id = String(provider ?? '').trim();
+    if (!id) throw ERR.bad('provider required');
+    if (note !== undefined && note !== null && typeof note !== 'string') throw ERR.bad('note must be string');
+    const row = this.get('SELECT * FROM llm_provider WHERE provider=?').get(id);
+    if (!row) throw ERR.notFound('llm provider');
+    const next = note === undefined ? (row.note || null) : clip(note, 240);
+    this.get('UPDATE llm_provider SET note=? WHERE provider=?').run(next, id);
+    return { id, name: row.name || id, note: next };
   }
 }

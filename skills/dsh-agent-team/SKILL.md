@@ -1,15 +1,16 @@
 ---
 name: dsh-agent-team
-description: 用 dsh-team 插件编排「真 sub-agent 成员」团队的最小可用流程：team_create → team_spawn → team_task → 成员 team_report_task → team_status/team_report；含 19 个 team_* 工具的字段清单、按任务难度给成员分配 provider/model/思考强度、按成员分配 permissionPreset 沙箱预设与 agentPreset 组合预设（工具/skill/MCP）、成员审批转发给 Lead 后由 team_approve 决定，以及 Lead（主 agent）的边界：只协调、不写代码、不做二次验收、派发完就结束回话、收尾提一个精简 commit。Use when the user asks to create an agent team, orchestrate teammates, dispatch parallel work to sub-agents, or when a team_* call failed with an unexpected shape (unknown teamId, assignee by name, member never reports, approval timeout).
+description: 用 dsh-team 插件编排「真 sub-agent 成员」团队的最小可用流程：team_create → team_spawn → team_task → 成员 team_report_task → team_status/team_report；含 20 个 team_* 工具的字段清单、按任务难度给成员分配 provider/model/思考强度、按成员分配 permissionPreset 沙箱预设与 agentPreset 组合预设（工具/skill/MCP）、成员审批转发给 Lead 后由 team_approve 决定，以及 Lead（主 agent）的边界：只协调、不写代码、不做二次验收、派发完就结束回话、收尾提一个精简 commit。Use when the user asks to create an agent team, orchestrate teammates, dispatch parallel work to sub-agents, or when a team_* call failed with an unexpected shape (unknown teamId, assignee by name, member never reports, approval timeout).
 user-invocable: true
 version: "2.0.0"
 ---
 
 # dsh-team：把活派给真 sub-agent 成员的流程
 
-插件提供 19 个工具：`team_create` `team_spawn` `team_member` `team_preset` `team_models` `team_task` `team_report_task`
+插件提供 20 个团队工具：`team_create` `team_spawn` `team_member` `team_preset` `team_models` `team_task` `team_task_get` `team_report_task`
 `team_send` `team_todo` `team_status` `team_dispatch` `team_control` `team_approve` `team_report`
-`team_memory_write` `team_memory_read` `team_memory_list` `team_memory_share` `team_memory_delete`。
+`team_memory_write` `team_memory_read` `team_memory_list` `team_memory_share` `team_memory_delete`；
+另有 4 个看板工具 `board_plan_submit` `board_task_status` `board_task_create` `board_task_get`（看板任务编排时用，普通建团队流程不需要）。
 **别按名字猜顺序**，按下面 5 步走，一次就能通。所有成员都是真 DSH 子会话（agent 运行时），不存在 worker 进程。
 
 **显式记忆**：成员收工前若有可复用结论，自己写一条 `team_memory_write({teamId, scope:"member", key:"handoff/<主题>", kind:"handoff", value:"≤300 字"})`；
@@ -110,7 +111,7 @@ requestId=req-...
 ```
 
 - `allow` = 只放行这一次操作（DSH 的 `allowed-once`）；`deny` = 拒绝。
-- 低风险 shell 命令（白名单程序、无管道/重定向、不命中敏感规则）由插件自动放行，不打扰你；只有敏感命令或非 shell 工具才需要 `team_approve`。
+- 低风险 shell 命令（白名单程序、只读管道、常见 PowerShell 只读 cmdlet、无重定向/命令替换、不命中敏感规则）由插件自动放行，不打扰你；`autoApproveTools` 里显式列出的工具（支持 `*` 通配）也直接放行。只有敏感命令、未列入白名单的工具才需要 `team_approve`。
 - 只有该团队的 Lead 能批；不是成员会话的审批请求不会拦截，仍走宿主原链路。
 - 超时（插件配置 `approvalTimeoutMs`，默认 10 分钟）自动拒绝；请求也会镜像到 sidecar，
   `dsh-team approvals <team>`、`GET /api/approvals`、运行报告里都能看到。
@@ -217,6 +218,8 @@ team_spawn({ teamId, name:"architect", prompt:"...", agentProvider:"deepseek", m
 
 - `team_status({teamId, detail:"summary"})`：成员 status/step/pct/next/blockers/permissionPreset；
   `detail:"dag"`：依赖与关键路径。
+- `team_task_get({taskId})`：只看单个任务的 status/attempts/lastError 与它在 DAG 里的节点
+  （`dependsOn`/`ready`/`blockers`），比拉整张 `team_status` 更省上下文。
 - DSH 里看：对话右上角「团队成员」条（点 chip → 右侧栏内嵌该成员对话）；侧车面板 `http://127.0.0.1:4317/panel`
   （Trace 瀑布 / DAG / 模型路由 / 消息回执）。
 - 收工顺序：成员全部 `done` → **Lead 提一个精简 commit**（`git add` 本批任务涉及的文件，message 一行

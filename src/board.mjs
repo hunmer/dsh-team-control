@@ -30,6 +30,19 @@ const routeOf = (row, prefix) => ({
   model: row[`${prefix}_model`] || null,
   reasoningEffort: row[`${prefix}_reasoning_effort`] || null,
 });
+// git 分支名：允许 a-z A-Z 0-9 . _ / -，不能以 - 开头、不能含 ..；
+// 传空串表示「开启分支但名字自动生成」（task/<任务短号>），传 null/undefined 表示不切分支。
+const BRANCH_RE = /^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}$/;
+function normalizeGitBranch(v, taskId) {
+  if (v === null || v === undefined) return null;
+  const raw = String(v).trim();
+  if (!raw) {
+    const short = String(taskId ?? '').replace(/^bt_/, '').slice(0, 8) || 'task';
+    return `task/${short}`;
+  }
+  if (!BRANCH_RE.test(raw)) throw ERR.bad('gitBranch 非法：只允许字母数字和 . _ / -，不能以 - 开头或包含 ..');
+  return raw;
+}
 
 function settingsFromRow(row, workspaceId, workspacePath) {
   if (!row) return { workspaceId, workspacePath: workspacePath || '', ...DEFAULT_SETTINGS, updatedAt: null };
@@ -163,6 +176,8 @@ export class Board {
       executionMode: row.execution_mode,
       needPlan: row.need_plan === undefined || row.need_plan === null ? true : !!row.need_plan,
       useTeam: row.use_team === undefined || row.use_team === null ? true : !!row.use_team,
+      prewalk: !!row.prewalk,
+      gitBranch: row.git_branch || null,
       priority: row.priority,
       position: row.position,
       planRoute: routeOf(row, 'plan'),
@@ -258,17 +273,21 @@ export class Board {
     // needPlan/useTeam 是新建任务的行为开关：不传时按老行为（需要规划、开启团队）。
     const needPlan = body.needPlan !== undefined ? asBool(body.needPlan) : 1;
     const useTeam = body.useTeam !== undefined ? asBool(body.useTeam) : 1;
+    // prewalk（实验性）：同会话执行时，规划完成后把同一会话交给执行模型续跑。
+    const prewalk = asBool(body.prewalk);
     const id = newId('bt');
     const t = nowIso();
+    // 分支名要在有 id 之后才能自动生成（task/<短号>）
+    const gitBranch = normalizeGitBranch(body.gitBranch, id);
     const teamModels = Array.isArray(body.teamModels) ? body.teamModels.slice(0, 100) : null;
     this.get(`INSERT INTO board_task
-      (id, workspace_id, workspace_path, title, description, status, auto, execution_mode, need_plan, use_team,
+      (id, workspace_id, workspace_path, title, description, status, auto, execution_mode, need_plan, use_team, prewalk, git_branch,
        priority, position,
        plan_provider, plan_model, plan_reasoning_effort, lead_provider, lead_model, lead_reasoning_effort,
        team_models_json, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(id, workspaceId, workspacePath, title, text(body.description, 100000), 'todo', asBool(body.auto), mode,
-        needPlan, useTeam,
+        needPlan, useTeam, prewalk, gitBranch,
         asInt(body.priority, -1000, 1000, 0), asInt(body.position, 0, 1e9, 0),
         body.planRoute?.provider || body.planProvider || null,
         body.planRoute?.model || body.planModel || null,
@@ -278,7 +297,7 @@ export class Board {
         body.leadRoute?.reasoningEffort || body.leadReasoningEffort || null,
         teamModels ? json(teamModels) : null, t, t);
     const task = this.getTask(id);
-    this.addEvent(task, 'created', { auto: task.auto, executionMode: mode });
+    this.addEvent(task, 'created', { auto: task.auto, executionMode: mode, ...(prewalk ? { prewalk: true } : {}) });
     return task;
   }
 
@@ -297,6 +316,8 @@ export class Board {
     if (body.auto !== undefined) set('auto', asBool(body.auto));
     if (body.needPlan !== undefined) set('need_plan', asBool(body.needPlan));
     if (body.useTeam !== undefined) set('use_team', asBool(body.useTeam));
+    if (body.prewalk !== undefined) set('prewalk', asBool(body.prewalk));
+    if (body.gitBranch !== undefined) set('git_branch', normalizeGitBranch(body.gitBranch, cur.id));
     if (body.executionMode !== undefined) {
       if (!MODES.has(body.executionMode)) throw ERR.bad('executionMode must be same|new');
       set('execution_mode', body.executionMode);

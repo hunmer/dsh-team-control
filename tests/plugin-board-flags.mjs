@@ -12,11 +12,12 @@ const mkFakeCtx = () => {
   const agents = {
     created,
     async create(options) {
-      const rec = { options, followups: [], disposed: false };
+      const rec = { options, followups: [], steers: [], disposed: false };
       const agent = {
         id: options.sessionId,
-        session: { id: options.sessionId },
+        session: { id: options.sessionId, seq: 0, eventAt: () => undefined },
         followup(message) { rec.followups.push(message); },
+        steer(message) { rec.steers.push(message); },
       };
       rec.agent = agent;
       created.push(rec);
@@ -37,6 +38,14 @@ const mkFakeCtx = () => {
     names: ['read-only', 'workspace-write', 'danger-full-access'],
     set(session, name) { permissions.push({ sessionId: session?.id, name }); },
   };
+  // prewalk 走 Host 的会话级模型选择：只记录调用，不真正改模型。
+  const switches = [];
+  const sessionController = {
+    agents: {
+      selectionFor: () => ({ current: { provider: 'p', model: 'plan-m' } }),
+      selectForNextRequest(agent, selection) { switches.push({ sessionId: agent?.id, selection }); },
+    },
+  };
   const ctx = {
     tools: {
       register: (tool) => { registry.set(tool.name, tool); return () => registry.delete(tool.name); },
@@ -49,6 +58,7 @@ const mkFakeCtx = () => {
       if (name === 'agents') return agents;
       if (name === 'permissionPresets') return presets;
       if (name === 'agentPresets') return agentPresets;
+      if (name === 'sessionController') return sessionController;
       if (name === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'p', model: 'default-m', reasoningEffort: 'high' }) };
       if (name === 'sessions') return { get: (id) => ({ id }) };
       return undefined;
@@ -65,10 +75,20 @@ const mkFakeCtx = () => {
     },
     emit(name, ...args) { for (const fn of handlers.get(name) || []) fn(...args); },
   };
-  return { ctx, created, permissions, mounted };
+  return { ctx, created, permissions, mounted, switches };
 };
 
 const text = (rec, i = 0) => rec.followups[i]?.content?.[0]?.text || '';
+
+// 模拟一次工具执行，依次穿过插件注册的 tools/execute 钩子（prewalk 交接挂在这里）。
+const runToolHook = async (ctx, exec, outcome = { isError: false }) => {
+  let next = async () => outcome;
+  for (const fn of (ctx.handlers.get('tools/execute') || []).slice().reverse()) {
+    const prev = next;
+    next = () => fn(exec, prev);
+  }
+  return next();
+};
 
 const main = async () => {
   const tmp = mkTmp('dsh-team-plugin-board-flags');
@@ -76,7 +96,7 @@ const main = async () => {
   try {
     const api = sidecar.api;
     await api.post('/api/workspaces', { items: [{ id: 'ws-bf', title: 'BF', path: tmp.ws }] });
-    const { ctx, created, permissions } = mkFakeCtx();
+    const { ctx, created, permissions, switches } = mkFakeCtx();
     apply(ctx, {
       baseUrl: sidecar.url, home: tmp.dataDir, autoStart: false,
       reportToolCalls: false, reportChanges: false, reportLlmCalls: false,
@@ -161,6 +181,39 @@ const main = async () => {
     assert.match(text(newSoloLead), /不要调用 team_create/, '新会话单人禁止建队');
     assert.doesNotMatch(text(newSoloLead), /用 team_task 拆解/, '新会话单人不派发团队任务');
     await statusTool.execute({ status: 'done', summary: '完成' }, { agent: { id: newSoloLead.agent.id } });
+
+    // 5) prewalk（实验性）：提交计划只武装、不切模型；首个 edit 结果之后才交接并注入执行清单
+    assert.equal(switches.length, 0, '前面的同会话任务都没开 prewalk，不应切换模型');
+    // 未武装的会话即便发生 edit，也不能被切模型
+    await runToolHook(ctx, { agent: planRec.agent, name: 'edit', arguments: {} });
+    assert.equal(switches.length, 0, '未开启 prewalk 的会话 edit 后仍不切换');
+    const prewalkTask = await api.post('/api/board/tasks', {
+      workspaceId: 'ws-bf', title: 'prewalk 任务', auto: true, executionMode: 'same',
+      needPlan: true, useTeam: false, prewalk: true,
+      planRoute: { provider: 'p', model: 'plan-m' },
+      leadRoute: { provider: 'p', model: 'exec-m' },
+    });
+    assert.equal((await api.get(`/api/board/tasks/${prewalkTask.id}`)).prewalk, true, 'prewalk 落库');
+    const prewalkPlanRec = await waitFor('prewalk planning', () => (created[7]?.followups?.length ? created[7] : null));
+    const prewalkPlan = ['PLAN_PREWALK', '', '- 修改 A 文件的实现', '- 运行相关测试'].join('\n');
+    await planTool.execute({ plan: prewalkPlan, summary: '一句话' }, { agent: { id: prewalkPlanRec.agent.id } });
+    assert.equal(switches.length, 0, '提交计划时还不切模型（交接不能太早）');
+    assert.equal(prewalkPlanRec.steers.length, 0, '提交计划时还不注入继续指令');
+    // 失败的 edit 不算「已落到实现」：保持武装、不切模型
+    await runToolHook(ctx, { agent: prewalkPlanRec.agent, name: 'edit', arguments: {} }, { isError: true });
+    assert.equal(switches.length, 0, '写入失败时不交接');
+    assert.equal(prewalkPlanRec.steers.length, 0, '写入失败时不注入继续指令');
+    // 第一个成功的 edit 结果 → 交接：切到执行模型 + 注入一条简短的继续指令
+    await runToolHook(ctx, { agent: prewalkPlanRec.agent, name: 'edit', arguments: {} });
+    const switched = await waitFor('prewalk switch', () => switches.find((x) => x.sessionId === prewalkPlanRec.agent.id) || null);
+    assert.equal(switched.selection.provider, 'p', '切换带上 provider');
+    assert.equal(switched.selection.model, 'exec-m', '切换目标是执行模型');
+    assert.equal(switches.length, 1, '只切一次');
+    const checklist = prewalkPlanRec.steers.at(-1)?.content?.[0]?.text || '';
+    assert.equal(checklist, '继续', '交接时只注入「继续」');
+    assert.equal(created.length, 8, 'prewalk 不新建会话');
+    assert.equal(prewalkPlanRec.followups.length, 1, 'prewalk 不补发执行 prompt');
+    await statusTool.execute({ status: 'done', summary: '完成' }, { agent: { id: prewalkPlanRec.agent.id } });
 
     console.log('plugin-board-flags: ok');
   } finally {

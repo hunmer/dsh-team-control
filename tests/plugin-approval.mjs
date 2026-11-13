@@ -38,7 +38,7 @@ const main = async () => {
   try {
     const api = sidecar.api;
     const ctx = mkFakeCtx();
-    apply(ctx, { baseUrl: sidecar.url, autoStart: false, reportToolCalls: false, approvalTimeoutMs: 60000 });
+    apply(ctx, { baseUrl: sidecar.url, autoStart: false, reportToolCalls: false, approvalTimeoutMs: 60000, autoApproveTools: ['mcp_connector_*'] });
     const tool = (n) => { const t = ctx.tools.get(n); assert(t, `工具 ${n} 已注册`); return t; };
     const lead = { agent: { id: 'sess-lead' } };
 
@@ -107,6 +107,59 @@ const main = async () => {
     await waitFor('敏感命令仍通知 Lead', async () => (ctx.agents.messages.length > beforeAuto ? true : null), 5000);
     await tool('team_approve').execute({ teamId: team.id, requestId: 'req-danger', decision: 'deny', reason: '危险命令' }, lead);
     assert.equal(await pDanger, 'rejected', '敏感命令不自动放行');
+
+    // ②d 只读管道与 PowerShell 只读命令自动放行：含 `|` 不再一律转 Lead
+    await pre(
+      { agent: { id: sessionId }, callId: 'call-pipe', name: 'ops_bash', arguments: { command: 'git status --short | head -20' } },
+      async () => ({ decision: 'ask' }),
+    );
+    const beforePipe = ctx.agents.messages.length;
+    const pipe = await handler(
+      { id: 'req-pipe', agent: { id: sessionId }, toolName: 'ops_bash', callId: 'call-pipe', reason: 'sandbox escalation' },
+      async () => 'unavailable',
+    );
+    assert.equal(pipe, 'allowed-once', '只读管道命令自动放行');
+    assert.equal(ctx.agents.messages.length, beforePipe, '只读管道不打扰 Lead');
+
+    await pre(
+      { agent: { id: sessionId }, callId: 'call-ps', name: 'ops_bash', arguments: { command: 'Get-ChildItem -Force | Select-Object Name,Length' } },
+      async () => ({ decision: 'ask' }),
+    );
+    const ps = await handler(
+      { id: 'req-ps', agent: { id: sessionId }, toolName: 'ops_bash', callId: 'call-ps', reason: 'sandbox escalation' },
+      async () => 'unavailable',
+    );
+    assert.equal(ps, 'allowed-once', 'PowerShell 只读命令自动放行');
+
+    // ②e 重定向仍转 Lead：`>` 会写文件，不走自动放行
+    await pre(
+      { agent: { id: sessionId }, callId: 'call-redirect', name: 'ops_bash', arguments: { command: 'git status > out.txt' } },
+      async () => ({ decision: 'ask' }),
+    );
+    const pRedirect = handler(
+      { id: 'req-redirect', agent: { id: sessionId }, toolName: 'ops_bash', callId: 'call-redirect', reason: 'sandbox escalation' },
+      async () => 'unavailable',
+    );
+    await waitFor('重定向命令仍通知 Lead', async () => (ctx.agents.messages.length > beforePipe ? true : null), 5000);
+    await tool('team_approve').execute({ teamId: team.id, requestId: 'req-redirect', decision: 'deny', reason: '写文件需审批' }, lead);
+    assert.equal(await pRedirect, 'rejected', '重定向命令不自动放行');
+
+    // ②f autoApproveTools 工具白名单：非 shell 工具、无参数缓存也放行
+    const mcp = await handler(
+      { id: 'req-mcp', agent: { id: sessionId }, toolName: 'mcp_connector_session_tools', reason: 'tool approval' },
+      async () => 'unavailable',
+    );
+    assert.equal(mcp, 'allowed-once', '工具白名单自动放行');
+    await waitFor('工具白名单镜像 decidedBy=auto', async () => {
+      const i = (await api.get(`/api/approvals?team=${team.id}`)).items.find((x) => x.id === 'req-mcp');
+      return i?.status === 'allowed' && i?.decidedBy === 'auto' ? i : null;
+    }, 5000);
+
+    // ②g 白名单未命中的非 shell 工具仍转 Lead
+    const pOtherTool = handler({ id: 'req-other-tool', agent: { id: sessionId }, toolName: 'fs.write', reason: 'write outside' }, async () => 'unavailable');
+    await waitFor('未命中白名单通知 Lead', async () => (ctx.agents.messages.length > beforePipe + 1 ? true : null), 5000);
+    await tool('team_approve').execute({ teamId: team.id, requestId: 'req-other-tool', decision: 'deny', reason: '写操作' }, lead);
+    assert.equal(await pOtherTool, 'rejected', '未命中工具白名单不自动放行');
 
     // ③ 拒绝 → rejected
     const p2 = handler({ id: 'req-2', agent: { id: sessionId }, toolName: 'fs.write', reason: '写 /etc/hosts' }, async () => 'unavailable');

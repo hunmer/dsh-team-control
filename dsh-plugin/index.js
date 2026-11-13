@@ -6,7 +6,7 @@
 //   工具用普通 ToolDefinition 对象注册（JSON Schema 参数），不依赖 defineTool。
 // - sidecar 未运行时，autoStart=true 会在首次工具调用时拉起 `dsh-team up`；
 //   插件卸载时只回收「自己拉起」的进程，不影响用户手工起的服务。
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
@@ -86,12 +86,17 @@ function resolveConfig(config) {
     agentStartTimeoutMs: Number(c.agentStartTimeoutMs) || 120000,
     // 成员触发权限审批（permission preset 的 approval=ask）后，等待 Lead 调 team_approve 的上限
     approvalTimeoutMs: Number(c.approvalTimeoutMs) || 600000,
-    // 审批降噪：命令明确是「已知安全程序 + 无管道/重定向/命令替换」时直接 allowed-once，
+    // 审批降噪：命令明确是「已知安全程序 + 无重定向/命令替换/脚本块」时直接 allowed-once，
     // 不打扰 Lead；敏感命令（见 DEFAULT_SENSITIVE_COMMAND_PATTERNS）仍转 Lead 审批
     autoApproveLowRisk: c.autoApproveLowRisk !== false,
     // 追加的敏感命令正则（字符串数组）：命中即视为敏感，仍走 Lead 审批
     sensitiveCommandPatterns: Array.isArray(c.sensitiveCommandPatterns)
       ? c.sensitiveCommandPatterns.map((p) => String(p)).filter(Boolean)
+      : [],
+    // 工具级自动放行白名单（字符串数组，支持 `*` 通配）：命中工具名的审批直接 allowed-once。
+    // 默认空；用于把「非 shell 但明确安全」的工具（如只读 MCP 发现类工具）从审批流里摘出去。
+    autoApproveTools: Array.isArray(c.autoApproveTools)
+      ? c.autoApproveTools.map((p) => String(p).trim()).filter(Boolean)
       : [],
     // spawnTeammate 的 provider：默认与 dsh-experimental-tool-agent-team 一致
     freshProvider: String(c.freshProvider || 'spawn'),
@@ -1141,6 +1146,14 @@ const SAFE_COMMAND_PROGRAMS = new Set([
   'cargo', 'rustc', 'go', 'dotnet', 'javac', 'java', 'mvn', 'gradle',
   'ls', 'dir', 'cat', 'type', 'head', 'tail', 'rg', 'grep', 'find', 'fd', 'where', 'which',
   'git', 'echo', 'cd', 'pwd', 'mkdir', 'touch',
+  // PowerShell 只读命令：成员在 Windows 上排查时的大量噪声来自 Get-*/Select-*/Format-*。
+  // ForEach-Object 等能执行脚本块的 cmdlet 故意不收录（脚本块另有 `{}` 拦截）。
+  'get-childitem', 'get-content', 'get-item', 'get-itemproperty', 'get-location', 'get-command',
+  'get-process', 'get-date', 'get-acl', 'get-help', 'get-member', 'get-module', 'get-variable',
+  'select-string', 'select-object', 'where-object', 'measure-object', 'sort-object',
+  'format-table', 'format-list', 'out-string', 'out-host', 'write-output',
+  'test-path', 'resolve-path', 'join-path', 'split-path', 'compare-object', 'group-object',
+  'convertto-json', 'convertfrom-json', 'get-filehash',
 ]);
 // 解释器带 -e/-c 等价于任意代码执行，不自动放行。
 const INTERPRETER_PROGRAMS = new Set(['node', 'python', 'python3', 'py', 'deno', 'bun']);
@@ -1199,26 +1212,46 @@ function cachedPreExecuteArgs(sessionId, callId) {
 }
 
 /**
- * 低风险命令判定：白名单程序 + 禁止管道/重定向/命令替换 + 敏感规则。
+ * 低风险命令判定：白名单程序 + 禁止重定向/命令替换/脚本块 + 敏感规则。
+ * 允许管道（每段都按白名单校验）与 `&&`/`||`/`;` 串联，覆盖 `git status | head`、
+ * `Get-ChildItem | Where-Object` 这类只读排查命令。
  * 这是启发式而非完整 shell 解析——宁可漏放行（转 Lead），也不误放行。
  */
 function isLowRiskCommand(command, extraPatterns = []) {
   const text = String(command || '').trim();
   if (!text || text.length > 2000) return false;
-  if (/[|<>`]|\$\(|\n|\r/.test(text)) return false;
+  // `<>` 重定向、反引号、$() 命令替换、换行、{} 脚本块（ForEach-Object/Where-Object 的代码）
+  if (/[<>`{}]|\$\(|\n|\r/.test(text)) return false;
   if (DEFAULT_SENSITIVE_COMMAND_PATTERNS.test(text)) return false;
   for (const pattern of extraPatterns) {
     try { if (new RegExp(pattern, 'i').test(text)) return false; } catch { /* 非法正则忽略 */ }
   }
-  for (const seg of text.split(/&&|\|\||;/)) {
-    const part = seg.trim();
-    if (!part) continue;
-    const words = part.split(/\s+/);
-    const prog = words[0].replace(/^.*[\\/]/, '').replace(/\.(exe|cmd|bat|ps1)$/i, '').toLowerCase();
-    if (!SAFE_COMMAND_PROGRAMS.has(prog)) return false;
-    if (INTERPRETER_PROGRAMS.has(prog) && words.slice(1).some((w) => /^(-e|-c|--eval|--command|\/c)$/i.test(w))) return false;
+  // 先按命令分隔符切成简单命令，再按单管道切段；空段（尾随 `|`）视为异常，宁可转 Lead。
+  for (const chain of text.split(/&&|\|\||;/)) {
+    if (!chain.trim()) continue;
+    for (const seg of chain.split('|')) {
+      const part = seg.trim();
+      if (!part) return false;
+      const words = part.split(/\s+/);
+      const prog = words[0].replace(/^.*[\\/]/, '').replace(/\.(exe|cmd|bat|ps1)$/i, '').toLowerCase();
+      if (!SAFE_COMMAND_PROGRAMS.has(prog)) return false;
+      if (INTERPRETER_PROGRAMS.has(prog) && words.slice(1).some((w) => /^(-e|-c|--eval|--command|\/c)$/i.test(w))) return false;
+    }
   }
   return true;
+}
+
+/** 工具名匹配：精确或 `*` 通配（大小写不敏感），用于 autoApproveTools 白名单。 */
+function toolNameMatches(pattern, name) {
+  const target = String(name || '');
+  if (!pattern || !target) return false;
+  if (!pattern.includes('*')) return pattern.toLowerCase() === target.toLowerCase();
+  const re = new RegExp(`^${pattern.split('*').map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`, 'i');
+  return re.test(target);
+}
+
+function isAutoApprovedTool(patterns, ...names) {
+  return (patterns || []).some((pattern) => names.some((name) => toolNameMatches(pattern, name)));
 }
 
 function settleApproval(s, requestId, decision, reason, decidedBy) {
@@ -1295,24 +1328,31 @@ async function onApprovalRequest(s, ctx, req, next) {
   // 同一个请求重复进入（理论上不会）直接拒绝，避免两个 waiter 争同一个 id。
   if (pendingApprovals.has(requestId)) return 'rejected';
 
-  // 低风险命令自动放行：审批噪声主要来自成员跑 npm/node/git 这类命令时的沙箱升级。
-  // 必须同时满足「工具名像 shell」「参数里带 command」「命令通过白名单校验」才放行。
+  // 自动放行（两条独立通道，命中即 allowed-once，镜像 decidedBy:"auto"，不打扰 Lead）：
+  // ① autoApproveTools：显式工具白名单（支持 *），不依赖参数；
+  // ② autoApproveLowRisk：工具名像 shell、参数里带 command、且命令通过白名单校验。
   const cached = sessionId && req?.callId != null ? cachedPreExecuteArgs(sessionId, String(req.callId)) : null;
+  const cachedToolName = String(cached?.name || '');
+  const autoApprove = (autoReason) => {
+    void request(s, '/api/approvals', {
+      method: 'POST',
+      body: {
+        id: requestId, teamId: info.teamId, memberId: info.memberId,
+        sessionId, toolName: info.toolName, reason: autoReason,
+      },
+    }).then(() => request(s, `/api/approvals/${encodeURIComponent(requestId)}/decide`, {
+      method: 'POST', body: { decision: 'allowed', decidedBy: 'auto', reason: autoReason },
+    })).catch(() => { /* 镜像失败不影响放行 */ });
+    return 'allowed-once';
+  };
+  if (isAutoApprovedTool(s.autoApproveTools, cachedToolName, info.toolName)) {
+    return autoApprove(`工具白名单自动放行：${info.toolName || cachedToolName}`);
+  }
   if (s.autoApproveLowRisk && cached) {
     const toolName = String(cached.name || info.toolName || '');
     const command = cached.args?.command;
     if (SHELL_TOOL_RE.test(toolName) && typeof command === 'string' && isLowRiskCommand(command, s.sensitiveCommandPatterns)) {
-      const autoReason = `低风险命令自动放行：${clip(command, 300)}`;
-      void request(s, '/api/approvals', {
-        method: 'POST',
-        body: {
-          id: requestId, teamId: info.teamId, memberId: info.memberId,
-          sessionId, toolName: info.toolName, reason: autoReason,
-        },
-      }).then(() => request(s, `/api/approvals/${encodeURIComponent(requestId)}/decide`, {
-        method: 'POST', body: { decision: 'allowed', decidedBy: 'auto', reason: autoReason },
-      })).catch(() => { /* 镜像失败不影响放行 */ });
-      return 'allowed-once';
+      return autoApprove(`低风险命令自动放行：${clip(command, 300)}`);
     }
   }
 
@@ -1762,10 +1802,194 @@ function boardSetPermission(ctx, agent, preset) {
   }
 }
 
+/**
+ * Prewalk（实验性）：规划完成后，把同一个会话交给执行模型继续跑。
+ *
+ * 走 DSH 的会话级模型选择（`sessionController.agents.selectForNextRequest`，与 Web UI
+ * 里切换模型同一条链路）：只改这一个会话下一次装配用的模型，并让下一轮请求前补一条
+ * "model changed" 通知；会话历史、工具结果、todo、已经改过的文件全部留在原地，
+ * 不新建会话、也不改部署默认模型。失败时保持原模型继续执行，不阻断任务。
+ */
+async function boardApplyPrewalk(ctx, agent, task, settings) {
+  const target = boardRoute(task, settings || {}, 'inprogress');
+  if (!target?.model) return { switched: false, reason: '没有可用的执行模型' };
+  let controller;
+  try { controller = ctx.get('sessionController'); } catch { controller = undefined; }
+  const sessions = controller?.agents;
+  if (!sessions || typeof sessions.selectionFor !== 'function' || typeof sessions.selectForNextRequest !== 'function') {
+    console.warn('[dsh-team] prewalk: 当前 Host 不支持会话内切换模型，保持规划模型继续执行');
+    return { switched: false, reason: 'sessionController 不可用' };
+  }
+  let selection = {
+    ...(target.provider ? { provider: target.provider } : {}),
+    model: target.model,
+    ...(target.reasoningEffort ? { reasoningEffort: target.reasoningEffort } : {}),
+  };
+  const llm = llmOf(ctx);
+  if (llm && typeof llm.resolveCallConfig === 'function') {
+    try {
+      const resolved = await llm.resolveCallConfig(selection);
+      selection = {
+        ...(resolved?.provider ? { provider: resolved.provider } : selection),
+        model: resolved?.model || selection.model,
+        ...(resolved?.reasoningEffort ? { reasoningEffort: resolved.reasoningEffort } : {}),
+      };
+    } catch (err) {
+      console.warn(`[dsh-team] prewalk: 执行模型不可用（${String(err?.message || err)}），保持规划模型继续执行`);
+      return { switched: false, reason: '执行模型不可用' };
+    }
+  }
+  let current;
+  try { current = sessions.selectionFor(agent)?.current; } catch { current = undefined; }
+  if (current && current.model === selection.model
+    && (current.provider || undefined) === (selection.provider || undefined)
+    && (current.reasoningEffort || undefined) === (selection.reasoningEffort || undefined)) {
+    return { switched: false, reason: '已经是执行模型' };
+  }
+  try {
+    sessions.selectForNextRequest(agent, selection);
+  } catch (err) {
+    console.warn(`[dsh-team] prewalk: 切换模型失败（${String(err?.message || err)}），保持规划模型继续执行`);
+    return { switched: false, reason: '切换模型失败' };
+  }
+  console.log(`[dsh-team] prewalk: 任务 ${task.id} 已落到实现，会话 ${String(agent.id)} 切到 ${selection.provider || '默认'}/${selection.model} 继续执行`);
+  return { switched: true, selection };
+}
+
+/**
+ * 触发 prewalk 交接的「实现动作」。
+ *
+ * 对齐官方语义：不在计划提交时切换，而是等规划模型在同一条会话里落下第一笔实现
+ * 动作之后（首个 edit/write 类工具结果；团队任务则是 Lead 的首次 team_task 派发），
+ * 再把剩下的活交给执行模型，避免便宜模型接手后才发现计划不可执行。
+ */
+const PREWALK_EDIT_TOOLS = new Set(['write', 'edit', 'str_replace_editor']);
+const PREWALK_DISPATCH_TOOLS = new Set(['team_task']);
+
+/** 执行阶段已武装、等待首次实现动作的会话：sessionId → { task, settings }。 */
+const prewalkArmed = new Map();
+
+function boardPrewalkWantsTool(name) {
+  return PREWALK_EDIT_TOOLS.has(name) || PREWALK_DISPATCH_TOOLS.has(name);
+}
+
+/** 会话里是否已经出现过实现动作（插件重启 / 会话恢复后据此立即补一次交接）。 */
+function boardSessionStartedImplementation(agent) {
+  try {
+    const session = agent?.session;
+    if (!session || typeof session.eventAt !== 'function' || typeof session.seq !== 'number') return false;
+    const callIds = new Set();
+    for (let seq = 0; seq < session.seq; seq += 1) {
+      const event = session.eventAt(seq);
+      if (!event) continue;
+      if (event.type === 'tool/call' && boardPrewalkWantsTool(String(event.data?.name || ''))) {
+        callIds.add(String(event.data?.callId || ''));
+      } else if (event.type === 'tool/result') {
+        const ok = event.data?.message?.isError !== true;
+        if (ok && callIds.has(String(event.data?.message?.toolCallId || ''))) return true;
+      }
+    }
+    return false;
+  } catch { return false; }
+}
+
+/**
+ * 交接 steering：只说「继续」。
+ * 计划、todo、已读文件与已做改动都在会话上下文里，任何附加清单都会诱导接手模型
+ * 逐条核对、重新读文件；让它接着上文做完即可。
+ */
+function boardPrewalkSteering() {
+  return '继续';
+}
+
+/** 交接：切到执行模型并注入一条简短的继续指令；一次任务只做一次。 */
+async function boardHandoffPrewalk(ctx, agent, task, settings) {
+  const sessionId = agent?.id != null ? String(agent.id) : null;
+  if (sessionId) prewalkArmed.delete(sessionId);
+  const result = await boardApplyPrewalk(ctx, agent, task, settings || {});
+  if (!result?.switched) return result;
+  const steering = boardPrewalkSteering();
+  try {
+    if (typeof agent.steer === 'function') agent.steer(boardUserMessage(steering));
+    else if (typeof agent.followup === 'function') agent.followup(boardUserMessage(steering));
+    console.log(`[dsh-team] prewalk: 继续指令已注入会话 ${sessionId}`);
+  } catch (err) {
+    console.warn(`[dsh-team] prewalk: 注入继续指令失败（${String(err?.message || err)}）`);
+  }
+  return result;
+}
+
+/**
+ * 武装 prewalk：记录待交接，等首个实现动作再切模型。
+ * 恢复/重启时如果实现动作已经发生过，直接交接，避免规划模型继续用着贵模型干完。
+ */
+async function armBoardPrewalk(ctx, agent, task, settings) {
+  const sessionId = agent?.id != null ? String(agent.id) : null;
+  if (!sessionId || !agent || !task?.prewalk) return false;
+  if (boardSessionStartedImplementation(agent)) {
+    await boardHandoffPrewalk(ctx, agent, task, settings);
+    return true;
+  }
+  if (!prewalkArmed.has(sessionId)) prewalkArmed.set(sessionId, { task, settings: settings || {} });
+  return false;
+}
+
 function boardPromptModels(task) {
   return Array.isArray(task.teamModels) && task.teamModels.length
     ? task.teamModels.map((m) => (typeof m === 'string' ? m : `${m.provider ? m.provider + '/' : ''}${m.model}`)).join('\n')
     : '不限制';
+}
+
+// 看板任务的 git 分支：任务开启分支时，spawn 前先切好（不存在就从当前 HEAD 新建）。
+// git 是可选能力：目录不是仓库 / 没装 git / 切换失败都不阻断任务，只在 prompt 里降级说明。
+function gitRun(cwd, args) {
+  return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
+function ensureBoardGitBranch(task) {
+  const branch = String(task?.gitBranch || '').trim();
+  if (!branch) return { branch: null, ok: true };
+  const cwd = String(task.workspacePath || '').trim();
+  if (!cwd) return { branch, ok: false, reason: '工作区路径为空' };
+  try {
+    if (gitRun(cwd, ['rev-parse', '--is-inside-work-tree']).trim() !== 'true') {
+      return { branch, ok: false, reason: '工作区不是 git 仓库' };
+    }
+  } catch {
+    return { branch, ok: false, reason: '工作区不是 git 仓库，或本机没有 git' };
+  }
+  try {
+    const cur = gitRun(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']).trim();
+    if (cur === branch) return { branch, ok: true };
+  } catch { /* 空仓库没有 HEAD，继续尝试新建分支 */ }
+  let exists = false;
+  try {
+    gitRun(cwd, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
+    exists = true;
+  } catch { exists = false; }
+  try {
+    gitRun(cwd, exists ? ['checkout', branch] : ['checkout', '-b', branch]);
+    return { branch, ok: true, created: !exists };
+  } catch (err) {
+    const msg = String(err?.stderr || err?.message || err).trim().split(/\r?\n/).filter(Boolean).slice(-2).join(' ');
+    console.warn(`[dsh-team] board git branch ${branch} checkout failed: ${msg}`);
+    return { branch, ok: false, reason: msg || 'git 切分支失败' };
+  }
+}
+
+// prompt 里的分支说明：正常时一句话告知「已在目标分支上」；失败时允许自行补救但不强制。
+function boardBranchLines(task) {
+  const branch = String(task?.gitBranch || '').trim();
+  if (!branch) return [];
+  const st = task.gitBranchState;
+  if (!st || st.ok) {
+    return [`git 分支：${branch}（会话开始前已切好，直接在该分支上改文件；不要自行 checkout 其他分支）`];
+  }
+  return [
+    `git 分支：目标是 ${branch}，但自动切分支失败（${st.reason || '未知原因'}）。`
+    + `可以用 shell 执行 git checkout -b ${branch}（已存在则 git checkout ${branch}）后继续；`
+    + '如果仍失败，就在当前分支继续完成工作，并在最终汇报里明确说明分支未切换。',
+  ];
 }
 
 function boardPlanningPrompt(task, settings) {
@@ -1784,6 +2008,7 @@ function boardPlanningPrompt(task, settings) {
       : '规划完成后不要开始执行；调度器会在执行槽位空出后，在同一会话里让你继续。',
     '',
     `工作区：${task.workspacePath}`,
+    ...boardBranchLines(task),
     '任务描述：',
     task.description || '(无)',
     '',
@@ -1863,12 +2088,14 @@ function boardLeadPrompt(task, sameSession) {
   if (sameSession) {
     return [
       `现在开始执行「${task.title}」。计划就在同一会话的上文里，不要重复输出计划。`,
+      ...boardBranchLines(task),
       '',
       ...rules,
     ].join('\n');
   }
   const lines = [
     `你是任务「${task.title}」的${useTeam ? ' Lead' : '执行 Agent'}。工作区：${task.workspacePath}`,
+    ...boardBranchLines(task),
     needPlan ? '以下是规划会话产出的计划，现在开始执行。' : '本任务不需要规划，直接开始执行。',
     '',
     '任务描述：',
@@ -1951,6 +2178,10 @@ async function spawnBoardSession(s, ctx, item) {
   // 以及 new 模式完成后用户追问，都不能再新建会话。
   const sameSession = kind === 'inprogress' && !!task.leadSessionId;
 
+  // 任务指定 git 分支时，在拉起/复用任何会话之前切好：分支是仓库级状态，会话 cwd 不变，
+  // 同会话续跑也直接落在目标分支上。结果只挂到本地 task 供本轮 prompt 文案使用。
+  task.gitBranchState = ensureBoardGitBranch(task);
+
   // 同会话执行：复用规划会话，只切权限 + 投执行 prompt。
   if (sameSession) {
     const sessionId = String(task.leadSessionId);
@@ -1974,6 +2205,10 @@ async function spawnBoardSession(s, ctx, item) {
     rec.sawRunning = false;
     boardSessions.set(sessionId, rec);
     boardSessionIds.add(sessionId);
+    // prewalk：只武装交接。规划模型先在同一会话里落下第一笔成功的实现动作，
+    // 再由 tools/execute 钩子切模型并注入「继续」；实现动作已经发生（恢复/重启）
+    // 则 armBoardPrewalk 会立即交接，不必等下一笔改动。
+    if (task.prewalk) await armBoardPrewalk(ctx, agent, task, settings);
     // 用户追问触发 done→inprogress 时，真实用户消息已经在会话里；
     // 这里只恢复状态与权限，不再注入重复的执行 prompt。
     if (!task.resumed) agent.followup(boardUserMessage(boardLeadPrompt(task, true)));
@@ -2314,26 +2549,31 @@ function buildTools(s, ctx) {
 
   tools.push({
     name: 'team_models',
-    description: 'List the model routes enabled for this team: provider id, model id, display name, note, and modalities. Use it before team_spawn when a task should run on a different model or reasoning effort than the Lead — a cheap/fast route for mechanical work, a strong-reasoning route for architecture, debugging, or review. Only the user-enabled subset is listed; the panel curates it. Pass a listed pair to team_spawn({ agentProvider, model, reasoningEffort }).',
+    description: 'List the model routes enabled for this team: provider id, model id, display name, note, providerNote (the vendor-level strength the user wrote, e.g. "适合逻辑处理" / "适合做设计"), and modalities. Use it before team_spawn when a task should run on a different model or reasoning effort than the Lead — a cheap/fast route for mechanical work, a strong-reasoning route for architecture, debugging, or review. Only the user-enabled subset is listed; the panel curates it. Pass a listed pair to team_spawn({ agentProvider, model, reasoningEffort }).',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {},
     },
-    output: jsonOutput('{ asOf, total, models: [{ provider, model, name, description, note, modalities, efforts?, defaultEffort? }], hint? }'),
+    output: jsonOutput('{ asOf, total, models: [{ provider, model, name, description, note, providerNote, modalities, efforts?, defaultEffort? }], hint? }'),
     isConcurrencySafe: () => true,
     async execute() {
       let cat = null;
       try { cat = await request(s, '/api/llm/catalog'); } catch { /* catalog unavailable */ }
+      // 厂商级备注（用户在面板分组头写的「这个厂商擅长什么」）随每个 route 一起下发，
+      // 让模型在派活时能按「擅长逻辑 / 擅长设计」这类语义选厂商，而不只看模型 id。
+      const providerNotes = new Map((cat?.providers || []).map((p) => [p.id, p.note || null]));
       const all = cat ? (cat.providers || []).flatMap((p) => p.models || []) : [];
       const models = all.filter((m) => m.enabled).map((m) => {
         // 只报用户允许的 effort；allowedEfforts=null 表示全部允许。未声明 efforts 的 route 不报该字段。
         const effortIds = Array.isArray(m.efforts) ? m.efforts.map((e) => e.id) : [];
         const allowed = Array.isArray(m.allowedEfforts) ? effortIds.filter((id) => m.allowedEfforts.includes(id)) : effortIds;
+        const providerNote = providerNotes.get(m.provider);
         return {
           provider: m.provider,
           model: m.model,
           name: m.name,
+          ...(providerNote ? { providerNote } : {}),
           ...(m.description ? { description: m.description } : {}),
           ...(m.note ? { note: m.note } : {}),
           ...(m.modalities ? { modalities: m.modalities } : {}),
@@ -2341,7 +2581,8 @@ function buildTools(s, ctx) {
         };
       });
       const hint = models.length
-        ? '在 team_spawn 里用 agentProvider + model；efforts 是该 route 允许派发的 reasoningEffort 列表（省略时只在 route 不变时继承 Lead 的 effort，被禁止的 effort 会被拒绝）。'
+        ? '在 team_spawn 里用 agentProvider + model；providerNote 是该厂商整体强项（用户填写的厂商备注），note 是单模型差异；'
+          + 'efforts 是该 route 允许派发的 reasoningEffort 列表（省略时只在 route 不变时继承 Lead 的 effort，被禁止的 effort 会被拒绝）。'
         : '没有启用的模型路由：请让用户在面板「模型路由」页勾选需要的 provider/model。';
       return {
         asOf: cat?.asOf || new Date().toISOString(),
@@ -2451,6 +2692,34 @@ function buildTools(s, ctx) {
         staleMembers: st.staleMembers,
         degraded: st.degraded,
       };
+    },
+  });
+
+  tools.push({
+    name: 'team_task_get',
+    description: 'Read ONE DAG task of a team instead of the whole status: subject/status/assignee/attempts/maxAttempts/failurePolicy, its plan and acceptance, plus ledger node info (dependsOn, ready, blocked, blockers). Use it to confirm a task was dispatched, to check whether it is blocked on a dependency or a member, and to decide whether to retry or re-dispatch it. teamId is optional when the caller is already bound to that team.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        taskId: { type: 'string', description: 'Task id returned by team_task (task_…).' },
+        teamId: { type: 'string', description: 'Optional ownership check; inferred from the caller session when omitted.' },
+      },
+      required: ['taskId'],
+    },
+    output: jsonOutput('{ task, node }'),
+    isConcurrencySafe: () => true,
+    async execute(args) {
+      const task = await request(s, `/api/tasks/${encodeURIComponent(args.taskId)}`);
+      const teamId = String(args.teamId || task.teamId || '');
+      if (!teamId) throw new Error('team_task_get 无法确定 teamId：请显式传入');
+      if (args.teamId && String(task.teamId) !== String(args.teamId)) {
+        throw new Error(`task ${task.id} 不属于 team ${args.teamId}`);
+      }
+      // DAG 节点提供依赖/就绪/阻塞信息，task 行本身不存这些派生状态。
+      const dag = await request(s, `/api/dag${qs({ team: teamId })}`).catch(() => null);
+      const node = dag?.nodes?.find((n) => n.taskId === task.id) || null;
+      return { task, node };
     },
   });
 
@@ -3180,6 +3449,15 @@ function buildTools(s, ctx) {
       // 这里只切权限、改 phase，让同一个回合直接继续执行（不再补发第二条 prompt）。
       if (task?.status === 'inprogress') {
         if (task.leadPermissionPreset) boardSetPermission(ctx, rec?.handle?.agent || exec?.agent, task.leadPermissionPreset);
+        // prewalk：这里只武装、不切模型。规划模型先按计划落下第一笔实现动作
+        // （首次 edit/write 或首次 team_task 派发），确认计划可执行后再交给执行模型。
+        if (task.prewalk) {
+          const boardSettings = await request(
+            s,
+            `/api/board/settings?workspaceId=${encodeURIComponent(task.workspaceId)}`,
+          ).catch(() => null);
+          await armBoardPrewalk(ctx, rec?.handle?.agent || exec?.agent, task, boardSettings || {});
+        }
         if (rec) { rec.phase = 'execution'; rec.sawRunning = false; }
       } else if (rec) {
         rec.phase = 'planned';
@@ -3217,6 +3495,98 @@ function buildTools(s, ctx) {
         method: 'POST',
         body: { sessionId, status: args.status, summary: args.summary || null },
       });
+    },
+  });
+
+  tools.push({
+    name: 'board_task_create',
+    description: 'Create a new workspace-board task card (the user-facing queue the board scheduler picks up) — use it for follow-up work the current task uncovered but should not do itself. This is NOT a team DAG task: team_* tools stay inside the current team. workspaceId defaults to the caller own board task, then to the only registered workspace; pass it when either is ambiguous. Pass gitBranch to run the new task on a git branch ("" = auto `task/<id>`, omitted = no branch).',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        title: { type: 'string', description: 'Card title; the card is created in todo.' },
+        description: { type: 'string', description: 'Full instructions for the session that will run this card.' },
+        workspaceId: { type: 'string', description: 'Board workspace id; inferred from the caller board task or the single registered workspace.' },
+        workspacePath: { type: 'string', description: 'Workspace path; defaults to the registered workspace path.' },
+        auto: { type: 'boolean', description: 'Queue immediately (default false: stays in todo until started).' },
+        needPlan: { type: 'boolean', description: 'Run a planning session first (default true).' },
+        useTeam: { type: 'boolean', description: 'Let the Lead orchestrate a team (default true).' },
+        executionMode: { type: 'string', enum: ['same', 'new'], description: 'same = plan and execute in one session; new = execute in a fresh session.' },
+        gitBranch: { type: 'string', description: 'Git branch to switch to before spawning; "" auto-generates task/<id>.' },
+      },
+      required: ['title'],
+    },
+    output: jsonOutput('{ task }'),
+    async execute(args, exec) {
+      const sessionId = exec?.agent?.id != null ? String(exec.agent.id) : null;
+      let workspaceId = args.workspaceId ? String(args.workspaceId) : null;
+      let workspacePath = args.workspacePath ? String(args.workspacePath) : null;
+      // 优先沿用调用者自己那张看板卡的工作区：它一定和当前会话的 cwd 一致。
+      if (!workspaceId && sessionId) {
+        const cur = await request(s, `/api/board/by-session/${encodeURIComponent(sessionId)}`).catch(() => null);
+        if (cur && cur.ok !== false && cur.id) {
+          workspaceId = cur.workspaceId;
+          workspacePath = workspacePath || cur.workspacePath;
+        }
+      }
+      if (!workspaceId) {
+        const ws = await request(s, '/api/workspaces').catch(() => null);
+        const items = Array.isArray(ws?.items) ? ws.items : [];
+        if (items.length === 1) {
+          workspaceId = items[0].id;
+          workspacePath = workspacePath || items[0].path;
+        }
+      }
+      if (!workspaceId) throw new Error('board_task_create 需要 workspaceId：当前会话不属于任何看板任务，且工作区不唯一');
+      const task = await request(s, '/api/board/tasks', {
+        method: 'POST',
+        body: {
+          workspaceId,
+          ...(workspacePath ? { workspacePath } : {}),
+          title: args.title,
+          description: args.description || '',
+          ...(args.auto !== undefined ? { auto: args.auto } : {}),
+          ...(args.needPlan !== undefined ? { needPlan: args.needPlan } : {}),
+          ...(args.useTeam !== undefined ? { useTeam: args.useTeam } : {}),
+          ...(args.executionMode !== undefined ? { executionMode: args.executionMode } : {}),
+          ...(args.gitBranch !== undefined ? { gitBranch: args.gitBranch } : {}),
+        },
+      });
+      return { task };
+    },
+  });
+
+  tools.push({
+    name: 'board_task_get',
+    description: 'Read the current workspace-board task of this session (status/planSummary/lastError/gitBranch/sessions) when taskId is omitted, or any board card by taskId. Cheap and safe to call every turn: it returns the status snapshot, not the whole plan body. Use it to decide whether to keep working, wait, or report via board_task_status.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        taskId: { type: 'string', description: 'Board task id (bt_…); omit to read the caller own card.' },
+      },
+    },
+    output: jsonOutput('{ task }'),
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      const pick = (t) => ({
+        id: t.id, workspaceId: t.workspaceId, title: t.title, status: t.status,
+        executionMode: t.executionMode, needPlan: t.needPlan, useTeam: t.useTeam,
+        gitBranch: t.gitBranch || null,
+        planSummary: t.planSummary || null, lastError: t.lastError || null,
+        planningSessionId: t.planningSessionId || null, leadSessionId: t.leadSessionId || null,
+        teams: t.teams || [], archivedAt: t.archivedAt || null, updatedAt: t.updatedAt,
+      });
+      if (args.taskId) {
+        const task = await request(s, `/api/board/tasks/${encodeURIComponent(args.taskId)}`);
+        return { task: pick(task) };
+      }
+      const sessionId = exec?.agent?.id != null ? String(exec.agent.id) : null;
+      if (!sessionId) throw new Error('board_task_get 需要 taskId，或从看板会话里调用');
+      const found = await request(s, `/api/board/by-session/${encodeURIComponent(sessionId)}`).catch(() => null);
+      if (!found || found.ok === false || !found.id) throw new Error('当前会话没有关联的看板任务');
+      return { task: pick(found) };
     },
   });
 
@@ -3527,7 +3897,7 @@ export function apply(ctx, config) {
     const disposers = buildTools(s, ctx).map((tool) => ctx.tools.register(tool));
     return () => {
       for (const dispose of disposers.reverse()) { try { dispose(); } catch { /* ignore */ } }
-      leadByTeam.clear(); teamCache.clear(); sessionMember.clear(); dispatching.clear(); teamBySession.clear(); contextReportAt.clear();
+      leadByTeam.clear(); teamCache.clear(); sessionMember.clear(); dispatching.clear(); teamBySession.clear(); contextReportAt.clear(); prewalkArmed.clear();
       for (const timer of idleTimers.values()) clearTimeout(timer);
       for (const timer of startTimers.values()) clearTimeout(timer);
       idleTimers.clear(); startTimers.clear(); agentStatusBySession.clear(); lastReplyBySession.clear();
@@ -3575,7 +3945,7 @@ export function apply(ctx, config) {
 
   // 审批分类需要工具参数，但 approval/request 只带 toolName/callId：
   // 在 pre-execute 里按 callId 缓存成员这一轮的入参（只记成员，带 TTL），供低风险命令自动放行判定。
-  if (s.autoApproveLowRisk) {
+  if (s.autoApproveLowRisk || s.autoApproveTools.length) {
     ctx.on('tools/pre-execute', (exec, next) => {
       try { rememberPreExecuteArgs(exec); } catch { /* ignore */ }
       return typeof next === 'function' ? next() : undefined;
@@ -3603,6 +3973,34 @@ export function apply(ctx, config) {
     fileChangeHook.dshTeamHook = 'file-change';
     ctx.on('tools/execute', fileChangeHook);
   }
+
+  // prewalk（实验性）：先在原模型上做第一笔实现动作，再交接同一条会话。
+  // 只有武装过的看板会话参与；交接失败不影响工具结果，也不阻断任务。
+  const prewalkHook = async (exec, next) => {
+    const result = await next();
+    try {
+      const sessionId = exec?.agent?.id != null ? String(exec.agent.id) : null;
+      const entry = sessionId ? prewalkArmed.get(sessionId) : null;
+      if (!entry) return result;
+      const name = String(exec?.name || '');
+      // 任务收工（done/failed）时清掉未触发的武装，避免会话结束后残留。
+      if (name === 'board_task_status' && exec?.arguments?.status !== 'inprogress') {
+        prewalkArmed.delete(sessionId);
+        return result;
+      }
+      if (!boardPrewalkWantsTool(name)) return result;
+      // 工具报错（参数错、权限拒绝等）不算「已经落到实现」：保持武装，等下一次
+      // 成功的 edit/write（或 team_task）再交接，避免接手模型先替规划模型收拾失败。
+      if (result && (result.isError === true || result.error != null)) return result;
+      prewalkArmed.delete(sessionId);
+      await boardHandoffPrewalk(ctx, exec.agent, entry.task, entry.settings);
+    } catch (err) {
+      console.warn(`[dsh-team] prewalk: 交接失败（${String(err?.message || err)}）`);
+    }
+    return result;
+  };
+  prewalkHook.dshTeamHook = 'prewalk';
+  ctx.on('tools/execute', prewalkHook);
 
   // 成员用内置 todo_write 维护计划（没建 team_todo）时，把 DSH 的 `todos` 投影镜像成
   // sidecar 计划步骤：面板/团队校验能看到真实 plan，todo 勾完计划步骤也跟着完成。

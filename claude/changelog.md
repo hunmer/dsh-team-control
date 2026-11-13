@@ -2,6 +2,13 @@
 
 > 只记录索引/文档的生成与更新，不记录产品 Changelog。倒序，最多 5 条。
 
+## 2026-11-13 · 厂商备注 / git 分支 / agent 侧任务工具
+
+- schema v19：`llm_provider.note`（厂商级备注，与 `llm_route.note` 分表，目录同步只更新 name/source/error 不覆盖）、`board_task.git_branch`；新增 `PATCH /api/llm/providers`，`GET /api/llm/catalog` 的 provider 带 `note`；`team_models` 每个模型附带 `providerNote`。面板模型路由页在厂商分组头加厂商备注输入（例如 gpt 适合逻辑处理 / claude 适合做设计）。
+- 看板任务可指定 git 分支：`gitBranch: ''` 自动生成 `task/<任务短号>`；插件在 spawn 会话前 `rev-parse --is-inside-work-tree` → 已在目标分支跳过 → 存在则 checkout，否则 `checkout -b`，并把「git 分支：xxx（已切好）」注入规划/执行 prompt；非 git 仓库、无 git 或切换失败只告警降级，不阻断任务。新建/编辑对话框加「开始前切到独立 git 分支」开关 + 分支名，TaskPanel 展示分支。
+- 插件新增 3 个工具（共 20 个 `team_*` + 4 个 `board_*`）：`team_task_get`（单任务状态 + DAG 节点）、`board_task_create`（成员/Lead 直接在会话里建看板任务，workspaceId 可反查）、`board_task_get`（按 id 或当前会话取看板任务）。
+- 文档：`docs/CONTRACT.md`、`claude/public-interfaces.md`、`claude/data-model.md`、根 `CLAUDE.md`、`skills/dsh-agent-team/SKILL.md` 同步；新增测试 `tests/llm-provider-note.mjs`、`tests/board-git-branch.mjs`、`tests/plugin-board-agent-tools.mjs`。
+
 ## 2026-11-11 · 构建产物与历史清理
 
 - 删除未引用的 `src/web/legacy/`（旧 vanilla 面板备份），更新 `src/web-ui/README.md` 与 `src/web-ui/claude/dependencies-and-config.md`。
@@ -31,10 +38,3 @@
 - `claude/module-responsibilities.md` / `claude/entrypoints.md` / `claude/overview.md` / `claude/public-interfaces.md` / `claude/conventions.md`：清理 v2 已移除的 worker/broker 残留描述，补 `/api/board/**` 路由与 ADR-012，CLI `approve`→`approvals`。
 - `src/CLAUDE.md`、`dsh-plugin/CLAUDE.md`：版本号与扫描状态同步。
 
-## 2026-11-01 · 首次生成
-
-- 新增根 [`CLAUDE.md`](../CLAUDE.md)（轻量索引）+ `claude/` 11 份详情文件。
-- 新增 5 个模块索引：`src/`、`src/web-ui/`、`dsh-plugin/`、`dsh-plugin-ui/`、`tests/`。
-- 扫描依据：`docs/CONTRACT.md`（405 行）全文、`src/*.mjs` 全部、`bin/dsh-team.mjs`、`dsh-plugin/index.js` 结构、`dsh-plugin-ui/{index,client}.js` 结构、`src/web-ui/src` 结构、`tests/lib/harness.mjs` 导出、`docs/adr/` 11 份标题、`prd/` 摘要。
-- 未覆盖：`src/web-ui/src/views/Home.tsx` 与 `store.tsx` 未逐行读；`docs/handoffs/` 正文未展开；`src/web/assets` 产物内容不读。
-- 发现待修正：README 与 `skills/dsh-agent-team/SKILL.md` 仍写「11 个 `team_*` 工具」，实际为 12 个（含 `team_todo`）。

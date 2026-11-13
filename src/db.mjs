@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const SCHEMA_VERSION = 17;
+export const SCHEMA_VERSION = 19;
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -213,6 +213,8 @@ CREATE TABLE IF NOT EXISTS file_state (
 -- 面板据此勾选可用项；sidecar 不持有任何 LLM 客户端或凭据。
 CREATE TABLE IF NOT EXISTS llm_provider (
   provider TEXT PRIMARY KEY, name TEXT,
+  -- 厂商级备注（用户手填）：该厂商整体擅长什么，例如「擅长逻辑推理」「擅长前端设计」
+  note TEXT,
   source TEXT NOT NULL DEFAULT 'live', error TEXT, synced_at TEXT NOT NULL
 );
 
@@ -258,6 +260,9 @@ CREATE TABLE IF NOT EXISTS board_task (
   execution_mode TEXT NOT NULL DEFAULT 'same',
   need_plan INTEGER NOT NULL DEFAULT 1,
   use_team INTEGER NOT NULL DEFAULT 1,
+  prewalk INTEGER NOT NULL DEFAULT 0,
+  -- 任务执行前要切到的 git 分支名；NULL/空 = 不切分支（v19）
+  git_branch TEXT,
   priority INTEGER NOT NULL DEFAULT 0,
   position INTEGER NOT NULL DEFAULT 0,
   plan_provider TEXT, plan_model TEXT, plan_reasoning_effort TEXT,
@@ -349,7 +354,10 @@ export function openDb(file) {
   ensureColumn(db, 'board_task', 'resumed', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'board_task', 'need_plan', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumn(db, 'board_task', 'use_team', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn(db, 'board_task', 'prewalk', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'board_task', 'force_start', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'board_task', 'git_branch', 'TEXT');
+  ensureColumn(db, 'llm_provider', 'note', 'TEXT');
   ensureColumn(db, 'board_settings', 'show_task_sessions', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumn(db, 'preset_delete', 'attempts', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'preset_delete', 'last_error', 'TEXT');

@@ -20,17 +20,23 @@
   任务；复活成功时事件带 `recoveredFrom:'failed'`。看板会话在 `planning` 阶段收到 `user/message` 不再
   上报 `inprogress`，避免把 `failed` 提前翻走。
 - **低风险命令自动放行**：插件在 `tools/pre-execute` 按 `callId` 缓存成员工具入参（5 分钟 TTL、上限 500），
-  审批到来时若工具名像 shell、参数含字符串 `command`，且命令满足「程序白名单 + 无管道/重定向/命令替换 +
+  审批到来时若工具名像 shell、参数含字符串 `command`，且命令满足「程序白名单 + 无重定向/命令替换/脚本块 +
   不命中敏感规则」，直接返回 `allowed-once`，并镜像 `decidedBy:"auto"`，不通知 Lead。
   判定是启发式，宁可漏放行（转 Lead）也不误放行；配置键 `autoApproveLowRisk`（默认 `true`）与
   `sensitiveCommandPatterns`（追加正则，默认 `[]`）。
+- **工具级白名单**（2026-11-13 修订）：新增 `autoApproveTools`（默认 `[]`，支持 `*` 通配）。命中工具名的
+  审批不依赖参数直接放行，用于只读 MCP 发现/状态类工具；同时低风险命令判定允许只读管道
+  （`git status | head`、`Get-ChildItem | Select-Object`），每段仍按程序白名单校验。
 - **运行中热改权限**：`team_member({action:"update"})` 在成员 `running/provisioning/blocked` 时允许只改
   `role` / `permissionPreset`；sidecar 放行 hot-only PATCH，插件对 live session 直接
   `permissionPresets.set`。换模型/上下文/组合仍要求先 `interrupt`。
 
 ## 权衡
 
-- 自动放行依赖 `pre-execute` 能拿到参数；拿不到、工具名不像 shell、命令含管道/重定向时一律退回人工审批。
+- 自动放行依赖 `pre-execute` 能拿到参数；拿不到、工具名不像 shell、命令含重定向/命令替换/脚本块时
+  一律退回人工审批。只读管道按段校验，任一段程序不在白名单即退回；这条通道仍需工具名像 shell。
+- 工具级白名单 `autoApproveTools` 显式配置后才生效（默认空），且只放行审批、不改变沙箱边界；
+  误配 `*` 等于对成员关闭审批，属使用者责任。
 - 白名单里的解释器（node/python 等）带 `-e/-c` 视为任意代码执行，不自动放行；`npm install` 等仍会放行，
   因为其脚本执行属于常规开发路径，且命令本身不命中敏感规则。
 - 热改权限只对 DSH 预设服务可用的宿主生效；服务缺失时返回既有 warning，不阻断任务。

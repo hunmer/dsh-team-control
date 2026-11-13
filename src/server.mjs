@@ -241,6 +241,10 @@ export function createRoutes(core) {
       need(ctx.body.provider, 'provider'), need(ctx.body.model, 'model'),
       { enabled: ctx.body.enabled, note: ctx.body.note, allowedEfforts: ctx.body.allowedEfforts },
     )],
+    // 厂商级备注：面板分组头写「这个厂商整体擅长什么」，与模型级 note 并存
+    ['PATCH', /^\/api\/llm\/providers$/, async (ctx) => C.llm.setProvider(
+      need(ctx.body.provider, 'provider'), { note: ctx.body.note },
+    )],
 
     // audit / report
     ['GET', /^\/api\/audit$/, async (ctx) => ({ asOf: nowIso(), items: C.auditList(need(qs(ctx.url).get('team'), 'team'), qs(ctx.url).get('limit') || 200) })],

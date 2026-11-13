@@ -15,7 +15,7 @@ flowchart LR
   Lead["Lead Agent<br/>DSH 主会话"]
 
   subgraph Host["dsh-plugin · Host 插件（进程内）"]
-    Tools["19 个 team_*<br/>2 个 board_*"]
+    Tools["20 个 team_*<br/>4 个 board_*"]
     Life["sidecar 生命周期"]
     Fwd["审批 / trace / 产物转发"]
   end
@@ -174,7 +174,7 @@ team_report  { teamId: "team_x1" }                  // 导出 Markdown 运行报
 | `src/server.mjs` | REST + SSE + 静态面板（仅回环监听） |
 | `src/web/` | 面板构建产物（`panel.html` + `assets/`） |
 | `src/web-ui/` | 面板源码（React + coss ui，含 Trace 瀑布） |
-| `dsh-plugin/` | DSH Host bundle：19 个 `team_*` + 2 个 `board_*` 工具 + sidecar 生命周期 + 子会话成员调度 + 审批转发 |
+| `dsh-plugin/` | DSH Host bundle：20 个 `team_*` + 4 个 `board_*` 工具 + sidecar 生命周期 + 子会话成员调度 + 审批转发 |
 | `dsh-plugin-ui/` | GUI 看板 bundle：better-sidebar 页签 / 侧栏入口 |
 | `skills/dsh-agent-team/` | 给模型看的调用配方 skill |
 | `tests/` | `ac-*.mjs` 验收脚本（AC-01 ~ AC-19）+ harness + `run-all.mjs` |

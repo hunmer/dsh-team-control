@@ -49,6 +49,8 @@ interface LlmModel {
 interface LlmProvider {
   id: string;
   name: string;
+  /** 厂商级备注：这个厂商整体擅长什么（gpt 适合逻辑处理、claude 适合做设计…） */
+  note?: string | null;
   source?: string;
   error?: string | null;
   models: LlmModel[];
@@ -67,6 +69,8 @@ export function ModelsView() {
   const { toast } = usePanel();
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [notes, setNotes] = useState<Record<string, string>>({});
+  // 厂商级备注单独一份草稿：provider 行不会随模型行复用 notes 的 key。
+  const [providerNotes, setProviderNotes] = useState<Record<string, string>>({});
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -75,6 +79,7 @@ export function ModelsView() {
   const apply = (next: Catalog) => {
     setCatalog(next);
     setNotes(Object.fromEntries(next.providers.flatMap((p) => p.models.map((m) => [keyOf(m), m.note || '']))));
+    setProviderNotes(Object.fromEntries(next.providers.map((p) => [p.id, p.note || ''])));
   };
 
   const load = async () => {
@@ -167,6 +172,25 @@ export function ModelsView() {
     void mutate(model, { note: value });
   };
 
+  /** 厂商级备注：整个 provider 擅长什么，模型行 note 仍描述单模型差异。 */
+  const saveProviderNote = async (provider: LlmProvider) => {
+    const value = providerNotes[provider.id] ?? '';
+    if (value === (provider.note ?? '')) return;
+    const key = 'provider:' + provider.id;
+    setBusy((prev) => new Set(prev).add(key));
+    try {
+      await api('/api/llm/providers', { method: 'PATCH', body: { provider: provider.id, note: value } });
+      setCatalog((prev) => prev && {
+        ...prev,
+        providers: prev.providers.map((p) => (p.id === provider.id ? { ...p, note: value || null } : p)),
+      });
+    } catch (err) {
+      toast('保存厂商备注失败：' + (err instanceof Error ? err.message : String(err)), 'error');
+    } finally {
+      setBusy((prev) => { const next = new Set(prev); next.delete(key); return next; });
+    }
+  };
+
   /** 切换某个思考强度是否允许派发给该 route；全选时折回 null（不限）。 */
   const toggleEffort = (model: LlmModel, id: string) => {
     const ids = (model.efforts || []).map((e) => e.id);
@@ -179,10 +203,14 @@ export function ModelsView() {
     const q = query.trim().toLowerCase();
     if (!catalog) return [];
     return catalog.providers
-      .map((p) => ({
-        ...p,
-        models: p.models.filter((m) => !q || [p.id, p.name, m.model, m.name, m.description || '', m.note || ''].some((v) => v.toLowerCase().includes(q))),
-      }))
+      // 命中 provider 名称/备注时展示整组模型，否则按模型字段过滤
+      .map((p) => {
+        const providerHit = !q || [p.id, p.name, p.note || ''].some((v) => v.toLowerCase().includes(q));
+        return {
+          ...p,
+          models: p.models.filter((m) => providerHit || [m.model, m.name, m.description || '', m.note || ''].some((v) => v.toLowerCase().includes(q))),
+        };
+      })
       // 没有模型的 provider 不展示（Host 也不会再上报，这里兜住旧数据）
       .filter((p) => p.models.length > 0);
   }, [catalog, query]);
@@ -206,6 +234,8 @@ export function ModelsView() {
       />
 
       <div className="text-xs text-muted-foreground">
+        每个厂商分组头部的备注写「这个厂商整体擅长什么」（例如 gpt 适合逻辑处理、claude 适合做设计），模型行备注写单模型差异；
+        两者都会随 <code className="rounded bg-muted px-1">team_models</code> 下发给主 Agent（providerNote / note），用于按能力挑模型。
         只有勾选启用的 provider/model 才会出现在 <code className="rounded bg-muted px-1">team_models</code> 里，也才能传给 <code className="rounded bg-muted px-1">team_spawn</code> 的 agentProvider/model。
         模型行里的 effort 开关决定该 route 允许派发的 <code className="rounded bg-muted px-1">reasoningEffort</code>（含继承自 Lead 的强度）：关掉的强度会从 team_models 里隐藏，主 Agent 指定时直接被拒绝。
         目录本身来自宿主 DSH，本面板不代理任何模型请求；Host 侧模型配置变化后，下一次团队工具调用会刷新它。
@@ -231,6 +261,16 @@ export function ModelsView() {
               <ProviderIcon id={p.id} name={p.name} />
               <CardTitle className="text-sm">{p.name}</CardTitle>
               <code className="text-[11px] text-muted-foreground">{p.id}</code>
+              <Input
+                value={providerNotes[p.id] ?? ''}
+                onChange={(e) => setProviderNotes((prev) => ({ ...prev, [p.id]: e.target.value }))}
+                onBlur={() => void saveProviderNote(p)}
+                placeholder="厂商备注：擅长逻辑推理 / 擅长前端设计"
+                aria-label={`${p.name} 厂商备注`}
+                title="厂商级备注：说明这个厂商整体擅长什么（例如 gpt 适合逻辑处理、claude 适合做设计）；模型行备注写单模型差异"
+                className="h-7 w-56 text-xs"
+                disabled={busy.has('provider:' + p.id)}
+              />
             </div>
             <div className="flex items-center gap-2">
               <span className="text-xs text-muted-foreground">

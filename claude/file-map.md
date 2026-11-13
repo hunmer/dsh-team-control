@@ -24,7 +24,7 @@ dsh-team-control/
 │   ├── web/                  面板构建产物（只提交 panel.html + 2 个 assets）
 │   └── web-ui/               面板源码（见 src/web-ui/CLAUDE.md）
 ├── dsh-plugin/               Host 插件
-│   ├── index.js              3484 行 19 个 team_* + 2 个 board_* 工具 + 生命周期 + 上报泵
+│   ├── index.js              4276 行 20 个 team_* + 4 个 board_* 工具 + 生命周期 + 上报泵
 │   ├── changes.js            168 行 文件改动 diff（FILE_TOOLS 白名单）
 │   ├── pricing.js            165 行 峰值时段计价
 │   ├── cordis.patch.yml      插件插入配置

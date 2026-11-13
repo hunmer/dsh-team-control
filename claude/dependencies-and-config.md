@@ -55,7 +55,8 @@
 | `boardIdleGraceMs` | `6000` | 规划会话 idle 后等待提交计划的宽限 |
 | `boardPlanningTimeoutMs` | `1800000` | 规划超时，超时置 failed |
 | `approvalTimeoutMs` | `600000` | 成员审批等待 Lead 的上限，超时自动拒绝 |
-| `autoApproveLowRisk` | `true` | 低风险 shell 命令自动放行（镜像 `decidedBy:auto`，不通知 Lead） |
+| `autoApproveLowRisk` | `true` | 低风险 shell 命令自动放行（含只读管道与常见 PowerShell 只读命令；镜像 `decidedBy:auto`，不通知 Lead） |
+| `autoApproveTools` | `[]` | 工具级自动放行白名单（支持 `*` 通配），命中即放行、不看参数 |
 | `sensitiveCommandPatterns` | `[]` | 追加的敏感命令正则，命中仍转 Lead |
 | `agentAutoDispatch` | `true` | agent 团队自动派发 |
 | `agentIdleSettleMs` | — | idle 判定窗口 |

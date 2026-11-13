@@ -2,7 +2,7 @@
 
 ## 项目简单介绍
 
-`dsh-plugin/` 是 DSH 宿主的 Host 插件（包名 `dsh-team-control`），把 sidecar 的能力翻译成模型能直接调的 19 个 `team_*` + 2 个 `board_*` 工具，并负责 sidecar 生命周期（`autoStart` 时自己拉起）、成员子会话的拉起与权限预设下发、审批转发、以及运行数据的回传（工具调用 → span、文件改动 → member_change、LLM 用量 → 费用、上下文占用 → context_snapshot）。
+`dsh-plugin/` 是 DSH 宿主的 Host 插件（包名 `dsh-team-control`），把 sidecar 的能力翻译成模型能直接调的 20 个 `team_*` + 4 个 `board_*` 工具，并负责 sidecar 生命周期（`autoStart` 时自己拉起）、成员子会话的拉起与权限预设下发、审批转发、以及运行数据的回传（工具调用 → span、文件改动 → member_change、LLM 用量 → 费用、上下文占用 → context_snapshot）。
 
 它**不做权限判定**——成员的沙箱与审批由 DSH 权限预设和宿主执行，插件只把成员审批转发给 Lead（`team_approve`）；它也不持有 sidecar 的 db。
 

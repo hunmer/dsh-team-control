@@ -199,7 +199,10 @@ root(run:team)                         ← 团队整体
 1. `team_create({permissionPreset})` / `team_spawn({permissionPreset})` 解析并校验预设名（默认 `workspace-write`，正则 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`；宿主 `names` 可用时校验）。
 2. `startActivation` 返回后立刻 `ctx.permissionPresets.set(sessions.get(childId), preset)`；返回 `permissionPresetApplied`，失败只警告不回滚。
 3. `ctx.on('approval/request', handler, {prepend:true})`：只有绑定了成员的 session 才拦截；镜像 `POST /api/approvals`，用 `subagents.sendMessage` 通知 Lead（含 `requestId` 与 `team_approve` 示例），Promise 等待。
-3b. 低风险命令自动放行（`autoApproveLowRisk`，默认 `true`）：`tools/pre-execute` 按 `callId` 缓存成员这次调用的入参；审批到来时若工具名像 shell、参数里有字符串 `command`，且命令满足「程序白名单 + 无管道/重定向/命令替换 + 不命中敏感规则（`sensitiveCommandPatterns` 可追加）」，插件直接返回宿主 `allowed-once` 并镜像 `decidedBy:"auto"`，不通知 Lead。其余情况（无入参、非 shell、解释器 `-e/-c`、命中敏感规则）仍走第 3/4 步。判定是启发式，宁可漏放行也不误放行。
+3b. 自动放行（`autoApproveLowRisk` 默认 `true`；`autoApproveTools` 默认 `[]`，支持 `*` 通配）：
+   - **工具白名单**：审批的工具名（或 `tools/pre-execute` 缓存的工具名）命中 `autoApproveTools` 即放行，不看参数；
+   - **低风险命令**：`tools/pre-execute` 按 `callId` 缓存成员这次调用的入参；审批到来时若工具名像 shell、参数里有字符串 `command`，且命令满足「程序白名单（含只读管道与常见 PowerShell 只读 cmdlet）+ 无重定向/命令替换/脚本块 + 不命中敏感规则（`sensitiveCommandPatterns` 可追加）」。
+   两条通道都直接返回宿主 `allowed-once` 并镜像 `decidedBy:"auto"`，不通知 Lead。其余情况（无入参、非 shell、解释器 `-e/-c`、`>`/`<`/`$()`/`{}`、命中敏感规则）仍走第 3/4 步。判定是启发式，宁可漏放行也不误放行。
 4. `team_approve({teamId, requestId, decision, reason})` 只有团队 Lead 可调；`allow` → 宿主 `allowed-once`，`deny` → `rejected`；超时（`approvalTimeoutMs`，默认 600000）→ `rejected` 并镜像 `expired`；`req.signal` abort → `cancelled`。
 4b. `team_member({action:"update"})`：运行中的成员允许热改 `role` / `permissionPreset`（直接 `permissionPresets.set`，不重建会话）；`model`/`agentProvider`/`contextMode`/`agentPreset`/`reasoningEffort` 变更仍要求先 `interrupt`。
 5. 非成员请求 `return next()`，仍走 DSH 原有审批链路。
@@ -265,14 +268,15 @@ root(run:team)                         ← 团队整体
 
 ### 3.9 模型路由目录
 
-目录由 Host 插件从 `ctx.llm` 读取后推送，sidecar 只做持久化与开关，**不调用任何 LLM、不保存凭据**。`provider`/`model` 是 DSH 的真实 id；Host 只推送**能列出模型**的 provider（`listProviders` + `listModels` 成功的），空列表与未配置的 provider 不进目录，`source` 目前恒为 `live`。
+目录由 Host 插件从 `ctx.llm` 读取后推送，sidecar 只做持久化与开关，**不调用任何 LLM、不保存凭据**。`provider`/`model` 是 DSH 的真实 id；Host 只推送**能列出模型**的 provider（`listProviders` + `listModels` 成功的），空列表与未配置的 provider 不进目录，`source` 目前恒为 `live`。provider 级 `note` 是用户手写的「厂商整体擅长什么」（例如 gpt 适合逻辑处理、claude 适合做设计），与模型级 `note`（单模型差异）分表存放；同步目录不会覆盖它。
 
 | 方法 路径 | 请求 | 响应 |
 |---|---|---|
 | `POST /api/llm/catalog` | `{providers:[{id,name,source?,error?}], models:[{provider,model,name,description?,modalities?,efforts?,defaultEffort?}], partial?}` | `{ok, asOf, providers, models, enabled}`；按 `(provider,model)` upsert，**保留既有 enabled/note/allowedEfforts**（`allowedEfforts` 与新声明求交）；`efforts` 省略表示本次未知、保留旧值；`partial` 为真时跳过删除；空 `providers` → 400 |
-| `GET /api/llm/catalog` | — | `{asOf, source:"dsh-llm", providers:[{id,name,source,error,models:[route]}], totals}` |
+| `GET /api/llm/catalog` | — | `{asOf, source:"dsh-llm", providers:[{id,name,note,source,error,models:[route]}], totals}` |
 | `GET /api/llm/models?all=` | 默认只返回 `enabled=1`；`all=1` 返回全部 | `{asOf, total, items:[route]}` |
 | `PATCH /api/llm/routes` | `{provider, model, enabled?, note?, allowedEfforts?}` | `{route}`；未知 route → 404；`enabled` 非 boolean → 400；`note` 截断到 240 字符；`allowedEfforts` 为 null（不限）或该 route 已声明的 effort id 子集，全选折回 null；未声明 efforts 的 route 或未知 id → 400 |
+| `PATCH /api/llm/providers` | `{provider, note?}` | `{id, name, note}`；未知 provider → 404；`note` 非 string/null → 400，截断到 240 字符、空白归一为 null；省略 `note` 保留旧值 |
 
 `route` = `{provider, model, name, description, modalities, contextWindow, source, enabled, note, efforts, defaultEffort, allowedEfforts}`；`efforts` 是适配器声明的 `[{id,name,description?}]`，`allowedEfforts` 为 null 表示不限。
 
@@ -319,6 +323,8 @@ root(run:team)                         ← 团队整体
 
 两个任务级开关（默认都为 `1`，旧数据/旧调用按开启处理）：`need_plan=0` 时跳过 planning，`todo` 直接等 inprogress 槽位被 claim；`use_team=0` 时执行提示词改为单人模式（禁止 `team_create`/`team_spawn`/`team_task`，不要求加载 `dsh-agent-team` 技能，规划阶段也不再要求成员建议）。same 模式提交计划时 sidecar 直接把任务切到 `inprogress`、claim 执行槽位并 attach 回同一会话，不再补发第二条执行 prompt（规划 prompt 末尾已带执行规则）；执行槽位满时保持 `planned`，等泵 claim 后只补一条「现在开始执行」。新会话执行在 `need_plan=1` 时注入「已确认的计划」。任务进入 `done/failed` 后用户再次发消息，状态回到 `inprogress`，并复用已有 `lead_session_id`（不再新建会话）；此时 `resumed=1`，泵只 attach、不重复注入执行 prompt。
 
+实验性开关 `prewalk`（默认 `0`，仅 `execution_mode=same` 且 `need_plan=1` 时有意义）：规划阶段仍在 `planRoute` 上跑，`board_plan_submit` 把任务切到 `inprogress` 时**只武装交接、不切模型**。规划模型先在同一会话里落下第一笔**成功**的实现动作——首个成功的 `edit`/`write` 类工具结果（工具报错不交接、继续等下一次），团队任务则是首次成功的 `team_task` 派发——之后 Host 插件通过 `sessionController.agents.selectForNextRequest` 把这**同一条会话**的模型切到 `leadRoute`，并注入一条只有「继续」的 steering（不重复计划、不列清单，避免诱导接手模型逐条核对或重新读文件），让接手模型沿原计划继续。会话历史、读过的文件、计划与 todo 全部保留，不新建会话；实现动作已经发生过（插件重启/会话恢复）时立即交接。Host 不支持会话内切模型时保持原模型继续并告警。`PATCH`/`POST` 都接受该字段，`GET` 返回 `prewalk: boolean`。
+
 | 方法 路径 | 请求 | 响应 |
 |---|---|---|
 | `GET /api/board?workspaceId=&archived=0|1` | — | `{workspace, settings, counts, slots, tasks}` |
@@ -327,8 +333,8 @@ root(run:team)                         ← 团队整体
 | `GET /api/board/by-team/:teamId` | — | board task 或 `{ok:false,reason}` |
 | `GET/PUT /api/board/settings` | `{workspaceId, planningConcurrency?, inprogressConcurrency?, showTaskSessions?, planProvider?, planModel?, planReasoningEffort?, leadProvider?, leadModel?, leadReasoningEffort?, planPermissionPreset?, leadPermissionPreset?, planAgentPreset?, leadAgentPreset?}` | settings（含 Host 上报的只读 `dshWebUrl`） |
 | `GET/POST /api/host/web` | POST `{url}`：Host 插件把 DSH Web 的浏览器地址上报给 sidecar | `{url}` |
-| `POST /api/board/tasks` | `{workspaceId, title, description?, auto?, needPlan?, useTeam?, executionMode?, priority?, planRoute?, leadRoute?, teamModels?}` | board task |
-| `PATCH /api/board/tasks/:id` | 同上字段 | board task |
+| `POST /api/board/tasks` | `{workspaceId, title, description?, auto?, needPlan?, useTeam?, prewalk?, executionMode?, gitBranch?, priority?, planRoute?, leadRoute?, teamModels?}` | board task |
+| `PATCH /api/board/tasks/:id` | 同上字段 | board task；`gitBranch` 传 null 清空（不再切分支） |
 | `POST /api/board/tasks/:id/start|stop|retry|reset|archive|restore` | `{executionMode?}` / `{reason?}` | board task；`stop` 还会暂停并终止 `board_task_team` 绑定的团队（终态/成员保留）；`reset` 仅 failed/done，清空计划与会话绑定并回到 `todo` |
 | `POST /api/board/tasks/:id/teams` | `{teamId}` | board task（幂等绑定） |
 | `POST /api/board/claim` | `{kind:'planning'|'inprogress', taskId?}` | `{item:{task,workspace,settings,fence}}` 或 `{item:null}`；`taskId` 可选，只 claim 指定任务；内部接口 |
@@ -381,9 +387,11 @@ Host 插件默认 `boardEnabled=true`（显式 `false` 可关闭），每 `board
 
 重试（`retry`）复用已有团队：任务的 `board_task_team` 绑定、计划与 DAG 成员数据都保留，插件在 `boardLeadPrompt` 里把 `task.teams` 告诉新的 Lead，要求先用 `team_status` 查看既有团队、用 `team_task` 追加剩余工作，不再无条件 `team_create`（仅当原团队被删除或不可用时才新建）。提示词是软约束，因此插件另加硬约束：对「spawn 时任务已有关联团队」的续跑会话，`team_create` 若发现原团队仍存在会直接报错并给出继续步骤，只有显式传 `force:true` 或原团队全部被删除/归档时才允许新建。因此失败重试不会再凭空多出一个团队。
 
-GUI 入口：`dsh-plugin-ui` 把「编排」与「任务看板」注册成两个独立页签（原生右侧栏对应 `dsh-team` / `dsh-team-board`）。看板页路由为 `#/board[/<workspaceId>]`，不渲染编排侧栏、不依赖当前 team；切换工作区只改 `workspaceId` 与 URL。编排页不再包含任务看板页签。看板任务详情里的「关联团队」按钮通过 `postMessage`（`dsh-team:open-team`）让 Host 切到「编排」页签并锁定该 team；独立浏览器页面（非 DSH 环境）没有 Host，改用 `window.open` 在新窗口打开同一面板的 `#/t/<teamId>` 路由。任务有 `lead_session_id` 时，详情里还会显示「执行会话」按钮：`postMessage`（`dsh-team:open-session`）→ Host `uiWorkspace.openSession(sessionId)`，直接打开 Lead 所在的 DSH 会话；独立页面若已拿到 Host 上报的 `dshWebUrl`，改为 `window.open(\`${dshWebUrl}/#dsh-session=<id>\`)`：DSH 内的 `dsh-plugin-ui` 客户端启动时读取 `location.hash` 里的 `dsh-session`，调 `uiWorkspace.openSession(sessionId)` 打开会话，再用 `history.replaceState` 清掉 hash；Host 未上报 `dshWebUrl` 时回退默认地址 `http://127.0.0.1:3080`（`dsh web` 默认端口）。DSH Web 本身没有会话级 URL 路由，这个 hash 约定完全由本插件两端实现。任务详情面板只读展示字段；右上角的编辑按钮仅在任务处于 `todo` 且未封存时可用，点击后打开编辑对话框（标题、描述、需要规划、开启团队、执行方式、自动入队、规划/执行模型、团队模型），保存走 `PATCH /api/board/tasks/:id`。新建任务的「需要规划」默认关闭（关闭时隐藏执行方式/规划模型），「开启团队」默认开启（关闭时隐藏团队模型选择；团队模型不选任何一项即表示不限制）。固定停靠层（右侧栏）的看板只在**每次打开时**读取一次当前会话工作区（iframe `&cwd=`）并据此设置工作区下拉，不随会话切换重载；面板内再切工作区只改自身选择。
+GUI 入口：`dsh-plugin-ui` 把「编排」与「任务看板」注册成两个独立页签（原生右侧栏对应 `dsh-team` / `dsh-team-board`）。看板页路由为 `#/board[/<workspaceId>]`，不渲染编排侧栏、不依赖当前 team；切换工作区只改 `workspaceId` 与 URL。编排页不再包含任务看板页签。看板任务详情里的「关联团队」按钮通过 `postMessage`（`dsh-team:open-team`）让 Host 切到「编排」页签并锁定该 team；独立浏览器页面（非 DSH 环境）没有 Host，改用 `window.open` 在新窗口打开同一面板的 `#/t/<teamId>` 路由。任务有 `lead_session_id` 时，详情里还会显示「执行会话」按钮：`postMessage`（`dsh-team:open-session`）→ Host `uiWorkspace.openSession(sessionId)`，直接打开 Lead 所在的 DSH 会话；独立页面若已拿到 Host 上报的 `dshWebUrl`，改为 `window.open(\`${dshWebUrl}/#dsh-session=<id>\`)`：DSH 内的 `dsh-plugin-ui` 客户端启动时读取 `location.hash` 里的 `dsh-session`，调 `uiWorkspace.openSession(sessionId)` 打开会话，再用 `history.replaceState` 清掉 hash；Host 未上报 `dshWebUrl` 时回退默认地址 `http://127.0.0.1:3080`（`dsh web` 默认端口）。DSH Web 本身没有会话级 URL 路由，这个 hash 约定完全由本插件两端实现。任务详情面板只读展示字段；右上角的编辑按钮仅在任务处于 `todo` 且未封存时可用，点击后打开编辑对话框（标题、描述、需要规划、开启团队、执行方式、自动入队、git 分支开关与分支名、规划/执行模型、团队模型），保存走 `PATCH /api/board/tasks/:id`。新建任务的「需要规划」默认关闭（关闭时隐藏执行方式/规划模型），「开启团队」默认开启（关闭时隐藏团队模型选择；团队模型不选任何一项即表示不限制）；「创建前切 git 分支」默认关闭，打开后可留空分支名由后端生成 `task/<短号>`。固定停靠层（右侧栏）的看板只在**每次打开时**读取一次当前会话工作区（iframe `&cwd=`）并据此设置工作区下拉，不随会话切换重载；面板内再切工作区只改自身选择。
 
-新增工具：`board_plan_submit({plan,summary?})`、`board_task_status({status,summary?})`。`team_create` 在 Lead 会话里创建团队后会自动把 team 绑到该会话对应的 board task；`team_spawn` 在该 task 配了 `teamModels` 时把成员 route 限制在白名单内（未指定 model 取第一条）。
+`gitBranch`（可选，`board_task.git_branch`）是任务开始执行前要切到的分支：`board_task_create` / `POST /api/board/tasks` 传空串表示自动生成 `task/<任务短号>`，传具体名字（字母数字与 `. _ / -`，不能以 `-` 开头或含 `..`，最长 200）表示切到该分支，`null`/缺省表示不切分支。插件在 `spawnBoardSession` 里拉起/复用任何会话**之前**执行切换（`rev-parse --is-inside-work-tree` 校验仓库 → 已在该分支则跳过 → 存在则 `checkout`，否则 `checkout -b`），并把「git 分支：xxx（已切好，不要自行切换）」注入规划/执行 prompt；工作区不是 git 仓库、本机没有 git 或切换失败时只降级告警，任务照常执行，prompt 改为提示模型可自行 `git checkout -b`。
+
+新增工具：`board_plan_submit({plan,summary?})`、`board_task_status({status,summary?})`、`board_task_create({title,description?,workspaceId?,workspacePath?,auto?,needPlan?,useTeam?,executionMode?,gitBranch?})`、`board_task_get({taskId?})`、`team_task_get({taskId,teamId?})`。`board_task_create` / `board_task_get` 面向成员会话：不给 `workspaceId` 时依次用「当前会话所属看板任务的工作区」「唯一工作区」推断；不给 `taskId` 时按调用会话反查看板任务。`team_task_get` 返回团队任务本体与它在 DAG 里的节点（`dependsOn`/`ready`/`blockers`），只允许查本团队任务。`team_create` 在 Lead 会话里创建团队后会自动把 team 绑到该会话对应的 board task；`team_spawn` 在该 task 配了 `teamModels` 时把成员 route 限制在白名单内（未指定 model 取第一条）。`team_models` 的输出把厂商级备注作为 `providerNote` 随每条 route 下发（`note` 仍是模型级备注）。
 
 ---
 

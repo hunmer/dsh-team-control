@@ -95,7 +95,8 @@ dsh plugin --profile web add dsh-team-control
 | `startTimeoutMs` | `20000` | 自动拉起的等待上限 |
 | `requestTimeoutMs` | `60000` | 单次 API 调用超时 |
 | `approvalTimeoutMs` | `600000` | 成员审批等待 Lead 的上限；超时自动拒绝 |
-| `autoApproveLowRisk` | `true` | 低风险 shell 命令自动放行（不通知 Lead，镜像 `decidedBy:auto`） |
+| `autoApproveLowRisk` | `true` | 低风险 shell 命令自动放行（含只读管道与常见 PowerShell 只读命令；不通知 Lead，镜像 `decidedBy:auto`） |
+| `autoApproveTools` | `[]` | 工具级自动放行白名单（支持 `*` 通配），命中工具名的审批直接放行，不看参数 |
 | `sensitiveCommandPatterns` | `[]` | 追加的敏感命令正则；命中即转 Lead 审批 |
 | `reportToolCalls` | `true` | 监听 `tools/execute`，把每次工具调用上报为 `POST /api/spans` 的 span |
 | `traceInputMax` | `1200` | 上报参数/结果预览的截断长度（字符） |

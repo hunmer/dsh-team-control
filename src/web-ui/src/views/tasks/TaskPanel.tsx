@@ -283,6 +283,25 @@ export function TaskPanel({
             <RouteValue route={task.leadRoute} />
           </div>
 
+          {task.needPlan !== false && task.executionMode === 'same' && (
+            <div>
+              <span className="ui-tb__label">Prewalk（实验性）</span>
+              <span className="text-xs text-muted-foreground">
+                {task.prewalk ? '开启：首次改动后切到执行模型继续' : '关闭'}
+              </span>
+            </div>
+          )}
+
+          {task.gitBranch && (
+            <div>
+              <span className="ui-tb__label">git 分支</span>
+              <span className="text-xs text-muted-foreground">
+                <code className="rounded bg-muted px-1">{task.gitBranch}</code>
+                {task.status === 'todo' ? '（开始执行前切换）' : ''}
+              </span>
+            </div>
+          )}
+
           {task.useTeam !== false && (
             <div>
               <span className="ui-tb__label">团队模型</span>

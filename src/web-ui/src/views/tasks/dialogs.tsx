@@ -47,7 +47,12 @@ type CreateDraft = {
   auto: boolean;
   needPlan: boolean;
   useTeam: boolean;
+  prewalk: boolean;
   mode: BoardMode;
+  /** 是否在任务开始前切到独立 git 分支（隔离改动，便于 review/回滚） */
+  gitBranchOn: boolean;
+  /** 分支名；留空 = 自动生成 task/<任务短号> */
+  gitBranch: string;
   planKey: string;
   leadKey: string;
   planEffort: string | null;
@@ -134,7 +139,10 @@ function loadCreateDraft(): Partial<CreateDraft> {
       auto: typeof parsed.auto === 'boolean' ? parsed.auto : undefined,
       needPlan: typeof parsed.needPlan === 'boolean' ? parsed.needPlan : undefined,
       useTeam: typeof parsed.useTeam === 'boolean' ? parsed.useTeam : undefined,
+      prewalk: typeof parsed.prewalk === 'boolean' ? parsed.prewalk : undefined,
       mode: parsed.mode === 'same' || parsed.mode === 'new' ? parsed.mode : undefined,
+      gitBranchOn: typeof parsed.gitBranchOn === 'boolean' ? parsed.gitBranchOn : undefined,
+      gitBranch: typeof parsed.gitBranch === 'string' ? parsed.gitBranch : undefined,
       planKey: typeof parsed.planKey === 'string' ? parsed.planKey : undefined,
       leadKey: typeof parsed.leadKey === 'string' ? parsed.leadKey : undefined,
       planEffort: typeof parsed.planEffort === 'string' ? parsed.planEffort : parsed.planEffort === null ? null : undefined,
@@ -288,7 +296,10 @@ export function CreateTaskDialog({
   const [auto, setAuto] = useState(lastDraft.auto ?? false);
   const [needPlan, setNeedPlan] = useState(lastDraft.needPlan ?? false);
   const [useTeam, setUseTeam] = useState(lastDraft.useTeam ?? true);
+  const [prewalk, setPrewalk] = useState(lastDraft.prewalk ?? false);
   const [mode, setMode] = useState<BoardMode>(lastDraft.mode ?? 'same');
+  const [gitBranchOn, setGitBranchOn] = useState(lastDraft.gitBranchOn ?? false);
+  const [gitBranch, setGitBranch] = useState(lastDraft.gitBranch ?? '');
   const [planKey, setPlanKey] = useState(lastDraft.planKey ?? '');
   const [leadKey, setLeadKey] = useState(lastDraft.leadKey ?? '');
   const [planEffort, setPlanEffort] = useState<string | null>(lastDraft.planEffort ?? null);
@@ -304,7 +315,10 @@ export function CreateTaskDialog({
     setAuto(lastDraft.auto ?? false);
     setNeedPlan(lastDraft.needPlan ?? false);
     setUseTeam(lastDraft.useTeam ?? true);
+    setPrewalk(lastDraft.prewalk ?? false);
     setMode(lastDraft.mode ?? 'same');
+    setGitBranchOn(lastDraft.gitBranchOn ?? false);
+    setGitBranch(lastDraft.gitBranch ?? '');
     setPlanKey(lastDraft.planKey ?? '');
     setLeadKey(lastDraft.leadKey ?? '');
     setPlanEffort(lastDraft.planEffort ?? null);
@@ -325,12 +339,15 @@ export function CreateTaskDialog({
         auto,
         needPlan,
         useTeam,
+        prewalk: needPlan && mode === 'same' ? prewalk : false,
         executionMode: mode,
+        // 开关关掉 → null 不切分支；开着但留空 → '' 让后端自动生成 task/<任务短号>
+        gitBranch: gitBranchOn ? gitBranch.trim() : null,
         planRoute: needPlan ? routeWithEffort(planKey, planEffort, models) : null,
         leadRoute: routeWithEffort(leadKey, leadEffort, models),
         teamModels: useTeam && teamModels.length ? teamChoicesToRoutes(teamModels, models) : null,
       });
-      saveCreateDraft({ auto, needPlan, useTeam, mode, planKey, leadKey, planEffort, leadEffort, teamModels });
+      saveCreateDraft({ auto, needPlan, useTeam, prewalk, mode, gitBranchOn, gitBranch, planKey, leadKey, planEffort, leadEffort, teamModels });
       await onCreated(task);
     } catch (err) {
       toast(errText(err), 'error');
@@ -394,6 +411,12 @@ export function CreateTaskDialog({
                   </Field>
                 </div>
               )}
+              {needPlan && mode === 'same' && (
+                <label className="ui-tb__check">
+                  <Switch checked={prewalk} onCheckedChange={setPrewalk} />
+                  <span>Prewalk（实验性）：规划模型完成首次改动后，在同一会话切到执行模型继续</span>
+                </label>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <Field label="自动入队">
                   <div className="flex h-9 items-center gap-2">
@@ -417,6 +440,23 @@ export function CreateTaskDialog({
                     placeholder={defaultSettings?.leadModel ? `默认：${defaultSettings.leadModel}` : '跟随默认'}
                   />
                 </Field>
+              </div>
+              <div className="space-y-2 rounded-md border px-3 py-2">
+                <label className="ui-tb__check">
+                  <Switch checked={gitBranchOn} onCheckedChange={setGitBranchOn} />
+                  <span>开始前切到独立 git 分支（改动隔离，便于 review / 回滚）</span>
+                </label>
+                {gitBranchOn && (
+                  <Field label="分支名">
+                    <Input
+                      value={gitBranch}
+                      onChange={(e) => setGitBranch(e.target.value)}
+                      placeholder="留空自动生成 task/<任务短号>"
+                      aria-label="git 分支名"
+                      className="h-9"
+                    />
+                  </Field>
+                )}
               </div>
               <label className="ui-tb__check">
                 <Switch checked={useTeam} onCheckedChange={setUseTeam} />
@@ -467,7 +507,10 @@ export function EditTaskDialog({
   const [auto, setAuto] = useState(task.auto);
   const [needPlan, setNeedPlan] = useState(task.needPlan !== false);
   const [useTeam, setUseTeam] = useState(task.useTeam !== false);
+  const [prewalk, setPrewalk] = useState(!!task.prewalk);
   const [mode, setMode] = useState<BoardMode>(task.executionMode);
+  const [gitBranchOn, setGitBranchOn] = useState(!!task.gitBranch);
+  const [gitBranch, setGitBranch] = useState(task.gitBranch ?? '');
   const [planKey, setPlanKey] = useState(routeKey(task.planRoute));
   const [leadKey, setLeadKey] = useState(routeKey(task.leadRoute));
   const [planEffort, setPlanEffort] = useState<string | null>(task.planRoute?.reasoningEffort ?? null);
@@ -483,7 +526,10 @@ export function EditTaskDialog({
     setAuto(task.auto);
     setNeedPlan(task.needPlan !== false);
     setUseTeam(task.useTeam !== false);
+    setPrewalk(!!task.prewalk);
     setMode(task.executionMode);
+    setGitBranchOn(!!task.gitBranch);
+    setGitBranch(task.gitBranch ?? '');
     setPlanKey(routeKey(task.planRoute));
     setLeadKey(routeKey(task.leadRoute));
     setPlanEffort(task.planRoute?.reasoningEffort ?? null);
@@ -503,7 +549,9 @@ export function EditTaskDialog({
         auto,
         needPlan,
         useTeam,
+        prewalk: needPlan && mode === 'same' ? prewalk : false,
         executionMode: mode,
+        gitBranch: gitBranchOn ? gitBranch.trim() : null,
         planRoute: needPlan ? routeWithEffort(planKey, planEffort, models) : null,
         leadRoute: routeWithEffort(leadKey, leadEffort, models),
         teamModels: useTeam && teamModels.length ? teamChoicesToRoutes(teamModels, models) : null,
@@ -577,6 +625,12 @@ export function EditTaskDialog({
                   </Field>
                 </div>
               )}
+              {needPlan && mode === 'same' && (
+                <label className="ui-tb__check">
+                  <Switch checked={prewalk} onCheckedChange={setPrewalk} disabled={!editable} />
+                  <span>Prewalk（实验性）：规划模型完成首次改动后，在同一会话切到执行模型继续</span>
+                </label>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <Field label="自动入队">
                   <div className="flex h-9 items-center gap-2">
@@ -599,6 +653,24 @@ export function EditTaskDialog({
                     ariaLabel="执行模型"
                   />
                 </Field>
+              </div>
+              <div className="space-y-2 rounded-md border px-3 py-2">
+                <label className="ui-tb__check">
+                  <Switch checked={gitBranchOn} onCheckedChange={setGitBranchOn} disabled={!editable} />
+                  <span>开始前切到独立 git 分支（改动隔离，便于 review / 回滚）</span>
+                </label>
+                {gitBranchOn && (
+                  <Field label="分支名">
+                    <Input
+                      value={gitBranch}
+                      onChange={(e) => setGitBranch(e.target.value)}
+                      placeholder="留空自动生成 task/<任务短号>"
+                      aria-label="git 分支名"
+                      disabled={!editable}
+                      className="h-9"
+                    />
+                  </Field>
+                )}
               </div>
               <label className="ui-tb__check">
                 <Switch checked={useTeam} onCheckedChange={setUseTeam} disabled={!editable} />
