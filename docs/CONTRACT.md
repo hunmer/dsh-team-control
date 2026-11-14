@@ -257,6 +257,7 @@ root(run:team)                         ← 团队整体
 - **成员移除**：`team_member({action:"retire"|"remove"})` 先调 `DELETE /api/members/{id}`（`remove` 必须 `confirm:true`），再释放子会话并清理绑定；运行中的成员必须先 interrupt。
 - **interrupt 冻结会话**：Host 插件把被 Lead interrupt 的 session 放进 `heldSessions`，在 `team_control resume` 前忽略它的 `idle`/`turn-error` 回报，避免 DSH 中断后的 idle 把成员改回 idle 并触发重派。
 - **停止即终止**：`POST /api/teams/{id}/stop` 只在 sidecar 侧落 `interrupted`/`paused`，真正终止由 Host 插件的 `forceStopPump` 完成——每 `forceStopPollMs`（默认 1000ms）轮询 `/api/status`，对刚转为 `interrupted` 且带 `parentSessionId` 的成员调 `subagents.interrupt(sessionId,{kind:'user',parentSessionId})`，并放入 `heldSessions` 忽略其后续 `idle`/`turn-error`。看板 `POST /api/board/tasks/:id/stop` 会对 `board_task_team` 绑定的每个团队执行同一 `stopTeam`。
+- **中断通知 Lead**：`forceStopPump` 对 `blockers.kind==='recover'`（sidecar 重启恢复现场导致的 interrupted）与 `session/event turn/end reason.kind==='error'`（成员回合失败）两类**非 Lead 主动**的中断，用 `subagents.sendMessage(memberAgent, leadSessionId, ...)` 主动推一条「成员中断」说明给 Lead，避免 Lead 挂起时永远等不到成员已断的消息；同一中断（`memberId:seq` / `sessionId:eventSeq:msg`）只推一次。Lead 主动 `interrupt`/`stop`（`blockers.kind==='interrupt'`）不推。
 - **宿主前提**：成员依赖宿主已挂载 `subagents` 服务（`dsh-subagent` bundle）。插件用 `ctx.get('subagents')` 探测；缺失时 `team_spawn` 返回可读错误（`subagents 服务不可用`），不会静默降级建成员。
 
 - **dispatch 是原子认领**：`evaluate()` 推 readiness → 校验 `maxConcurrency` → 按 `priority,created_at` 找 ready 任务（尊重 `assignee` 预绑与 `settleMs` 建图窗口，派发前重算依赖）→ 找 `idle` 且无在途任务的 agent 成员 → 同事务把任务置 `running` 并写 `task.dispatch` 事件。**不启动任何进程**；随后 Host 用 `subagents.sendMessage(lead, sessionId, content)` 把任务说明发进该成员的信箱。
@@ -423,7 +424,7 @@ v2 删除了 `src/broker.mjs`、`src/policy.mjs`、`src/runner.mjs`、`src/worke
 | `interrupt` | 同步：成员 `status=interrupted` + `agent.interrupt` 事件；在途任务转 `paused`（不计 attempts、不触发重试、不自动重派）。API 返回即已落库 |
 | `resume` | 成员置回 `idle` + `agent.resume` 事件；`resumeFrom=null`（没有 worker 步进锚点），`seq` 连续。`paused` 任务需 Lead 显式 `assign` 后才回 `ready` |
 | `abort` | 任务置 `aborted` 终态并写 `finished_at`；不计 attempts、不进入 failurePolicy；running 任务顺带中断成员 |
-| sidecar 重启 | 启动时 `recoverAll()`：`running` 任务退回 `ready`（保留 attempts），`pending` 审批置 `expired`；输出 `{recovered:n}` 日志。**不静默丢** |
+| sidecar 重启 | 启动时 `recoverAll()`：`running` 任务退回 `ready`（保留 attempts），`pending` 审批置 `expired`；输出 `{recovered:n}` 日志。**不静默丢**；被置 `interrupted` 的成员由 Host `forceStopPump` 主动通知 Lead（见「中断通知 Lead」） |
 | 成员回合失败 | Host `agent/status=failed` / `team_report_task status=failed` → `onTaskFailed`，按 `maxAttempts` 重试 |
 | 重试 | 指数退避 `retryBaseMs * 2^(attempt-1)`，上限 `limits.maxRetries`；超过 → task `failed` |
 
@@ -452,6 +453,7 @@ v2 删除了 `src/broker.mjs`、`src/policy.mjs`、`src/runner.mjs`、`src/worke
 | `tests/plugin-client.mjs` | 客户端入口注册与工具清单 |
 | `tests/plugin-trace.mjs` | Trace 上报链路（session span 挂成员节点） |
 | `tests/plugin-approval.mjs` | 审批转发：`approval/request` → 通知 Lead → `team_approve` allow=`allowed-once` / deny=`rejected`、非成员放行原链路、非 Lead 被拒；低风险 `npm test` 自动放行（不通知 Lead、镜像 `decidedBy:auto`）、敏感 `rm -rf` 仍转 Lead |
+| `tests/plugin-interrupt-notify.mjs` | 成员意外中断的通知：sidecar 重启 → recover 把在途成员置 `interrupted` 后，`forceStopPump` 用成员 Agent 给 Lead 推「成员中断」（带 teamId/memberId/原因）；同一中断不重复推；`turn/end reason=error` 同样通知 Lead |
 | `tests/db-migration.mjs` | 老库就地迁移：schema v1（`team` 无 `permission_preset`、`member` 无 `agent_session_id`）能补列/补索引/升版本，旧数据保留且默认 `workspace-write`，二次打开幂等 |
 
 `tests/run-all.mjs` 先跑全部 `ac-*.mjs`，再跑上述插件/面板/路由/CLI/迁移脚本，任一失败即非零退出。

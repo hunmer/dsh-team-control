@@ -228,6 +228,8 @@ const memberOfCaller = (agent) => {
   return sid != null ? (sessionMember.get(String(sid)) || null) : null;
 };
 const subagentsOf = (ctx) => { try { return ctx.get('subagents'); } catch { return undefined; } };
+/** DSH `agents` 注册表：`subagents.sendMessage` 要求 sender 是「精确的活跃 Agent」，必须从注册表取。 */
+const agentsOf = (ctx) => { try { return ctx.get('agents'); } catch { return undefined; } };
 const subagentNames = (ctx) => { const svc = subagentsOf(ctx); return svc && typeof svc.list === 'function' ? svc.list() : []; };
 
 /** `sessions` / `workspaceChanges`：读成员自己会话里的交付文件（都是可选依赖）。 */
@@ -1308,6 +1310,68 @@ async function notifyLeadOfApproval(s, ctx, req, info) {
   return true;
 }
 
+/** 已经通知过 Lead 的中断（recover 用 memberId:seq，回合失败用 sessionId:序号），避免同一次中断反复打扰。 */
+const interruptNotified = new Set();
+
+/**
+ * 成员意外中断时主动推给 Lead（sidecar 重启 recover、模型回合报错、会话被异常终止）。
+ *
+ * 审批有 notifyLeadOfApproval 这条唯一通道，中断却一条都没有：Lead 挂起（会话空闲/等消息）后
+ * 成员断了，事件流里只有一行 recover 或 failed，Lead 永远不会被唤醒（task_mwgbawyif5cuwf 现场）。
+ * `subagents.sendMessage` 要求 sender 是精确的活跃 Agent，所以从 `agents` 注册表按会话 id 取成员；
+ * 会话已经回收时发不出去——那种情况事件流/面板里仍有记录，不阻塞其它泵。
+ */
+async function notifyLeadOfMemberInterrupt(s, ctx, info) {
+  const subs = subagentsOf(ctx);
+  if (!subs || typeof subs.sendMessage !== 'function' || !info) return false;
+  const sessionId = info.sessionId != null ? String(info.sessionId) : null;
+  const teamId = info.teamId != null ? String(info.teamId) : null;
+  if (!sessionId || !teamId) return false;
+  const agents = agentsOf(ctx);
+  const sender = agents && typeof agents.get === 'function' ? agents.get(sessionId) : undefined;
+  if (!sender) return false;
+  let leadId = info.leadSessionId != null ? String(info.leadSessionId) : null;
+  if (!leadId) {
+    const cached = leadByTeam.get(teamId);
+    leadId = cached?.id != null ? String(cached.id) : null;
+  }
+  if (!leadId) {
+    const team = await teamOf(s, teamId).catch(() => null);
+    leadId = team?.leadSessionId != null ? String(team.leadSessionId) : null;
+  }
+  if (!leadId || leadId === sessionId) return false;
+  const key = info.dedupeKey || `${info.memberId || sessionId}:${info.status || 'interrupted'}`;
+  if (interruptNotified.has(key)) return false;
+  interruptNotified.add(key);
+  const lines = [
+    '【dsh-team 成员中断】',
+    `teamId=${teamId}`,
+    ...(info.memberId ? [`memberId=${info.memberId}`] : []),
+    ...(info.memberName ? [`memberName=${info.memberName}`] : []),
+    ...(info.taskId ? [`taskId=${info.taskId}`] : []),
+    `成员状态：${info.status || 'interrupted'}`,
+    ...(info.reason ? [`原因：${clip(String(info.reason), 500)}`] : []),
+    '',
+    info.status === 'failed'
+      ? '该成员的回合以错误结束，任务按失败重试策略处理（可能已重新派发）；反复失败需要你介入。'
+      : '该成员没有正常收工，任务不会被当成完成；中断后它需要你确认才能继续。',
+    info.status === 'failed'
+      ? `下一步：team_status({ teamId: "${teamId}" }) 看进度；需要人工接手时用 team_task/team_member 调整。`
+      : (info.memberId
+        ? `下一步：team_status({ teamId: "${teamId}" }) 看进度；确认后 team_control({ teamId: "${teamId}", memberId: "${info.memberId}", action: "resume" }) 继续。`
+        : `下一步：team_status({ teamId: "${teamId}" }) 看进度；确认后 team_dispatch 重新派发。`),
+  ];
+  try {
+    await subs.sendMessage(sender, leadId, [{ type: 'text', text: lines.join('\n') }], {
+      signal: AbortSignal.timeout(s.requestTimeoutMs),
+    });
+    return true;
+  } catch {
+    interruptNotified.delete(key); // 这次没送出去：下一跳重试
+    return false;
+  }
+}
+
 async function onApprovalRequest(s, ctx, req, next) {
   const sessionId = req?.agent?.id != null ? String(req.agent.id) : null;
   const binding = sessionId ? sessionMember.get(sessionId) : null;
@@ -1526,6 +1590,9 @@ async function forceStopPump(s, ctx) {
     if (heldSessions.has(sid)) continue;
     const parentSessionId = m.parentSessionId != null ? String(m.parentSessionId) : null;
     if (!parentSessionId) continue;
+    // recover（sidecar 重启恢复现场）不是 Lead 主动中断：必须主动通知 Lead，
+    // 否则 Lead 挂起时只会看到成员「没声了」，永远等不到中断说明。
+    const recover = (m.blockers || []).some((b) => b && b.kind === 'recover');
     heldSessions.add(sid);
     cancelIdleReport(sid);
     cancelStartWatchdog(sid);
@@ -1536,6 +1603,19 @@ async function forceStopPump(s, ctx) {
       // 会话可能已经结束；撤销冻结并清掉 seen，让下一跳还能重试。
       heldSessions.delete(sid);
       forceStopSeen.delete(sid);
+    }
+    if (recover) {
+      void notifyLeadOfMemberInterrupt(s, ctx, {
+        teamId: m.teamId,
+        memberId: m.id,
+        memberName: m.name,
+        taskId: m.currentTaskId ?? null,
+        sessionId: sid,
+        leadSessionId: parentSessionId,
+        status: 'interrupted',
+        reason: 'sidecar 重启恢复现场：成员会话的在途回合被判定为中断（recover）',
+        dedupeKey: `recover:${m.id}:${m.seq}`,
+      }).catch(() => { /* 通知尽力而为，不影响冻结 */ });
     }
   }
   for (const sid of forceStopSeen.keys()) if (!live.has(sid)) forceStopSeen.delete(sid);
@@ -3901,6 +3981,7 @@ export function apply(ctx, config) {
       for (const timer of idleTimers.values()) clearTimeout(timer);
       for (const timer of startTimers.values()) clearTimeout(timer);
       idleTimers.clear(); startTimers.clear(); agentStatusBySession.clear(); lastReplyBySession.clear();
+      interruptNotified.clear();
       const spawned = s.spawned;
       if (spawned?.child && spawned.child.exitCode === null) {
         try { spawned.child.kill(); } catch { /* ignore */ }
@@ -4095,6 +4176,19 @@ export function apply(ctx, config) {
         cancelIdleReport(sessionId);
         agentStatusBySession.set(sessionId, 'idle');
         reportAgentStatus(s, sessionId, 'failed', `模型回合失败：${msg}`);
+        // 会话以 error 结束同样算「成员意外中断」：不通知，挂起的 Lead 只会在下一次主动查状态时才发现。
+        const bind = sessionMember.get(sessionId);
+        if (bind) {
+          void notifyLeadOfMemberInterrupt(s, ctx, {
+            teamId: bind.teamId,
+            memberId: bind.memberId,
+            memberName: bind.name || null,
+            sessionId,
+            status: 'failed',
+            reason: `模型回合失败：${msg}`,
+            dedupeKey: `failed:${sessionId}:${event.seq ?? event.data?.turn ?? ''}:${msg}`,
+          }).catch(() => { /* 通知尽力而为 */ });
+        }
       }
       return;
     }
