@@ -173,7 +173,7 @@ team_spawn({ teamId, name:"architect", prompt:"...", agentProvider:"deepseek", m
 
 其他常用参数：`team_spawn({agentProvider, model, reasoningEffort, permissionPreset, agentPreset, contextMode})`；
 `team_task({dispatch:false})` 只建不派；`deps:[{from: taskId}]` 声明上游；
-`team_send({teamId, to: "writer"|"*"|"lead", message, interrupt?})` 给成员递话；成员正在跑时默认先打断当前回合再投递（`interrupt:false` 则不打断、等下个 step 边界：消息不会丢，但只能保证“读到”，不保证当前回合改道）；
+`team_send({teamId, to: "writer"|"*"|"lead", message, interrupt?})` 给成员递话；成员正在跑时默认先打断当前回合再投递（`interrupt:false` 则不打断、等下个 step 边界：消息不会丢，但只能保证“读到”，不保证当前回合改道）；它只回执投递状态、不回成员答复——不要用 `sleep`/`Start-Sleep`/延迟脚本或轮询等回复，答复会作为后续回合的新消息异步到达；
 `team_approve({teamId, requestId, decision:"allow"|"deny", reason})` 决定成员审批。
 `team_control({action, memberId, taskId})`：`interrupt` 停成员并把在途任务转 `paused`（不计重试）；
 `resume` 解冻；`assign` 把任务交给 idle 成员；`abort` 永久作废任务（`aborted`，不重试）。
@@ -213,6 +213,7 @@ team_spawn({ teamId, name:"architect", prompt:"...", agentProvider:"deepseek", m
 | `deps` 报 `E_BAD_REQUEST`：`"m_xxx" 是成员「alice」的 id` | `deps.from` 填了成员 id | 用 `team_task` 返回的 `task_…` 作为 `from` |
 | 成员会话「failed before it finished」/ 回合报错 | provider 路由挂了 | 插件的派发监视会在 `agentStartTimeoutMs`（默认 120s）无活动后把任务交回重试；换模型重派 `team_control({action:"assign"})`，或 `team_spawn` 换一个成员 |
 | `team_dispatch` 报 `no_idle_agent` 但成员看起来 idle | 成员还挂着未收尾的 running 任务，或被指定 `assignee` 卡住 | 看返回的 `idleMembers` 与 `hint`；等一次心跳、`team_control({action:"resume"})` 或去掉 `assignee` 重派 |
+| `team_send` 后跑 `sleep`/延迟脚本等回复，白等还烧上下文 | 回执≠答复；答复是后续回合的新消息 | 发完就继续别的活或结束回合，不要轮询、不要重复 `team_status` |
 
 ## 5. 观察与收尾
 

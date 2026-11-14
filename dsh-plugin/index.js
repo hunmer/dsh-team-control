@@ -2782,7 +2782,7 @@ function buildTools(s, ctx) {
 
   tools.push({
     name: 'team_send',
-    description: "Send a message that a member will actually read: the text is injected into the target sub-agent's message inbox. By default a running member's current turn is interrupted first, so the message immediately starts a fresh turn instead of waiting for the next step boundary; pass `interrupt: false` to keep the current turn and deliver at the next step boundary. An idle member is woken. `to` is a member NAME (member id also accepted) or '*' to broadcast; use to:'lead' to reply to the Lead. Every send is also recorded on the sidecar so the panel shows the conversation.",
+    description: "Send a message that a member will actually read: the text is injected into the target sub-agent's message inbox. By default a running member's current turn is interrupted first, so the message immediately starts a fresh turn instead of waiting for the next step boundary; pass `interrupt: false` to keep the current turn and deliver at the next step boundary. An idle member is woken. `to` is a member NAME (member id also accepted) or '*' to broadcast; use to:'lead' to reply to the Lead. Every send is also recorded on the sidecar so the panel shows the conversation. Returns delivery status only, never the member's reply: the reply arrives asynchronously as a new message in a later turn. Never wait for it with sleep/Start-Sleep/delayed scripts, polling loops, or repeated team_status calls — after sending, continue independent work or end the turn.",
     parameters: {
       type: 'object',
       additionalProperties: false,
