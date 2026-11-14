@@ -44,7 +44,6 @@ window.__ModuleLoader__.load({
         card_stop_done: '已停止',
         card_title: '团队校验',
         sev_critical: '严重',
-        sev_warning: '警告',
         card_all_done: '全部检查完成',
         card_stopped: '已停止',
         card_plan_aria: '成员计划',
@@ -98,7 +97,6 @@ window.__ModuleLoader__.load({
         card_stop_done: 'Stopped',
         card_title: 'Team verification',
         sev_critical: 'critical',
-        sev_warning: 'warning',
         card_all_done: 'All checks done',
         card_stopped: 'Stopped',
         card_plan_aria: 'Member plan',
@@ -150,34 +148,48 @@ window.__ModuleLoader__.load({
 .dsht-chip.is-idle { color:var(--dsw-alias-label-secondary); }
 @keyframes dsht-pulse { 0%,100% { opacity:1 } 50% { opacity:.45 } }
 
-/* 输入框权限控件右侧：团队卡片入口（affectui AgentFindings 移植） */
-.dsht-afc-pill { display:inline-flex; align-items:center; gap:6px; height:24px; padding:0 8px; border:1px solid var(--dsw-alias-border-l1); border-radius:999px; background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-primary); font-size:12px; line-height:16px; font-variant-numeric:tabular-nums; cursor:pointer; white-space:nowrap; }
-.dsht-afc-pill:hover { border-color:var(--dsw-alias-brand-primary); }
-.dsht-afc-pill[aria-expanded="true"] { border-color:var(--dsw-alias-brand-primary); color:var(--dsw-alias-brand-primary); }
-.dsht-afc-pill-mark { display:inline-flex; flex:none; color:var(--dsw-alias-brand-primary); }
-.dsht-afc-pill-run { color:var(--dsw-alias-label-secondary); }
-.dsht-afc-pill-sev { display:inline-flex; align-items:center; gap:3px; }
-.dsht-afc-pill-sev[data-severity="critical"] { color:var(--dsw-alias-state-error-primary); }
-.dsht-afc-pill-sev[data-severity="warning"] { color:var(--dsw-alias-state-warn-primary); }
-.dsht-afc-pill-dot { width:6px; height:6px; border-radius:50%; background:currentColor; }
-/* 快照这一轮没取到（sidecar 抖动）时仍保留入口，只做轻微降权，避免卡片闪一下就消失 */
-.dsht-afc-pill[data-dsh-team-stale] { border-style:dashed; }
-.dsht-afc-pill[data-dsh-team-stale] .dsht-afc-pill-run::after { content:" ·!"; color:var(--dsw-alias-label-tertiary); font-weight:600; }
+/* 聊天框上方：团队进度条。左侧团队概况，中间成员横向铺开（点开成员详情），右侧原卡片顶栏操作 */
+.dsht-afc-bar { display:flex; align-items:center; gap:8px; align-self:center; margin-inline:auto; width:fit-content; max-width:80%; min-width:0; padding:4px 6px 4px 10px; border:1px solid var(--dsw-alias-border-l1); border-radius:10px; background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-primary); font-size:12px; }
+.dsht-afc-bar-head { display:inline-flex; align-items:center; gap:6px; min-width:0; flex:none; max-width:220px; }
+.dsht-afc-bar-mark { display:inline-flex; flex:none; color:var(--dsw-alias-brand-primary); }
+.dsht-afc-bar-name { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* 标题旁只留「状态点 + 运行中数量」：与右侧严重/警告计数、成员 chip 的红点保持同一套视觉 */
+.dsht-afc-bar-live { display:inline-flex; align-items:center; gap:4px; flex:none; font-size:11px; color:var(--dsw-alias-label-secondary); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.dsht-afc-bar-live .dsht-afc-bar-dot { background:var(--dsw-alias-label-tertiary); }
+.dsht-afc-bar-live[data-status="running"] { color:var(--dsw-static-blue-500, #3b82f6); }
+.dsht-afc-bar-live[data-status="running"] .dsht-afc-bar-dot { background:currentColor; animation:dsht-pulse 1.6s ease-in-out infinite; }
+.dsht-afc-bar-live[data-status="failed"] { color:var(--dsw-alias-state-error-primary); }
+.dsht-afc-bar-live[data-status="failed"] .dsht-afc-bar-dot { background:currentColor; }
+.dsht-afc-bar-sev { display:inline-flex; align-items:center; gap:3px; flex:none; font-size:11px; font-variant-numeric:tabular-nums; }
+.dsht-afc-bar-sev[data-severity="critical"] { color:var(--dsw-alias-state-error-primary); }
+.dsht-afc-bar-dot { width:6px; height:6px; border-radius:50%; background:currentColor; }
+/* 快照这一轮没取到（sidecar 抖动）时仍保留入口，只做轻微降权，避免整条闪一下就消失 */
+.dsht-afc-bar[data-dsh-team-stale] { border-style:dashed; }
+.dsht-afc-bar[data-dsh-team-stale] .dsht-afc-bar-live::after { content:" ·!"; color:var(--dsw-alias-label-tertiary); font-weight:600; }
+.dsht-afc-members { display:flex; align-items:center; gap:6px; flex:1 1 auto; min-width:0; overflow-x:auto; overscroll-behavior-x:contain; scrollbar-width:thin; padding:1px 0; }
+.dsht-afc-member { display:inline-flex; align-items:center; gap:6px; flex:none; height:26px; padding:0 8px; border:1px solid var(--dsw-alias-border-l1); border-radius:8px; background:var(--dsw-alias-bg-base); color:var(--dsw-alias-label-primary); font-size:12px; line-height:16px; cursor:pointer; white-space:nowrap; }
+.dsht-afc-member:hover { border-color:color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, transparent); }
+.dsht-afc-member[aria-pressed="true"] { border-color:var(--dsw-alias-brand-primary); background:color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, transparent); }
+.dsht-afc-member-icon { position:relative; display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; flex:none; border-radius:50%; border:1px solid var(--dsw-alias-border-l1); background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-secondary); font-size:9px; font-weight:600; letter-spacing:.02em; }
+.dsht-afc-member-icon img { display:block; width:14px; height:14px; }
+/* 状态红点：压在模型图标右下角，用与图标底色同色的描边把它从图标上「抠」出来 */
+.dsht-afc-member-dot { position:absolute; right:-2px; bottom:-2px; width:8px; height:8px; border-radius:50%; border:2px solid var(--dsw-alias-bg-layer-2); background:var(--dsw-alias-label-tertiary); box-sizing:content-box; }
+.dsht-afc-member[data-status="running"] .dsht-afc-member-dot { background:var(--dsw-static-blue-500, #3b82f6); animation:dsht-pulse 1.6s ease-in-out infinite; }
+.dsht-afc-member[data-status="failed"] .dsht-afc-member-dot { background:var(--dsw-alias-state-error-primary); }
+.dsht-afc-member[data-status="done"] .dsht-afc-member-dot { background:var(--dsw-alias-brand-primary); opacity:.55; }
+.dsht-afc-member-name { max-width:120px; overflow:hidden; text-overflow:ellipsis; }
+.dsht-afc-member-count { font-size:11px; color:var(--dsw-alias-label-secondary); font-variant-numeric:tabular-nums; }
+.dsht-afc-bar-actions { margin-left:auto; display:inline-flex; align-items:center; gap:4px; flex:none; }
+.dsht-afc-bar-open, .dsht-afc-bar-stop { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border:1px solid var(--dsw-alias-border-l1); border-radius:6px; background:color-mix(in srgb, var(--dsw-alias-bg-layer-2) 65%, transparent); color:var(--dsw-alias-label-secondary); cursor:pointer; text-decoration:none; }
+.dsht-afc-bar-open:hover { color:var(--dsw-alias-brand-primary); border-color:var(--dsw-alias-brand-primary); }
+.dsht-afc-bar-stop:hover { color:var(--dsw-alias-state-error-primary); border-color:var(--dsw-alias-state-error-primary); }
+.dsht-afc-bar-stop:disabled { cursor:default; opacity:.55; }
+.dsht-afc-bar-stop:disabled:hover { color:var(--dsw-alias-label-secondary); border-color:var(--dsw-alias-border-l1); }
 
 /* 卡片停靠层（shell.overlay 是点击穿透层，卡片自己接管指针） */
 .dsht-afc-dock { position:fixed; top:56px; right:20px; width:368px; max-width:calc(100vw - 40px); z-index:80; pointer-events:auto; display:flex; flex-direction:column; gap:6px; }
-.dsht-afc-dock-bar { display:flex; align-items:center; gap:6px; padding:4px 8px; border-radius:9px; font-size:11px; color:var(--dsw-alias-label-secondary); background:color-mix(in srgb, var(--dsw-alias-bg-overlay) 62%, transparent); border:1px solid color-mix(in srgb, var(--dsw-alias-border-l1) 55%, transparent); -webkit-backdrop-filter:blur(14px) saturate(150%); backdrop-filter:blur(14px) saturate(150%); }
-.dsht-afc-dock-name { font-weight:600; color:var(--dsw-alias-label-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.dsht-afc-dock-close { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border:1px solid var(--dsw-alias-border-l1); border-radius:6px; background:color-mix(in srgb, var(--dsw-alias-bg-layer-2) 65%, transparent); color:var(--dsw-alias-label-secondary); cursor:pointer; }
-.dsht-afc-dock-close:hover { color:var(--dsw-alias-label-primary); border-color:var(--dsw-alias-brand-primary); }
-/* 停止团队：图标按钮与 × 并列在最右；点击只开二次确认弹窗，不直接执行 */
-.dsht-afc-dock-actions { margin-left:auto; display:inline-flex; align-items:center; gap:4px; }
-.dsht-afc-dock-open { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border:1px solid var(--dsw-alias-border-l1); border-radius:6px; background:color-mix(in srgb, var(--dsw-alias-bg-layer-2) 65%, transparent); color:var(--dsw-alias-label-secondary); cursor:pointer; text-decoration:none; }
-.dsht-afc-dock-open:hover { color:var(--dsw-alias-brand-primary); border-color:var(--dsw-alias-brand-primary); }
-.dsht-afc-dock-stop { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border:1px solid var(--dsw-alias-border-l1); border-radius:6px; background:color-mix(in srgb, var(--dsw-alias-bg-layer-2) 65%, transparent); color:var(--dsw-alias-label-secondary); cursor:pointer; }
-.dsht-afc-dock-stop:hover { color:var(--dsw-alias-state-error-primary); border-color:var(--dsw-alias-state-error-primary); }
-.dsht-afc-dock-stop:disabled { cursor:default; opacity:.55; }
-.dsht-afc-dock-stop:disabled:hover { color:var(--dsw-alias-label-secondary); border-color:var(--dsw-alias-border-l1); }
+/* 成员详情浮层：定位到被点开的成员 chip 下方，内容是该成员的 AgentFindings
+   顶栏（团队名/打开面板/停止）已经搬到聊天框上方的进度条里 */
 /* 停止确认弹窗：盖住整帧，点遮罩/取消/Esc 关闭 */
 .dsht-afc-modal { position:fixed; inset:0; z-index:90; display:grid; place-items:center; padding:16px; background:color-mix(in srgb, #000 32%, transparent); pointer-events:auto; }
 .dsht-afc-modal-card { width:min(320px, 100%); display:grid; gap:10px; padding:14px 16px; border-radius:12px; background:var(--dsw-alias-bg-overlay); border:1px solid var(--dsw-alias-border-l1); box-shadow:0 18px 44px -26px color-mix(in srgb, #000 55%, transparent); color:var(--dsw-alias-label-secondary); font-size:12px; line-height:18px; }
@@ -228,7 +240,7 @@ window.__ModuleLoader__.load({
 }
 @supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))) {
   .dsht-afc-dock .ui-afc__card { background:var(--dsw-alias-bg-overlay); }
-  .dsht-afc-dock-bar { background:var(--dsw-alias-bg-layer-2); }
+  .dsht-afc-bar { background:var(--dsw-alias-bg-layer-2); }
 }
 .dsht-afc-dock .ui-afc__spark { color:var(--dsw-alias-brand-primary); }
 .dsht-afc-dock .ui-afc__agent[data-status="running"] .ui-afc__fill::before {
@@ -856,6 +868,8 @@ window.__ModuleLoader__.load({
       phase: 'idle',
       open: false,
       pinned: false,
+      /** 浮层当前聚焦的成员 id：点上方进度条里的成员 chip 打开，null 表示浮层不显示。 */
+      focus: null,
       teamId: null,
       teamName: '',
       agents: [],
@@ -917,12 +931,15 @@ window.__ModuleLoader__.load({
           try { fn(); } catch { /* 单个订阅者出错不影响其它订阅者 */ }
         }
       },
-      toggle(sessionId) {
+      /** 点成员 chip：已经开着同一成员就收起，否则打开浮层并聚焦该成员。 */
+      openMember(sessionId, memberId) {
+        if (!sessionId || !memberId) return;
         const card = this.get(sessionId);
-        this.set(sessionId, { open: !card.open, pinned: true });
+        const same = card.open && card.focus === memberId;
+        this.set(sessionId, { open: !same, pinned: true, focus: same ? null : memberId });
       },
       close(sessionId) {
-        this.set(sessionId, { open: false, pinned: true });
+        this.set(sessionId, { open: false, pinned: true, focus: null });
       },
     };
 
@@ -967,6 +984,31 @@ window.__ModuleLoader__.load({
       if (member.status === 'failed') return 'failed';
       if (current && current.status === 'running') return 'running';
       return memberStatus(member.status);
+    };
+    /**
+     * 侧车快照里「已停止」的成员，被用户手动发消息唤醒后仍是 idle（sidecar 只看任务，
+     * 不感知直接发到子会话的消息）。DSH 的会话运行状态才是实时的：这里用它把成员
+     * 补成 running，否则进度条上的状态点会一直是灰色。failed 优先级最高，不覆盖。
+     */
+    const applyLiveStatus = (agents, statusMap, rows) => {
+      const rowsById = new Map();
+      if (Array.isArray(rows)) {
+        for (const row of rows) if (row && row.id) rowsById.set(row.id, row);
+      }
+      let changed = false;
+      const next = agents.map((agent) => {
+        if (!agent || !agent.agentSessionId || agent.status === 'failed') return agent;
+        const live = statusMap && typeof statusMap.get === 'function' ? statusMap.get(agent.agentSessionId) : null;
+        const row = rowsById.get(agent.agentSessionId);
+        // 会话状态表优先；没拿到时退回会话行自带的 running 标记
+        const running = live && live.running !== undefined
+          ? live.running === true
+          : !!(row && row.running === true);
+        if (!running || agent.status === 'running') return agent;
+        changed = true;
+        return Object.assign({}, agent, { status: 'running' });
+      });
+      return changed ? next : agents;
     };
     /** sidecar 计划步骤状态 → 卡片里的符号。 */
     /** 计划行状态图标（对齐 web-ui PlanSteps：pending 虚线圈 / active 转圈 / done 对勾 / blocked 叉 / skipped 减号）。 */
@@ -1122,7 +1164,7 @@ window.__ModuleLoader__.load({
 
     /**
      * 快照落库。
-     * - 卡片**不自动展开**：只有用户点过 pill（pinned）时才沿用其选择；否则一直收起，
+     * - 卡片**不自动展开**：只有用户点过成员 chip（pinned）时才沿用其选择；否则一直收起，
      *   团队在跑也不弹计划列表，避免聊天框被自动撑开。
      * - 空快照/请求失败不清屏：团队可能只是这一轮没查到（sidecar 重启、成员列表抖动），
      *   连续 MISS_LIMIT 次为空才真正收起入口，避免卡片闪一下就消失。
@@ -1138,11 +1180,13 @@ window.__ModuleLoader__.load({
         cardStore.set(sessionId, {
           phase: 'ready', teamId: null, teamName: '', agents: [], findings: [],
           running: 0, memberCount: 0, error: null, misses: 0,
-          open: false, pinned: false,
+          open: false, pinned: false, focus: null,
         });
         return;
       }
       const model = buildCardModel(snapshot);
+      // 聚焦的成员可能已经退场：只在成员还在时保留浮层，否则一起收起。
+      const focus = prev.focus && model.agents.some((agent) => agent.id === prev.focus) ? prev.focus : null;
       cardStore.set(sessionId, {
         phase: 'ready',
         teamId: snapshot.team.id,
@@ -1154,7 +1198,8 @@ window.__ModuleLoader__.load({
         asOf: snapshot.asOf,
         error: null,
         misses: 0,
-        open: prev.pinned ? prev.open : false,
+        open: prev.pinned === true && prev.open === true && !!focus,
+        focus,
       });
     }
 
@@ -1260,6 +1305,25 @@ window.__ModuleLoader__.load({
         h('circle', { cx: 11.6, cy: 11.4, r: 1.1, fill: 'currentColor', opacity: 0.55 }));
     }
 
+    /**
+     * 成员的 Todo/计划进度：完成比 + 进度百分比。
+     * 计划驱动的成员按「已完成步数 / 计划步数」算；没有计划时退回 sidecar 上报的 pct。
+     * 上方进度条的 chip 与浮层里的成员行共用这一份口径，避免两处数字不一致。
+     */
+    function memberProgress(agent) {
+      const done = agent.done || 0;
+      const total = agent.total || 0;
+      const percent = agent.planDriven && total
+        ? Math.min(100, Math.max(0, (done / total) * 100))
+        : agent.pct != null
+          ? Math.min(100, Math.max(0, agent.pct * 100))
+          : (total ? Math.min(100, (done / total) * 100) : 0);
+      const label = !agent.planDriven && agent.pct != null
+        ? Math.round(percent) + '%'
+        : done + '/' + total;
+      return { percent, label };
+    }
+
     /** 团队校验卡片：成员进度 + 计划（计划全部展开，不再折叠；「最新发现」已移除）。 */
     function AgentFindings(props) {
       const t = props.t || ((key) => key);
@@ -1280,16 +1344,11 @@ window.__ModuleLoader__.load({
       },
       h('div', { className: 'ui-afc__card' },
         h('ul', { className: 'ui-afc__agents' }, agents.map((agent) => {
-          // 计划驱动的成员按「已完成步数 / 计划步数」画，和右侧数字保持一致；
+          // 计划驱动的成员按「已完成步数 / 计划步数」画，和上方进度条保持一致；
           // 没有计划时退回 sidecar 上报的 pct（当前步序进度）。
-          const percent = agent.planDriven && agent.total
-            ? Math.min(100, Math.max(0, ((agent.done || 0) / agent.total) * 100))
-            : agent.pct != null
-              ? Math.min(100, Math.max(0, agent.pct * 100))
-              : (agent.total ? Math.min(100, ((agent.done || 0) / agent.total) * 100) : 0);
-          const progressLabel = !agent.planDriven && agent.pct != null
-            ? Math.round(percent) + '%'
-            : (agent.done || 0) + '/' + (agent.total || 0);
+          const progress = memberProgress(agent);
+          const percent = progress.percent;
+          const progressLabel = progress.label;
           const logo = modelLogo(agent.model, agent.name);
           const taskText = statusText(agent);
           const planTotal = agent.plan.length;
@@ -1352,9 +1411,13 @@ window.__ModuleLoader__.load({
         }))));
     }
 
-    /** 输入框权限控件右侧入口：本会话的子会话（团队成员）→ 团队卡片开关。 */
-    function memberStrip(t, getService) {
-      return function TeamCardEntry(props) {
+    /**
+     * 聊天框上方（conversation.input.dock）：团队进度条。
+     * 左侧团队概况，中间成员横向铺开（状态红点 + 名字 + Todo 进度），点成员在浮层里看该成员详情；
+     * 右侧是原卡片顶栏的「在浏览器打开面板 / 停止团队」。
+     */
+    function memberBar(t, getService) {
+      return function TeamMemberBar(props) {
         const sessionId = (props && props.sessionId) || '';
         const byId = (props && typeof props.useSessions === 'function'
           ? props.useSessions((state) => state.byId)
@@ -1371,6 +1434,10 @@ window.__ModuleLoader__.load({
         const selfRow = sessionId && byId ? byId[sessionId] : null;
         const selfCwd = (selfRow && typeof selfRow.cwd === 'string' && selfRow.cwd) || '';
         const card = useCard(sessionId);
+        // 实时会话运行状态：手动发消息唤醒已停止的成员时，sidecar 快照仍是 idle
+        const statusMap = typeof (props && props.useSessionStatus) === 'function'
+          ? props.useSessionStatus((state) => state)
+          : null;
 
         // 当前是哪个会话：侧栏「编排」页据此决定 iframe 带哪个 team
         React.useEffect(() => {
@@ -1451,44 +1518,167 @@ window.__ModuleLoader__.load({
           };
         }, [sessionId, kidsKey]);
 
+        // 停止团队：二次确认弹窗挂在进度条里（原卡片顶栏按钮的一部分）。
+        // 状态带 teamId 归属：团队换了自然回到 idle，不依赖 reset effect。
+        const teamId = card.teamId || '';
+        const [stopUi, setStopUi] = React.useState({ teamId: null, state: 'idle', open: false, error: null });
+        const stopView = stopUi.teamId === teamId ? stopUi : { teamId, state: 'idle', open: false, error: null };
+        const stopState = stopView.state;
+        const patchStop = (patch) => {
+          setStopUi((prev) => Object.assign({}, prev && prev.teamId === teamId ? prev : { teamId }, { teamId }, patch));
+        };
+        const stopTimerRef = React.useRef(null);
+        React.useEffect(() => () => { if (stopTimerRef.current) clearTimeout(stopTimerRef.current); }, []);
+        const closeConfirm = () => {
+          if (stopState === 'busy') return;
+          patchStop({ open: false, error: null });
+        };
+        const confirmStop = () => {
+          if (!teamId || stopState === 'busy') return;
+          patchStop({ state: 'busy', error: null, open: true });
+          fetch(API_BASE + '/teams/' + encodeURIComponent(teamId) + '/stop', {
+            method: 'POST',
+            headers: { accept: 'application/json', 'content-type': 'application/json' },
+            body: JSON.stringify({ reason: 'team card stop' }),
+          }).then((res) => {
+            if (!res || !res.ok) throw new Error('E_HTTP ' + (res ? res.status : 'no-response'));
+            patchStop({ state: 'done', open: false, error: null });
+            // 2.5s 后回到可点状态：团队可能又被派发新任务，不该永久锁死这个按钮
+            stopTimerRef.current = setTimeout(() => patchStop({ state: 'idle' }), 2500);
+            // 乐观更新；下一轮轮询（≤4s）再对齐真实状态
+            if (sessionId) cardStore.set(sessionId, { running: 0 });
+          }).catch((err) => {
+            patchStop({ state: 'idle', error: String((err && err.message) || err || '停止团队失败') });
+          });
+        };
+        // 弹窗打开时把按键事件接过来：Esc 关闭 / Enter 确认，避免只能鼠标点
+        React.useEffect(() => {
+          if (!stopView.open) return () => {};
+          if (typeof window === 'undefined' || !window || typeof window.addEventListener !== 'function') return () => {};
+          const onKey = (event) => {
+            const key = event && event.key;
+            if (key === 'Escape') closeConfirm();
+            if (key === 'Enter') confirmStop();
+          };
+          window.addEventListener('keydown', onKey);
+          return () => { window.removeEventListener('keydown', onKey); };
+        }, [stopView.open, stopState]);
+
         // 只在本会话确实挂着团队时出现：避免非团队子会话（普通 subagent）闪一下空入口。
         // 注意不能要求 phase === 'ready'：轮询偶发失败时会清掉入口，视觉上「闪一下就没了」。
         if (!kids.length || !card.teamId) return null;
 
         const critical = card.findings.filter((finding) => finding.severity === 'critical').length;
-        const warning = card.findings.filter((finding) => finding.severity === 'warning').length;
-        const open = !!card.open;
         const name = card.teamName || t('members_title');
-        const summary = t('running_of', { n: card.running, m: card.memberCount });
-        // 精简：图标 + n/m + 非零的严重/警告计数；团队名只进 tooltip，不占工具行宽度。
-        return h('button', {
-          type: 'button',
-          className: 'dsht-afc-pill',
-          'data-dsh-team-pill': card.teamId || 'pending',
+        const agents = applyLiveStatus(card.agents, statusMap, kids);
+        const runningCount = agents.filter((agent) => agent.status === 'running').length;
+        const summary = t('running_of', { n: runningCount, m: agents.length });
+        const liveStatus = agents.some((agent) => agent.status === 'failed') ? 'failed'
+          : runningCount > 0 ? 'running' : 'idle';
+        const focus = card.open && card.focus ? card.focus : null;
+        const busy = stopState === 'busy';
+        const stopped = stopState === 'done';
+        const chipTitle = (agent) => {
+          const raw = agent.statusRaw || agent.status || 'running';
+          const task = agent.status === 'failed' ? t('card_stopped')
+            : agent.status === 'done' ? t('card_all_done')
+              : clip(agent.planStep || agent.step || t('status_' + (KNOWN_STATUS.includes(raw) ? raw : 'unknown')), 96);
+          return [agent.name, task, (agent.done || 0) + '/' + (agent.total || 0)].join(' · ');
+        };
+        return h('div', {
+          className: 'dsht-afc-bar',
+          'data-dsh-team-bar': card.teamId,
           'data-dsh-team-stale': card.error ? '' : undefined,
-          'aria-expanded': open ? 'true' : 'false',
-          title: card.error || (name + ' · ' + summary + ' · ' + t(open ? 'card_close' : 'card_open')),
-          'aria-label': name + ' · ' + summary,
-          onClick: () => cardStore.toggle(sessionId),
+          title: card.error || (name + ' · ' + summary),
         },
-        h('span', { className: 'dsht-afc-pill-mark' }, h(Spark, { size: 12 })),
-        h('span', { className: 'dsht-afc-pill-run' }, (card.running || 0) + '/' + (card.memberCount || 0)),
-        critical
-          ? h('span', { className: 'dsht-afc-pill-sev', 'data-severity': 'critical', title: t('sev_critical') },
-            h('span', { className: 'dsht-afc-pill-dot' }), critical)
-          : null,
-        warning
-          ? h('span', { className: 'dsht-afc-pill-sev', 'data-severity': 'warning', title: t('sev_warning') },
-            h('span', { className: 'dsht-afc-pill-dot' }), warning)
+        // 左：团队概况（团队名 + 状态点/运行中数量 + 非零的严重计数）
+        h('span', { className: 'dsht-afc-bar-head' },
+          h('span', { className: 'dsht-afc-bar-mark' }, h(Spark, { size: 12 })),
+          h('span', { className: 'dsht-afc-bar-name', 'data-dsh-team-name': '' }, name),
+          h('span', { className: 'dsht-afc-bar-live', 'data-status': liveStatus, title: summary },
+            h('span', { className: 'dsht-afc-bar-dot' }),
+            h('span', null, String(runningCount))),
+          critical
+            ? h('span', { className: 'dsht-afc-bar-sev', 'data-severity': 'critical', title: t('sev_critical') },
+              h('span', { className: 'dsht-afc-bar-dot' }), critical)
+            : null),
+        // 中：成员横向铺开；点成员打开/收起该成员的详情浮层
+        h('span', { className: 'dsht-afc-members' }, agents.map((agent) => {
+          const progress = memberProgress(agent);
+          const active = focus === agent.id;
+          const logo = modelLogo(agent.model, agent.name);
+          return h('button', {
+            key: agent.id,
+            type: 'button',
+            className: 'dsht-afc-member',
+            'data-dsh-team-chip': card.teamId + ':' + agent.id,
+            'data-status': agent.status || 'running',
+            'aria-pressed': active ? 'true' : 'false',
+            title: chipTitle(agent),
+            onClick: () => cardStore.openMember(sessionId, agent.id),
+          },
+          // 模型图标（识别不出品牌时回退首字母），状态红点压在图标右下角
+          h('span', { className: 'dsht-afc-member-icon', 'data-logo': logo ? '' : undefined },
+            logo || h('span', { className: 'dsht-afc-member-initials' }, initials(agent.name)),
+            h('span', { className: 'dsht-afc-member-dot', 'aria-hidden': 'true' })),
+          h('span', { className: 'dsht-afc-member-name', title: agent.name }, agent.name),
+          h('span', { className: 'dsht-afc-member-count' }, progress.label));
+        })),
+        // 右：原卡片顶栏操作（浏览器打开 / 停止团队）；关闭靠再点 chip 或 Esc
+        h('span', { className: 'dsht-afc-bar-actions' },
+          h('a', {
+            className: 'dsht-afc-bar-open',
+            href: panelBrowserUrl(card.teamId),
+            target: '_blank',
+            rel: 'noopener noreferrer',
+            title: t('card_browser'),
+            'aria-label': t('card_browser'),
+          }, h('svg', { width: 10, height: 10, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': 'true' },
+            h('path', { d: 'M8.1 2.4h3.5v3.5M11.6 2.4 6.7 7.3', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' }),
+            h('path', { d: 'M10.8 8.3v2.3a1 1 0 0 1-1 1H3.6a1 1 0 0 1-1-1V4.4a1 1 0 0 1 1-1h2.3', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' }))),
+          h('button', {
+            type: 'button',
+            className: 'dsht-afc-bar-stop',
+            disabled: busy || stopped,
+            title: stopped ? t('card_stop_done') : t('card_stop_title'),
+            'aria-label': t('card_stop'),
+            onClick: () => { if (!busy) patchStop({ open: true, error: null }); },
+          }, h('svg', { width: 10, height: 10, viewBox: '0 0 14 14', 'aria-hidden': 'true' },
+            h('rect', { x: 3.2, y: 3.2, width: 7.6, height: 7.6, rx: 1.4, fill: 'currentColor' })))),
+        stopView.open
+          ? h('div', {
+            className: 'dsht-afc-modal',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-label': t('card_stop_confirm_title'),
+            onClick: (event) => { if (event && event.target === event.currentTarget) closeConfirm(); },
+          },
+          h('div', { className: 'dsht-afc-modal-card' },
+            h('div', { className: 'dsht-afc-modal-title' }, t('card_stop_confirm_title')),
+            h('div', null, t('card_stop_confirm_text')),
+            stopView.error ? h('div', { className: 'dsht-afc-modal-error' }, stopView.error) : null,
+            h('div', { className: 'dsht-afc-modal-actions' },
+              h('button', {
+                type: 'button',
+                className: 'dsht-afc-modal-btn',
+                disabled: busy,
+                onClick: closeConfirm,
+              }, t('card_cancel')),
+              h('button', {
+                type: 'button',
+                className: 'dsht-afc-modal-btn is-danger',
+                disabled: busy,
+                onClick: confirmStop,
+              }, busy ? t('card_stop_running') : t('card_stop_confirm')))))
           : null);
       };
     }
 
     /**
-     * 量一下胶囊按钮的位置：卡片要贴着按钮弹出（而不是钉在窗口右上角）。
-     * 胶囊在输入框工具行、卡片在 shell.overlay 全局浮层，两者不在同一棵 DOM 子树，
-     * 所以只能按 data 属性找按钮再取 rect；取不到时返回 null，退回 CSS 兜底位置。
-     * 输入框在页面底部：下方放不下卡片时翻到按钮上方弹出。
+     * 量一下被点开的成员 chip 的位置：成员详情浮层要贴着 chip 弹出。
+     * 进度条在聊天框上方（InputZone），浮层在 shell.overlay 全局浮层，两者不在同一棵 DOM 子树，
+     * 所以只能按 data 属性找 chip 再取 rect；取不到时退回整条进度条，再退回 CSS 兜底位置。
+     * 进度条在聊天框上方：下方放不下浮层时翻到 chip 上方弹出。
      */
     const DOCK_WIDTH = 368;
 
@@ -1497,25 +1687,38 @@ window.__ModuleLoader__.load({
       try { return typeof window !== 'undefined' && !!window && window.__DSH_TEAM_DEBUG === true; } catch { return false; }
     }
 
-    /** 按 data 属性找胶囊：团队 id 可能带引号/反斜杠，选择器失败就退回全量扫描。 */
-    function findPillNode(teamId) {
+    /** 按 data 属性找节点：id 可能带引号/反斜杠，选择器失败就退回全量扫描。 */
+    function findDataNode(attr, value) {
       if (typeof document === 'undefined' || !document || typeof document.querySelector !== 'function') return null;
-      const id = String(teamId || '');
+      const id = String(value || '');
       try {
-        const exact = document.querySelector('[data-dsh-team-pill="' + id.replace(/["\\]/g, '\\$&') + '"]');
+        const exact = document.querySelector('[' + attr + '="' + id.replace(/["\\]/g, '\\$&') + '"]');
         if (exact) return exact;
       } catch { /* 非法选择器：走下面扫描 */ }
       if (typeof document.querySelectorAll !== 'function') return null;
       try {
-        for (const node of document.querySelectorAll('[data-dsh-team-pill]')) {
-          if (node && typeof node.getAttribute === 'function' && node.getAttribute('data-dsh-team-pill') === id) return node;
+        for (const node of document.querySelectorAll('[' + attr + ']')) {
+          if (node && typeof node.getAttribute === 'function' && node.getAttribute(attr) === id) return node;
         }
       } catch { /* ignore */ }
       return null;
     }
 
-    function measureDockAnchor(teamId) {
-      const node = findPillNode(teamId);
+    /** 成员 chip → 整条进度条 → 任意 chip/进度条，逐级兜底。 */
+    function findDockNode(teamId, memberId) {
+      if (teamId && memberId) {
+        const chip = findDataNode('data-dsh-team-chip', teamId + ':' + memberId);
+        if (chip) return chip;
+      }
+      if (teamId) {
+        const bar = findDataNode('data-dsh-team-bar', teamId);
+        if (bar) return bar;
+      }
+      return findDataNode('data-dsh-team-chip') || findDataNode('data-dsh-team-bar');
+    }
+
+    function measureDockAnchor(teamId, memberId) {
+      const node = findDockNode(teamId, memberId);
       if (!node || typeof node.getBoundingClientRect !== 'function') return null;
       const rect = node.getBoundingClientRect();
       if (!rect || !rect.width) return null;
@@ -1547,23 +1750,29 @@ window.__ModuleLoader__.load({
 
     /** 浮层卡片（shell.overlay）：展示当前活跃会话的团队校验卡片。 */
     function teamCardDock(t, getService) {
-      return function TeamCardDock() {
+      return function TeamCardDock(props) {
         const active = useActiveCard();
         const card = active.card;
         const teamId = card && card.teamId ? card.teamId : '';
-        // position:fixed 贴着胶囊按钮：按钮在输入框槽、卡片在 overlay 槽，只能按按钮 rect 定位。
-        const [anchor, setAnchor] = React.useState(() => (teamId ? measureDockAnchor(teamId) : null));
+        // 实时会话运行状态：手动发消息唤醒已停止的成员时，快照里的成员仍是 idle
+        const statusMap = typeof (props && props.useSessionStatus) === 'function'
+          ? props.useSessionStatus((state) => state)
+          : null;
+        // 只有「点开了某个成员」才显示浮层；浮层贴着那个成员 chip
+        const focusId = card && card.focus ? card.focus : '';
+        // position:fixed 贴着成员 chip：进度条在输入区、浮层在 overlay 槽，只能按 chip 的 rect 定位。
+        const [anchor, setAnchor] = React.useState(() => (teamId && focusId ? measureDockAnchor(teamId, focusId) : null));
         React.useEffect(() => {
-          if (!teamId) return () => {};
+          if (!teamId || !focusId) return () => {};
           // scroll 会高频触发：位置没变就复用旧对象，避免无意义重渲染
           const key = (a) => (a ? [a.placement, a.top, a.bottom, a.left, a.right, a.maxHeight].join('|') : '');
           const sync = () => {
-            const next = measureDockAnchor(teamId);
-            if (debugOn()) console.debug('[dsh-team] dock anchor', teamId, next);
+            const next = measureDockAnchor(teamId, focusId);
+            if (debugOn()) console.debug('[dsh-team] dock anchor', teamId, focusId, next);
             setAnchor((prev) => (key(prev) === key(next) ? prev : next));
           };
           sync();
-          // 卡片和胶囊在不同槽位挂载，首帧可能还量不到胶囊：轮询兜底，量到就贴上去
+          // chip 和浮层在不同槽位挂载，首帧可能还量不到 chip：轮询兜底，量到就贴上去
           const timer = typeof setInterval === 'function' ? setInterval(sync, 300) : null;
           if (typeof window === 'undefined' || !window || typeof window.addEventListener !== 'function') {
             return () => { if (timer) clearInterval(timer); };
@@ -1575,61 +1784,28 @@ window.__ModuleLoader__.load({
             window.removeEventListener('resize', sync);
             window.removeEventListener('scroll', sync, true);
           };
-        }, [teamId]);
-        // 停止团队：图标按钮 + 二次确认弹窗（弹窗里再点「停止」才发请求）。
-        // 状态带 teamId 归属：卡片换团队时自然回到 idle，不依赖 reset effect。
-        const [stopUi, setStopUi] = React.useState({ teamId: null, state: 'idle', open: false, error: null });
-        const stopView = stopUi.teamId === teamId ? stopUi : { teamId, state: 'idle', open: false, error: null };
-        const stopState = stopView.state;
-        const patchStop = (patch) => {
-          setStopUi((prev) => Object.assign({}, prev && prev.teamId === teamId ? prev : { teamId }, { teamId }, patch));
-        };
-        const stopTimerRef = React.useRef(null);
-        React.useEffect(() => () => { if (stopTimerRef.current) clearTimeout(stopTimerRef.current); }, []);
-        const closeConfirm = () => {
-          if (stopState === 'busy') return;
-          patchStop({ open: false, error: null });
-        };
-        const confirmStop = () => {
-          if (!teamId || stopState === 'busy') return;
-          patchStop({ state: 'busy', error: null, open: true });
-          fetch(API_BASE + '/teams/' + encodeURIComponent(teamId) + '/stop', {
-            method: 'POST',
-            headers: { accept: 'application/json', 'content-type': 'application/json' },
-            body: JSON.stringify({ reason: 'team card stop' }),
-          }).then((res) => {
-            if (!res || !res.ok) throw new Error('E_HTTP ' + (res ? res.status : 'no-response'));
-            patchStop({ state: 'done', open: false, error: null });
-            // 2.5s 后回到可点状态：团队可能又被派发新任务，不该永久锁死这个按钮
-            stopTimerRef.current = setTimeout(() => patchStop({ state: 'idle' }), 2500);
-            // 乐观更新；下一轮轮询（≤4s）再对齐真实状态
-            if (active.sessionId) cardStore.set(active.sessionId, { running: 0 });
-          }).catch((err) => {
-            patchStop({ state: 'idle', error: String((err && err.message) || err || '停止团队失败') });
-          });
-        };
-        // 弹窗打开时把按键事件接过来：Esc 关闭 / Enter 确认，避免只能鼠标点
+        }, [teamId, focusId]);
+        // 浮层打开时 Esc 收起：判断放在关闭按钮之外，键盘用户不点某个具体 chip 也能退出
         React.useEffect(() => {
-          if (!stopView.open) return () => {};
+          if (!card || !card.open || !focusId) return () => {};
           if (typeof window === 'undefined' || !window || typeof window.addEventListener !== 'function') return () => {};
           const onKey = (event) => {
-            const key = event && event.key;
-            if (key === 'Escape') closeConfirm();
-            if (key === 'Enter') confirmStop();
+            if (event && event.key === 'Escape' && active.sessionId) cardStore.close(active.sessionId);
           };
           window.addEventListener('keydown', onKey);
           return () => { window.removeEventListener('keydown', onKey); };
-        }, [stopView.open, stopState]);
-        if (!card || !card.open || !card.teamId) return null;
+        }, [card && card.open, focusId]);
+        if (!card || !card.open || !card.teamId || !focusId) return null;
         const openMember = (agent) => {
           if (agent && agent.agentSessionId && active.sessionId) {
             openMemberAside(getService, active.sessionId, agent.agentSessionId);
+            // 侧栏接管后收起浮层：同一个成员会话已经在右侧栏里打开，浮层留着只会挡视线
+            cardStore.close(active.sessionId);
           }
         };
-        const openConfirm = () => {
-          if (!teamId || stopState === 'busy') return;
-          patchStop({ open: true, error: null });
-        };
+        // 焦点成员被快照换掉时退回整组（正常不会发生：applySnapshot 会清掉失效的 focus）
+        const focusedAgents = card.agents.filter((agent) => agent.id === focusId);
+        const agents = applyLiveStatus(focusedAgents.length ? focusedAgents : card.agents, statusMap);
         const dockStyle = anchor
           ? {
             // 只给一边，另一边显式 auto：否则 CSS 兜底的 top:56px / right:20px 会跟内联值打架
@@ -1640,71 +1816,18 @@ window.__ModuleLoader__.load({
             '--dsht-dock-max': anchor.maxHeight ? anchor.maxHeight + 'px' : undefined,
           }
           : undefined;
-        return h('div', { className: 'dsht-afc-dock', 'data-dsh-team-card': card.teamId, style: dockStyle },
-          h('div', { className: 'dsht-afc-dock-bar' },
-            h('span', { className: 'dsht-afc-dock-name' }, card.teamName || t('members_title')),
-            h('span', {}, t('running_of', { n: card.running, m: card.memberCount })),
-            card.error ? h('span', { title: card.error }, '⚠') : null,
-            h('span', { className: 'dsht-afc-dock-actions' },
-              // 在系统浏览器里打开独立面板（带上当前团队），方便和 GUI 并排看
-              h('a', {
-                className: 'dsht-afc-dock-open',
-                href: panelBrowserUrl(card.teamId),
-                target: '_blank',
-                rel: 'noopener noreferrer',
-                title: t('card_browser'),
-                'aria-label': t('card_browser'),
-              }, h('svg', { width: 10, height: 10, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': 'true' },
-                h('path', { d: 'M8.1 2.4h3.5v3.5M11.6 2.4 6.7 7.3', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' }),
-                h('path', { d: 'M10.8 8.3v2.3a1 1 0 0 1-1 1H3.6a1 1 0 0 1-1-1V4.4a1 1 0 0 1 1-1h2.3', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' }))),
-              h('button', {
-                type: 'button',
-                className: 'dsht-afc-dock-stop',
-                disabled: stopState === 'busy' || stopState === 'done',
-                title: stopState === 'done' ? t('card_stop_done') : t('card_stop_title'),
-                'aria-label': t('card_stop'),
-                onClick: openConfirm,
-              }, h('svg', { width: 10, height: 10, viewBox: '0 0 14 14', 'aria-hidden': 'true' },
-                h('rect', { x: 3.2, y: 3.2, width: 7.6, height: 7.6, rx: 1.4, fill: 'currentColor' }))),
-              h('button', {
-                type: 'button',
-                className: 'dsht-afc-dock-close',
-                title: t('card_close'),
-                'aria-label': t('card_close'),
-                onClick: () => cardStore.close(active.sessionId),
-              }, '×'))),
-          h('div', { className: 'dsht-afc-dock-card' },
-            h(AgentFindings, {
-              t,
-              agents: card.agents,
-              onOpenMember: openMember,
-            })),
-          stopView.open
-            ? h('div', {
-              className: 'dsht-afc-modal',
-              role: 'dialog',
-              'aria-modal': 'true',
-              'aria-label': t('card_stop_confirm_title'),
-              onClick: (event) => { if (event && event.target === event.currentTarget) closeConfirm(); },
-            },
-            h('div', { className: 'dsht-afc-modal-card' },
-              h('div', { className: 'dsht-afc-modal-title' }, t('card_stop_confirm_title')),
-              h('div', null, t('card_stop_confirm_text')),
-              stopView.error ? h('div', { className: 'dsht-afc-modal-error' }, stopView.error) : null,
-              h('div', { className: 'dsht-afc-modal-actions' },
-                h('button', {
-                  type: 'button',
-                  className: 'dsht-afc-modal-btn',
-                  disabled: stopState === 'busy',
-                  onClick: closeConfirm,
-                }, t('card_cancel')),
-                h('button', {
-                  type: 'button',
-                  className: 'dsht-afc-modal-btn is-danger',
-                  disabled: stopState === 'busy',
-                  onClick: confirmStop,
-                }, stopState === 'busy' ? t('card_stop_running') : t('card_stop_confirm')))))
-            : null);
+        return h('div', {
+          className: 'dsht-afc-dock',
+          'data-dsh-team-card': card.teamId,
+          'data-dsh-team-focus': focusId,
+          style: dockStyle,
+        },
+        h('div', { className: 'dsht-afc-dock-card' },
+          h(AgentFindings, {
+            t,
+            agents,
+            onOpenMember: openMember,
+          })));
       };
     }
 
@@ -2108,20 +2231,19 @@ window.__ModuleLoader__.load({
           return cleanup;
         }, 'dsh-team-ui.entry()');
 
-        // 会话输入框：本会话团队卡片入口（pill）+ shell.overlay 浮层卡片。
-        // 挂在 conversation.input.left —— 它渲染在 permission/plan 控件组的下一个位置，
-        // 也就是输入框权限控件右侧的同一工具行（permission 是 single 槽，不能再收第二个入口）。
+        // 会话输入框上方：全宽团队进度条（成员横向铺开，点成员看详情）+ shell.overlay 成员详情浮层。
+        // conversation.input.dock 是「composer 卡片上方的全宽条目」，天然横向占满聊天框宽度。
         // 独立 effect：入口在 better-sidebar / 原生侧栏之间切换时，这条始终在位。
         ctx.effect(() => {
           const slots = ctx.slots;
           if (!slots || typeof slots.inject !== 'function') return () => {};
           const disposers = [];
-          disposers.push(slots.inject('conversation.input.left', () => slots.register({
-            name: 'conversation.input.left',
+          disposers.push(slots.inject('conversation.input.dock', () => slots.register({
+            name: 'conversation.input.dock',
             id: 'dsh-team:members',
-            order: 5,
+            order: 40,
             label: () => T('card_open'),
-          }, memberStrip(T, getService))));
+          }, memberBar(T, getService))));
           disposers.push(slots.inject('shell.overlay', () => slots.register({
             name: 'shell.overlay',
             id: 'dsh-team:findings',

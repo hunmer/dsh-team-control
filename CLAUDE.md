@@ -56,7 +56,7 @@ graph LR
 | GUI 面板插件 | `dsh-plugin-ui/` | 把面板挂成 better-sidebar 页签/侧栏入口，同源代理到 sidecar | [dsh-plugin-ui/CLAUDE.md](dsh-plugin-ui/CLAUDE.md) |
 | 面板前端 | `src/web-ui/` | React + coss ui 面板源码，构建到 `src/web/` | [src/web-ui/CLAUDE.md](src/web-ui/CLAUDE.md) |
 | 验收脚本 | `tests/` | AC-01~AC-19 + 插件/面板/路由/CLI/迁移脚本，真 sidecar + 假 ctx | [tests/CLAUDE.md](tests/CLAUDE.md) |
-| 契约与决策 | `docs/` | `CONTRACT.md` 实现契约、`adr/` 15 份决策（至 ADR-015 审批降噪/热改权限）、`handoffs/` 交接 | 见 [架构总览](claude/overview.md) |
+| 契约与决策 | `docs/` | `CONTRACT.md` 实现契约、`adr/` 17 份决策（至 ADR-017 团队进度条改到聊天框上方）、`handoffs/` 交接 | 见 [架构总览](claude/overview.md) |
 | 需求 | `prd/` | `agent-team-plugin-prd.md`（v1.0）、`implementation-brief.md` | 追溯需求来源 |
 | 技能 | `skills/dsh-agent-team/` | 给模型看的调用配方，插件启动时注册为 skills provider | 改工具描述时同步 |
 | 演示 | `demo/` | `run-demo.mjs` 3 个 sub-agent 成员 + DAG + 中断恢复 + 审批转发；`seed.mjs` 灌数据 | 手工验收体验 |
@@ -64,7 +64,7 @@ graph LR
 ## 扫描状态
 
 - 更新时间：2026-11-05（增量，基线 2026-11-01；对应 v0.2.0）
-- 已扫描范围：根目录全部 `*.md`/配置；`src/*.mjs`（11 个，含 `board.mjs`、`memory.mjs`）；`bin/dsh-team.mjs`；`dsh-plugin/index.js`（3484 行，工具清单与结构）+ `changes.js`/`pricing.js` 导出面；`dsh-plugin-ui/`（`index.js`/`client.js` 结构）；`src/web-ui/src`（`views/`、`components/` 结构，新增 Board 视图）；`tests/`（33 个脚本）；`docs/CONTRACT.md`（430 行）章节结构；`docs/adr/` 15 份标题；`prd/`、`skills/`、`demo/` 摘要。
+- 已扫描范围：根目录全部 `*.md`/配置；`src/*.mjs`（11 个，含 `board.mjs`、`memory.mjs`）；`bin/dsh-team.mjs`；`dsh-plugin/index.js`（3484 行，工具清单与结构）+ `changes.js`/`pricing.js` 导出面；`dsh-plugin-ui/`（`index.js`/`client.js` 结构）；`src/web-ui/src`（`views/`、`components/` 结构，新增 Board 视图）；`tests/`（33 个脚本）；`docs/CONTRACT.md`（430 行）章节结构；`docs/adr/` 17 份标题；`prd/`、`skills/`、`demo/` 摘要。
 - 跳过范围：`src/web-ui/node_modules/`（依赖）、`src/web/assets` 构建产物内容、`screenshots/*.png`、`work/essay-team/`（演示产物）、`docs/handoffs/` 正文（仅读标题）。
 - 覆盖度量：`src/**` 与 `dsh-plugin/**` 源码全部纳入；文档覆盖 6 个模块根 + 根目录。
 - 下一步建议：`src/web-ui/src/views/Board.tsx`/`BoardPage.tsx` 与 `store.tsx` 只看结构未逐行读；`dsh-plugin/index.js` 各工具 `execute` 细节按需补扫；`docs/handoffs/` 三份交接正文如需复现历史事故再展开。

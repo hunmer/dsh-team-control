@@ -1,6 +1,6 @@
 # ADR-011：会话右上角团队卡片——AgentFindings 移植到 header 胶囊 + overlay 浮层
 
-- 状态：已接受
+- 状态：部分被 [ADR-017](ADR-017-input-dock-team-bar.md) 取代（入口从输入框胶囊改为聊天框上方的全宽进度条，浮层改为单成员详情；其余结论仍有效）
 - 日期：2026-10-29
 - 关联：`docs/adr/ADR-010-panel-affectui-home.md`（面板 affectui 化）/ `dsh-plugin-ui/README.md`
 
