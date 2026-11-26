@@ -3781,7 +3781,7 @@ function buildTools(s, ctx) {
           }
         }
         if (rec) { rec.phase = 'execution'; rec.sawRunning = false; }
-      } else if (rec) {
+      } else if (rec && task?.status !== 'done') {
         rec.phase = 'planned';
       }
       if (task?.executionMode === 'new' && rec) {

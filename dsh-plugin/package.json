@@ -1,6 +1,6 @@
 {
   "name": "dsh-team-control",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "Expose the local dsh-team sidecar as model-facing tools (dsh_team_create / dsh_team_spawn / dsh_team_status / dsh_team_task / dsh_team_send / dsh_team_report_task / dsh_team_dispatch / dsh_team_control / dsh_team_approve / dsh_team_report), spawn real DSH sub-agent members with per-member permission presets, forward member approvals to the Lead, and manage the sidecar lifecycle.",
   "icon": "./icon.svg",
@@ -21,7 +21,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "dsh-team-control-cli": "^0.3.0"
+    "dsh-team-control-cli": "^0.3.1"
   },
   "exports": {
     ".": "./index.js",

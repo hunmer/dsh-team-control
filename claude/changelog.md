@@ -2,6 +2,13 @@
 
 > 只记录索引/文档的生成与更新，不记录产品 Changelog。倒序，最多 5 条。
 
+## 2026-11-26 · v0.3.1 成员报告完成自动打勾 todo / 规划会话绑定放宽与启动自检 / 看板两处修复
+
+- `agentReport` 报 `done` 后自动把该任务下未打勾的 todo 统一置 `done` 并发 `task.todo` 事件（复用 `setTaskTodos`，保留 `started_at`/`done_at`；`failed`/`blocked` 不动清单）。`docs/CONTRACT.md` §3.8 同步；`tests/todo-plan.mjs` 加两条断言。
+- `submitPlan` 改为按 `planning_session_id` 查任务、**不按状态过滤**，`planned`/`inprogress` 重复提交幂等、`done` 原样返回；真 404 带 `detail.hint`。§3.11 同步；`tests/ac-18-board.mjs` 加重复提交与旧会话 404 断言。
+- 新增 `Board.repairStaleBindings()`：sidecar 启动时解绑 `todo`/`done`/已归档任务上残留的 `planning_session_id`（不动 `lead_session_id`，`failed` 保留以支持 ADR-015 复活），并写 info 日志。§3.13 同步；新增 `tests/board-stale-binding.mjs`。
+- 三个包（cli / plugin / ui）统一升 0.3.1；plugin 对 cli 的依赖改 `^0.3.1`。
+
 ## 2026-11-18 · v0.3.0 工具名统一 dsh_team_* 前缀
 
 - 24 个工具改名且不保留旧名：`team_*` → `dsh_team_*`，`board_*` → `dsh_team_board_*`（如 `team_create` → `dsh_team_create`、`board_task_create` → `dsh_team_board_task_create`）。插件描述、sidecar 提示词、面板、`skills/dsh-agent-team/SKILL.md`、tests 与活跃文档同步；三个包（cli / plugin / ui）统一升 0.3.0。

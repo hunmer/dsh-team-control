@@ -723,8 +723,28 @@ export class DshTeam {
       return { ok: true, task: rowToTask(this.get('SELECT * FROM task WHERE id=?').get(task.id)), status: 'blocked', summary };
     }
     if (failed) this.scheduler.onTaskFailed({ teamId: m.team_id, memberId, taskId: task.id }, { error: summary || 'agent reported failure' });
-    else this.scheduler.onTaskDone({ teamId: m.team_id, memberId, taskId: task.id }, { result: summary });
+    else {
+      this.scheduler.onTaskDone({ teamId: m.team_id, memberId, taskId: task.id }, { result: summary });
+      // 任务已经交付：成员常忘了把清单最后几步置 done，这里统一补齐，
+      // 免得面板一直挂着 open/active 像没做完（失败/阻塞分支不打勾）。
+      this.completeTaskTodos(task.id, { by: memberId });
+    }
     return { ok: true, task: rowToTask(this.get('SELECT * FROM task WHERE id=?').get(task.id)), status: failed ? 'failed' : 'done', summary };
+  }
+
+  /**
+   * 成员报告任务完成後，把该任务清单里未打勾的项统一置 done。
+   * 复用 setTaskTodos：按 title 续用旧行（保留 id / started_at），并发出同样的
+   * task.todo 事件（面板只在收到它时刷新 Plan 区）。没有清单或已全勾时是 no-op。
+   */
+  completeTaskTodos(taskId, { by = null } = {}) {
+    const rows = this.get('SELECT * FROM todo WHERE task_id=? ORDER BY order_no ASC, created_at ASC').all(taskId);
+    if (!rows.length || rows.every((r) => r.status === 'done')) return null;
+    return this.setTaskTodos(taskId, rows.map((r) => ({
+      title: r.title,
+      status: 'done',
+      blockedBy: parseJson(r.blocked_by_json, []),
+    })), { by });
   }
 
   /** 归属校验：成员绑定了 session 时，上报方必须是同一个 session。 */

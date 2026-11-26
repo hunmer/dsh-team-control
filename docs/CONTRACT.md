@@ -263,6 +263,7 @@ root(run:team)                         ← 团队整体
 - **dispatch 是原子认领**：`evaluate()` 推 readiness → 校验 `maxConcurrency` → 按 `priority,created_at` 找 ready 任务（尊重 `assignee` 预绑与 `settleMs` 建图窗口，派发前重算依赖）→ 找 `idle` 且无在途任务的 agent 成员 → 同事务把任务置 `running` 并写 `task.dispatch` 事件。**不启动任何进程**；随后 Host 用 `sendAgentMessage(lead, sessionId, 简报)` 把任务说明发进该成员的信箱。
 - `agentStatus` 的 `idle`/`failed` 带在途任务时**兜底收尾**（`onTaskDone`/`onTaskFailed`），保证 agent 忘了显式回报时 DAG 也能推进；`interrupted` 只把在途任务转 `paused`，不会退回派发池。
 - `agentReport` 的 `blocked` **不消耗重试**：任务置 `blocked`、成员置 `blocked` 并带 `blockers:[{kind:"agent",detail}]`，Lead 决策后 `dispatch`/`resume` 再发一次。
+- `agentReport` 报告 `done` 时顺带把该任务（`task_id`）下未打勾的 todo 统一置 `done`，并发一条 `task.todo` 事件让面板刷新 Plan 区（没有清单或已全勾时跳过，保留原有 `started_at`/`done_at`）；`failed`/`blocked` 不改清单——未完成就是未完成，不能误标成 done。
 - 归属校验：成员绑定了 `agentSessionId` 时，`status`/`report` 的 `sessionId` 必须一致，否则 `400`。
 - trace：`sessionToMember` 由 `member.agent_session_id` 建立，该 session 的 span 直接挂 `member:<id>` 节点下，不再单独建 `session:` 节点（§3.4.1）。
 - 调度器只推进依赖与重试计时；任务认领统一由 `/api/agents/dispatch` 完成，sidecar 不启动任何子进程。
@@ -343,10 +344,12 @@ root(run:team)                         ← 团队整体
 | `POST /api/board/claim` | `{kind:'planning'|'inprogress', taskId?}` | `{item:{task,workspace,settings,fence}}` 或 `{item:null}`；`taskId` 可选，只 claim 指定任务；内部接口 |
 | `POST /api/board/tasks/:id/attach` | `{kind,sessionId,fence}` | board task；写 `planning_session_id` 或 `lead_session_id` |
 | `POST /api/board/tasks/:id/release` | `{kind,error}` | board task → failed |
-| `POST /api/board/agents/plan` | `{sessionId,plan,summary?}` | board task → `planned`；same 模式在同一调用里 claim 执行槽位并 attach 回该会话，直接返回 `inprogress`（槽位满则仍是 `planned`） |
+| `POST /api/board/agents/plan` | `{sessionId,plan,summary?}` | board task → `planned`；same 模式在同一调用里 claim 执行槽位并 attach 回该会话，直接返回 `inprogress`（槽位满则仍是 `planned`）。按 `planning_session_id` 找任务、**不按状态过滤**（该绑定保留到 retry/reset 显式清空）；任务已是 `planned`/`inprogress` 时重复提交幂等（刷新 plan 文本、不回退状态），`done` 时原样返回；只有该会话不属于任何未归档任务才 404（`detail.hint` 说明原因） |
 | `POST /api/board/agents/status` | `{sessionId,status:'done'|'failed'|'inprogress',summary?}` | board task |
 
 `fence` 是 claim 令牌（DB 列 `claim_token`），只出现在 claim 响应里；因全局脱敏规则，任何含 `token` 的字段都会被替换成 `<redacted>`，所以对外叫 `fence`。
+
+**启动自检（残留规划会话）**：sidecar 启动时把 `done`、已归档、或已回到 `todo` 的任务上的 `planning_session_id` 一律清空，并写一条 info 日志（`count` = 解绑条数）。只清这一个字段——`lead_session_id` 是执行会话的历史归属，要保留给「任务完成后再追问」；`failed` 也不清，仍允许规划会话补交计划复活任务（ADR-015）。这类脏行真实存在：任务被 `restore` 回 `todo` 后绑定还在，旧实现按 `status IN ('planning','failed')` 查就会 404。
 
 ### 3.14 显式记忆（文件存储，不落库）
 

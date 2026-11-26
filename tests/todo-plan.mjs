@@ -102,7 +102,42 @@ runAc(AC, async () => {
     assertEqual(last.meta.total, 2, '事件 meta.total');
     assertEqual(last.phase, 'step', '事件 phase=step');
 
-    return 'task_id 关联 / 未派发可写 / 整体替换 / 校验 / 事件进度 全部通过';
+    // ---- ⑥ 成员报告完成：该任务清单自动全部打勾，并写一条 task.todo 事件 ----
+    const rep = await api.post('/api/agents/report', {
+      sessionId: 'sess_todo', taskId: running.id, status: 'done', summary: '初稿写完，验收通过',
+    });
+    assertEqual(rep.status, 'done', '成员报告任务完成');
+    const g4 = await api.get(`/api/todos?team=${team.id}&task=${running.id}`);
+    assertEqual(g4.items.map((t) => t.status).join(','), 'done,done', '报告完成后清单全部打勾');
+    assert(g4.items.every((t) => t.doneAt), '打勾项都记录 doneAt');
+    const autoTick = await waitFor('自动打勾写 task.todo 事件', async () => {
+      const h = await api.get(`/api/events/history?team=${team.id}&since=0`);
+      const rows = h.items.filter((e) => e.action === 'task.todo' && e.taskId === running.id);
+      return rows.length >= 2 ? rows[rows.length - 1] : null;
+    });
+    assertEqual(autoTick.target, '2/2 done', '自动打勾事件显示 2/2 done');
+    assertEqual(autoTick.memberId, member.id, '自动打勾事件归属成员');
+
+    // ---- ⑦ 报告失败不打勾：未完成就是未完成，不能被标成 done ----
+    const t2 = one(await api.post('/api/tasks', { teamId: team.id, subject: '会失败的任务', plan: PLAN }), 'task');
+    await api.post(`/api/tasks/${t2.id}/todos`, { items: [{ title: '只做一半', status: 'active' }] });
+    await waitFor('成员完成上一任务后回到 idle', async () => {
+      const st = await api.get(`/api/status?team=${team.id}`);
+      const m = (st.members || []).find((x) => x.id === member.id);
+      return m?.status === 'idle' ? m : null;
+    });
+    const claimed2 = await waitFor('第二个任务派发给同一成员', async () => {
+      const r = await api.post('/api/agents/dispatch', { teamId: team.id });
+      return r.task?.id === t2.id ? r : null;
+    });
+    assertEqual(claimed2.task?.id, t2.id, '第二个任务派发给同一成员');
+    await api.post('/api/agents/report', {
+      sessionId: 'sess_todo', taskId: t2.id, status: 'failed', summary: '这一步做不下去',
+    });
+    const g5 = await api.get(`/api/todos?team=${team.id}&task=${t2.id}`);
+    assertEqual(g5.items.map((t) => t.status).join(','), 'active', '失败报告不改清单状态');
+
+    return 'task_id 关联 / 未派发可写 / 整体替换 / 校验 / 事件进度 / 完成自动打勾 / 失败不打勾 全部通过';
   } finally {
     if (sidecar) await sidecar.close();
     tmp.cleanup();

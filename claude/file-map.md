@@ -7,7 +7,7 @@ dsh-team-control/
 ├── CLAUDE.md                 本索引
 ├── AGENTS.md                 仓库级 Agent 约定（中文输出、最小改动等）
 ├── README.md                 对外说明（安装、CLI、五条硬约束、限制）
-├── package.json              dsh-team-control-cli v0.3.0，bin.dsh-team，engines >=22.15
+├── package.json              dsh-team-control-cli v0.3.1，bin.dsh-team，engines >=22.15
 ├── bin/
 │   └── dsh-team.mjs          205 行 CLI：up/down/status/dag/logs/approvals/report
 ├── src/                      编排内核

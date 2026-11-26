@@ -1,7 +1,7 @@
 // board.mjs — 工作区任务看板：状态机、并发槽位、claim/attach、计划与事件
 // 只看库，不建会话；会话由 Host 插件按 claim 结果创建。
 import { tx } from './db.mjs';
-import { ERR, nowIso, newId, json, parseJson, clamp } from './util.mjs';
+import { ApiError, ERR, nowIso, newId, json, parseJson, clamp } from './util.mjs';
 
 export const BOARD_STATUSES = ['todo', 'planning', 'planned', 'inprogress', 'done', 'failed'];
 const ACTIVE = new Set(['planning', 'planned', 'inprogress']);
@@ -74,6 +74,33 @@ export class Board {
     this.get = get;
     this.sse = sse;
     this.log = log;
+    // 启动自检：见 repairStaleBindings()。
+    this.repairStaleBindings();
+  }
+
+  /**
+   * 启动自检：规划会话绑定只在规划生命周期内有效。done / 已归档 / 被恢复回 todo 的任务上
+   * 残留的 planning_session_id 会让一个早已结束的会话继续被当成「当前规划会话」——提交计划时
+   * 既找不到合法状态（旧查询按 status 过滤 → 404），脏绑定又永远不会自愈。这里统一解绑；
+   * 只清 planning_session_id，不动 lead_session_id（那是执行会话的历史归属）。
+   * failed 不解绑：ADR-015 允许规划失败的会话补交计划复活任务。
+   */
+  repairStaleBindings() {
+    let unbound = 0;
+    try {
+      const rows = this.get(`SELECT id FROM board_task
+        WHERE planning_session_id IS NOT NULL AND planning_session_id<>''
+          AND (archived_at IS NOT NULL OR status IN ('todo','done'))`).all();
+      for (const r of rows) {
+        this.get('UPDATE board_task SET planning_session_id=NULL, updated_at=? WHERE id=?').run(nowIso(), r.id);
+        unbound++;
+      }
+    } catch (e) {
+      this.log({ level: 'warn', msg: 'board: 清理残留规划会话绑定失败', err: String(e?.message || e) });
+      return { unbound: 0, error: String(e?.message || e) };
+    }
+    if (unbound) this.log({ level: 'info', msg: 'board: 解绑残留规划会话绑定（todo/done/archived）', count: unbound });
+    return { unbound };
   }
 
   // ---------- 基础查询 ----------
@@ -545,11 +572,34 @@ export class Board {
     const plan = text(body.plan, 500000);
     if (!sid) throw ERR.bad('sessionId required');
     if (!plan.trim()) throw ERR.bad('plan required');
-    // 规划会话可能已经因为「空闲未提交计划」被判 failed（用户手动停止对话再继续），
-    // 只要 planning_session_id 仍是这个会话，就允许补交计划，别让用户卡在 404。
+    // 会话 → 任务的绑定只看 planning_session_id，不按状态过滤：
+    // 这份绑定会一直留到 retry/reset 显式清空，而任务状态可能已经是 planned / inprogress /
+    // done / todo（重置后又被恢复），此时再按 ('planning','failed') 查就会误报 404。
     const row = this.get(`SELECT * FROM board_task WHERE planning_session_id=? AND archived_at IS NULL
-      AND status IN ('planning','failed') ORDER BY updated_at DESC LIMIT 1`).get(sid);
-    if (!row) throw ERR.notFound('planning task for session');
+      ORDER BY updated_at DESC LIMIT 1`).get(sid);
+    if (!row) {
+      // 会话确实不再属于任何未归档任务：任务被删除、被 retry/reset 解绑，或提交来自旧会话。
+      // 带上 detail 让模型/面板知道该怎么处理，而不是只给一句 404。
+      const stale = this.get('SELECT id, status, archived_at FROM board_task WHERE planning_session_id=? ORDER BY updated_at DESC LIMIT 1').get(sid);
+      throw new ApiError('E_NOT_FOUND', 'planning task for session not found', {
+        status: 404,
+        detail: {
+          sessionId: sid,
+          ...(stale ? { taskId: stale.id, taskStatus: stale.status, archived: !!stale.archived_at } : {}),
+          hint: '该会话已不是任何未归档任务的规划会话（任务可能被重试/重置/归档，或提交来自旧会话）。用 dsh_team_board_task_get 查看当前任务，不要继续提交计划。',
+        },
+      });
+    }
+    // 已提交过计划 / 已进入执行 / 已完成：重复提交是幂等的，不回退状态，也不重新 claim。
+    // 模型偶尔会把同一个 plan_submit 调两次（重试、续写同一个回合），不能因此 404 吓住它。
+    if (row.status === 'planned' || row.status === 'inprogress' || row.status === 'done') {
+      if (row.status === 'done') return this.getTask(row.id);
+      this.get('UPDATE board_task SET plan_md=?, plan_summary=?, updated_at=? WHERE id=?')
+        .run(plan, text(body.summary, 2000) || null, nowIso(), row.id);
+      const again = this.getTask(row.id);
+      this.addEvent(again, 'planned', { summary: again.planSummary, resubmitted: true });
+      return again;
+    }
     const same = row.execution_mode === 'same';
     this.get(`UPDATE board_task SET status='planned', plan_md=?, plan_summary=?, lead_session_id=?,
       claim_token=NULL, claimed_at=NULL, resumed=0, last_error=NULL, updated_at=? WHERE id=?`)

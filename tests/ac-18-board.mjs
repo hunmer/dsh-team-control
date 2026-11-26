@@ -64,6 +64,13 @@ const main = async () => {
       '复活事件带 recoveredFrom=failed',
     );
     assertEqual((await api.get(`/api/board/by-session/session-plan-1`)).id, t1.id, 'by-session 反查');
+
+    // 重复提交计划必须幂等：模型重试 / 续写同一回合会再调一次，不能 404 把回合打断
+    const replanned = await api.post('/api/board/agents/plan', {
+      sessionId: 'session-plan-1', plan: '# 计划 v2\n1. 再做', summary: '再提一次',
+    });
+    assertEqual(replanned.status, 'inprogress', '重复提交计划保持 inprogress');
+    assertEqual(replanned.planMd, '# 计划 v2\n1. 再做', '重复提交刷新计划文本');
     assertEqual((await api.post('/api/board/claim', { kind: 'planning' })).item.task.id, t2.id, '规划槽位释放后 claim 第二个');
 
     // 执行槽位：提交计划时已占用，泵再 claim 不到
@@ -80,6 +87,13 @@ const main = async () => {
     // 失败重试：有计划回 planned
     const retried = await api.post(`/api/board/tasks/${t1.id}/retry`);
     assertEqual(retried.status, 'planned', '失败重试回 planned');
+
+    // 重试会解除会话绑定：旧规划会话再提交属于「未知会话」，应 404 且带可操作提示
+    let stale = null;
+    try { await api.post('/api/board/agents/plan', { sessionId: 'session-plan-1', plan: '# 旧会话' }); }
+    catch (e) { stale = e; }
+    assertEqual(stale?.status, 404, '解除绑定后的旧会话提交计划 404');
+    assert(typeof stale?.body?.error?.detail?.hint === 'string', '404 带 hint 说明该怎么处理');
 
     // 活动任务不能封存；先 stop 再 archive；再 restore
     let blocked = false;
