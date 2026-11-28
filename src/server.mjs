@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { ApiError, ERR, nowIso, json, redactor } from './util.mjs';
 import { DshTeam } from './core.mjs';
 import { rowToTask } from './scheduler.mjs';
+import { redactLlmResponse } from './llm.mjs';
 
 const PANEL_DIR = fileURLToPath(new URL('./web/', import.meta.url));
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
@@ -28,9 +29,10 @@ export function ensureToken(home) {
   return t;
 }
 
-function sendJson(res, status, body) {
-  // 出口兜底脱敏：任何 API 响应都不得带出已登记的敏感值（FR-3.8 / AC-13）
-  const s = JSON.stringify(redactor.obj(body));
+function sendJson(res, status, body, llmResponse) {
+  // 出口兜底脱敏；成功的结构化 LLM 响应仅保留路由身份（§3.9 / ADR-019）。
+  const s = JSON.stringify(status === 200 && llmResponse
+    ? redactLlmResponse(body, llmResponse) : redactor.obj(body));
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(s) });
   res.end(s);
 }
@@ -231,20 +233,20 @@ export function createRoutes(core) {
     // 模型路由目录：Host 插件把 DSH ctx.llm 的 provider/model 映射同步进来。
     // sidecar 只存「启用子集 + 注释」，不代理任何 LLM 请求、不持有凭据。
     ['POST', /^\/api\/llm\/catalog$/, async (ctx) => C.llm.sync(ctx.body)],
-    ['GET', /^\/api\/llm\/catalog$/, async () => C.llm.catalog()],
+    ['GET', /^\/api\/llm\/catalog$/, async () => C.llm.catalog(), { llmResponse: 'catalog' }],
     ['GET', /^\/api\/llm\/models$/, async (ctx) => {
       const all = qs(ctx.url).get('all') === '1';
       const items = all ? C.llm.catalog().providers.flatMap((p) => p.models) : C.llm.enabledModels();
       return { asOf: nowIso(), total: items.length, items };
-    }],
+    }, { llmResponse: 'models' }],
     ['PATCH', /^\/api\/llm\/routes$/, async (ctx) => C.llm.setRoute(
       need(ctx.body.provider, 'provider'), need(ctx.body.model, 'model'),
       { enabled: ctx.body.enabled, note: ctx.body.note, allowedEfforts: ctx.body.allowedEfforts },
-    )],
+    ), { llmResponse: 'route' }],
     // 厂商级备注：面板分组头写「这个厂商整体擅长什么」，与模型级 note 并存
     ['PATCH', /^\/api\/llm\/providers$/, async (ctx) => C.llm.setProvider(
       need(ctx.body.provider, 'provider'), { note: ctx.body.note },
-    )],
+    ), { llmResponse: 'provider' }],
 
     // audit / report
     ['GET', /^\/api\/audit$/, async (ctx) => ({ asOf: nowIso(), items: C.auditList(need(qs(ctx.url).get('team'), 'team'), qs(ctx.url).get('limit') || 200) })],
@@ -304,7 +306,7 @@ export async function startServer({ home, port = 4317, host = '127.0.0.1', log =
       res.end('not found');
       return;
     }
-    const [, re, handler] = matched;
+    const [, re, handler, options] = matched;
     const m = pathname.match(re);
     try {
       const body = ['POST', 'PATCH', 'PUT'].includes(req.method) ? await readBody(req) : {};
@@ -313,7 +315,7 @@ export async function startServer({ home, port = 4317, host = '127.0.0.1', log =
       if (typeof result === 'string') {
         res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8' });
         res.end(result);
-      } else sendJson(res, 200, result ?? { ok: true });
+      } else sendJson(res, 200, result ?? { ok: true }, options?.llmResponse);
     } catch (e) {
       if (e instanceof ApiError) return sendJson(res, e.status, e.toJSON());
       logFn({ level: 'error', msg: 'request failed', path: pathname, err: String(e?.stack || e) });

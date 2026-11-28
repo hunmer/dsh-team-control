@@ -3,7 +3,45 @@
 // 数据从 Host 插件同步进来（Host 的 ctx.llm.listProviders()/listModels()），sidecar 不猜
 // provider/model 是否存在；它只负责把用户勾选的子集和备注持久化，供面板展示与
 // dsh_team_models/dsh_team_spawn 使用。
-import { ERR, nowIso } from './util.mjs';
+import { ERR, nowIso, redactor } from './util.mjs';
+
+// 仅成功 LLM 响应的已知身份字段保真；其它字段及不符结构的响应仍完整脱敏。
+export function redactLlmResponse(body, shape) {
+  const out = redactor.obj(body);
+  const record = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  const id = (v) => typeof v === 'string' && v.length > 0;
+  const nullableId = (v) => v === null || id(v);
+  const route = (v) => record(v) && !Object.hasOwn(v, 'error') && id(v.provider) && id(v.model)
+    && typeof v.name === 'string' && typeof v.enabled === 'boolean'
+    && (v.efforts === null || (Array.isArray(v.efforts)
+      && v.efforts.every((e) => record(e) && id(e.id) && typeof e.name === 'string')))
+    && nullableId(v.defaultEffort)
+    && (v.allowedEfforts === null || (Array.isArray(v.allowedEfforts) && v.allowedEfforts.every(id)));
+  const provider = (v) => record(v) && id(v.id) && typeof v.name === 'string';
+  const copyRoute = (raw, clean) => {
+    clean.provider = raw.provider;
+    clean.model = raw.model;
+    clean.defaultEffort = raw.defaultEffort;
+    clean.allowedEfforts = raw.allowedEfforts === null ? null : [...raw.allowedEfforts];
+    if (raw.efforts !== null) raw.efforts.forEach((e, i) => { clean.efforts[i].id = e.id; });
+  };
+  if (!record(body) || Object.hasOwn(body, 'error')) return out;
+  if (shape === 'catalog' && body.source === 'dsh-llm' && Array.isArray(body.providers)
+    && body.providers.every((p) => provider(p) && Array.isArray(p.models)
+      && p.models.every((m) => route(m) && m.provider === p.id))) {
+    body.providers.forEach((p, i) => {
+      out.providers[i].id = p.id;
+      p.models.forEach((m, j) => copyRoute(m, out.providers[i].models[j]));
+    });
+  } else if (shape === 'models' && Array.isArray(body.items) && body.items.every(route)) {
+    body.items.forEach((m, i) => copyRoute(m, out.items[i]));
+  } else if (shape === 'route' && route(body)) {
+    copyRoute(body, out);
+  } else if (shape === 'provider' && provider(body)) {
+    out.id = body.id;
+  }
+  return out;
+}
 
 const clip = (v, max) => {
   if (v == null) return null;

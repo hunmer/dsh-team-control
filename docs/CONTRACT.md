@@ -282,6 +282,8 @@ root(run:team)                         ← 团队整体
 
 `route` = `{provider, model, name, description, modalities, contextWindow, source, enabled, note, efforts, defaultEffort, allowedEfforts}`；`efforts` 是适配器声明的 `[{id,name,description?}]`，`allowedEfforts` 为 null 表示不限。
 
+**响应脱敏边界（[ADR-019](adr/ADR-019-public-route-identities.md)）**：仅上述 `GET catalog/models` 与 `PATCH routes/providers` 的成功 JSON 响应，在完整身份结构校验通过后保留 provider 的 `id`、route 的 `provider/model/efforts[].id/defaultEffort/allowedEfforts[]` 原值，即使与敏感环境变量值相同或包含它。`defaultEffort` 只校验 string/null，不保证属于已声明列表；`allowedEfforts` 的成员校验仍由 `setRoute` 执行。标签、描述、备注、provider 错误和未知扩展字段继续脱敏；不符结构、未知响应策略、所有错误响应及其它 API 都使用默认脱敏。事件、审计、消息、SSE、日志与报告不享有身份例外。
+
 语义：
 
 - 非 `partial` 同步会删除快照中已消失的 provider/model（适配器卸载后不残留启用项）。
